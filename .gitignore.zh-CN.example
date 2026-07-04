@@ -1,0 +1,43 @@
+# 中文说明版，仅用于阅读。
+# Git 实际使用的忽略配置位于 .gitignore。
+
+# 依赖目录
+node_modules/
+.npm-cache/
+
+# 构建输出
+dist/
+build/
+coverage/
+.turbo/
+
+# 本地环境变量与密钥
+.env
+.env.*
+!.env.example
+
+# AppForge 运行时数据
+.appforge/
+workspaces/
+artifacts/
+traces/
+
+# 日志
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 编辑器与操作系统文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# TypeScript 缓存
+*.tsbuildinfo
+
+# 测试与浏览器输出
+test-results/
+playwright-report/

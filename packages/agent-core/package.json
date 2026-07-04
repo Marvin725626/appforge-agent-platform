@@ -1,0 +1,28 @@
+{
+  "name": "@appforge/agent-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prebuild": "node ../../scripts/check-node-version.mjs",
+    "smoke:real": "tsx --env-file=../../.env src/real-provider-smoke.ts",
+    "smoke:loop": "tsx --env-file=../../.env src/real-agent-loop-smoke.ts",
+    "smoke:react-app": "tsx --env-file=../../.env src/real-react-app-smoke.ts",
+    "pretest": "node ../../scripts/check-node-version.mjs",
+    "test": "vitest run",
+    "pretypecheck": "node ../../scripts/check-node-version.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@appforge/protocol": "0.1.0",
+    "@appforge/workspace": "0.1.0",
+    "zod": "^4.4.3"
+  }
+}

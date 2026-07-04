@@ -1,0 +1,36 @@
+{
+  "name": "appforge-agent-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Build, test, and iterate React/Vite applications with AI agents.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build:harness && npm run build:api && npm run build:web",
+    "build:api": "npm run build --workspace @appforge/api",
+    "build:harness": "npm run build --workspace @appforge/harness",
+    "build:web": "npm run build --workspace @appforge/web",
+    "dev:api": "npm run dev --workspace @appforge/api",
+    "dev:web": "npm run dev --workspace @appforge/web",
+    "presmoke:llm": "node scripts/check-node-version.mjs",
+    "smoke:agent-loop": "npm run smoke:loop --workspace @appforge/agent-core",
+    "smoke:llm": "npm run smoke:real --workspace @appforge/agent-core",
+    "smoke:react-app": "npm run smoke:react-app --workspace @appforge/agent-core",
+    "smoke:template": "npm run smoke:template --workspace @appforge/workspace",
+    "start:api": "npm run start --workspace @appforge/api",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "npm@10.9.8",
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "tsx": "^4.22.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

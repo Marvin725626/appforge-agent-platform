@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+.npm-cache/
+
+# Build output
+dist/
+build/
+coverage/
+.turbo/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# AppForge runtime data
+.appforge/
+workspaces/
+artifacts/
+traces/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# TypeScript
+*.tsbuildinfo
+
+# Test and browser output
+test-results/
+playwright-report/
