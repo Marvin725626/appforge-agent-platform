@@ -79,12 +79,9 @@ sequenceDiagram
 - **Home：** 输入目标、设置最大修复次数、创建 run、打开最近 run。
 - **Run Workspace：** 左侧显示版本尝试和当前 run，中间是大面积实时预览，右侧是 Overview / Plan / Trace / Files。
 
-```text
-+--------------------+--------------------------------+----------------------+
-| 版本 / 当前 Run     | 生成应用实时预览               | Overview / Trace    |
-|                    |                                | Plan / Files        |
-+--------------------+--------------------------------+----------------------+
-```
+![AppForge 首页](docs/assets/appforge-home.png)
+
+![AppForge Run Workspace](docs/assets/appforge-workspace.png)
 
 ## 架构图
 

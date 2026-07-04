@@ -80,12 +80,9 @@ The web workbench has two surfaces:
 - **Run Workspace:** inspect version attempts, run status, live preview, plan,
   trace, and generated files.
 
-```text
-+--------------------+--------------------------------+----------------------+
-| Version / Run      | Live Generated App Preview     | Overview / Trace    |
-| History            |                                | Plan / Files        |
-+--------------------+--------------------------------+----------------------+
-```
+![AppForge home](docs/assets/appforge-home.png)
+
+![AppForge run workspace](docs/assets/appforge-workspace.png)
 
 ## Architecture
 
