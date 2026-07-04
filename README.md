@@ -1,26 +1,91 @@
+<div align="center">
+
 # AppForge Agent Platform
 
-AppForge is a local Agent platform that turns a natural-language product goal
-into a generated, built, evaluated, repaired, and previewable React/Vite
-application.
+**A real OpenAI-compatible coding-agent platform that generates, builds, evaluates, repairs, and previews React/Vite apps from natural language.**
 
-The product path uses a real OpenAI-compatible LLM. Fake providers are used only
-for deterministic automated tests.
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![React](https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=111827)](https://react.dev/)
+[![Vite](https://img.shields.io/badge/Vite-7-646cff?logo=vite&logoColor=white)](https://vite.dev/)
+[![Fastify](https://img.shields.io/badge/Fastify-API-111827?logo=fastify&logoColor=white)](https://fastify.dev/)
+[![Vitest](https://img.shields.io/badge/Vitest-tested-6e9f18?logo=vitest&logoColor=white)](https://vitest.dev/)
 
-## What It Does
+[English](README.md) | [Chinese README](README.zh-CN.md) | [Product Design](docs/product_design.md) | [Current Status](docs/current_status.md)
 
-- Creates isolated app workspaces from natural-language goals.
-- Calls a real OpenAI-compatible model through a provider abstraction.
-- Runs a structured Coding Agent loop that writes files and finishes through
-  validated actions.
-- Builds generated React/Vite apps with `npm install` and `npm run build`.
-- Evaluates generated apps through deterministic Harness checks.
-- Reviews results and runs bounded repair attempts when evaluation fails.
-- Stores run history, results, attempts, trace events, generated files, and memory
-  records in local JSON persistence.
-- Supports human approval and repair feedback when a run needs review.
-- Shows a web workbench with landing page, run workspace, version attempts, live
-  preview, plan, trace, and file inspector.
+</div>
+
+---
+
+## Why This Project Exists
+
+AppForge is not a one-shot code-generation demo. It is a local, inspectable Agent
+platform that proves the full engineering loop:
+
+```text
+goal -> plan -> generate -> build -> evaluate -> repair -> preview -> inspect
+```
+
+The main product path calls a real OpenAI-compatible LLM. Fake providers are used
+only for deterministic automated tests.
+
+## Demo Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Web as Web Workbench
+    participant API as Fastify API
+    participant Agent as Coding Agent
+    participant LLM as OpenAI-compatible LLM
+    participant WS as Safe Workspace
+    participant Eval as Harness/Eval
+    participant Preview as Vite Preview
+
+    User->>Web: Enter product goal
+    Web->>API: POST /runs
+    API->>API: Create run and workspace
+    Web->>API: POST /runs/:id/execute
+    API->>Agent: Goal + skill + memory + coordination
+    Agent->>LLM: Ask for structured action
+    LLM-->>Agent: write_file / run_command / finish
+    Agent->>WS: Execute validated action
+    API->>WS: npm install + npm run build
+    API->>Eval: Deterministic checks
+    API->>Agent: Repair context if needed
+    Web->>API: POST /runs/:id/preview
+    API->>Preview: Start managed Vite process
+    Preview-->>Web: Live generated app
+```
+
+## Highlights
+
+| Area | What AppForge Implements |
+| --- | --- |
+| Real model path | OpenAI-compatible provider with configurable base URL, API key, model, and timeout |
+| Agent loop | Structured actions, Zod validation, bounded steps, and finish policy |
+| Workspace safety | Path containment, safe file IO, allowlisted commands, timeout/output limits |
+| Build loop | Copy React/Vite starter, generate files, install dependencies, build app |
+| Evaluation | Deterministic Harness checks plus reviewer decision |
+| Repair | Configurable `maxRepairAttempts` with structured failure context |
+| Human-in-the-loop | Approve or request repair with feedback |
+| Observability | Plan, trace events, attempts, generated files, command output, preview |
+| Persistence | Local JSON repository for runs/results and structured memory records |
+| Workbench | Landing page, run workspace, version attempts, preview, inspector tabs |
+
+## Workbench Preview
+
+The web workbench has two surfaces:
+
+- **Home:** create a run from a product goal and open recent runs.
+- **Run Workspace:** inspect version attempts, run status, live preview, plan,
+  trace, and generated files.
+
+```text
++--------------------+--------------------------------+----------------------+
+| Version / Run      | Live Generated App Preview     | Overview / Trace    |
+| History            |                                | Plan / Files        |
++--------------------+--------------------------------+----------------------+
+```
 
 ## Architecture
 
@@ -42,37 +107,6 @@ flowchart TD
     Workspace --> Generated["Generated React/Vite App"]
 ```
 
-## Core Workflow
-
-1. The user creates a run from a natural-language goal.
-2. The API creates a run record and an isolated workspace.
-3. The React/Vite starter template is copied into the workspace.
-4. The Coordinator creates a plan and planner/coder/reviewer assignments.
-5. Skill rules, coordination context, and bounded memory context are sent to the
-   Coding Agent.
-6. The Coding Agent calls the LLM and parses a structured action such as
-   `write_file`, `run_command`, or `finish`.
-7. Workspace tools validate and execute the action inside the workspace boundary.
-8. AppForge installs dependencies and builds the generated app.
-9. Harness/Eval checks whether the app satisfies the goal.
-10. The reviewer accepts the result or asks for repair.
-11. If needed, AppForge runs repair attempts up to `maxRepairAttempts`.
-12. The web workbench displays the result, trace, generated files, and live
-    preview.
-
-## Workbench
-
-The web app has two main surfaces:
-
-- **Home:** enter a goal, configure max repair attempts, create a run, and open
-  recent runs.
-- **Run Workspace:** inspect the current run with version attempts on the left,
-  a large live preview in the center, and Overview/Plan/Trace/Files panels on the
-  right.
-
-The preview is served by a managed Vite process. The Preview panel can start a
-preview server and refresh the iframe without recreating the run.
-
 ## Monorepo Layout
 
 ```text
@@ -80,24 +114,18 @@ apps/
   api/                 Fastify API, orchestration, persistence, preview
   web/                 React/Vite workbench UI
 packages/
-  agent-core/          Model provider, Coding Agent loop, Coordinator, Skills, Memory
+  agent-core/          Provider, Coding Agent, loop, Coordinator, Skills, Memory
   workspace/           Safe file operations and command execution
   protocol/            Shared Zod schemas and protocol types
   harness/             Deterministic evaluation helpers
 tests/
-  fixtures/            Vite React starter used by generated app runs
+  fixtures/            Vite React starter copied into run workspaces
 docs/
   product_design.md    Product and architecture design
+  current_status.md    Current implementation and demo guide
 ```
 
-## Documentation
-
-- [Product design](docs/product_design.md)
-- [Current status and demo guide](docs/current_status.md)
-- [中文 README](README.zh-CN.md)
-- [中文当前状态](docs/current_status.zh-CN.md)
-
-## LLM Configuration
+## Quick Start
 
 Create `.env` from `.env.example`:
 
@@ -108,29 +136,19 @@ APPFORGE_LLM_MODEL=your-model-or-endpoint-id
 APPFORGE_LLM_TIMEOUT_MS=60000
 ```
 
-Volcengine Ark or another OpenAI-compatible provider can be used as long as the
-endpoint follows a compatible chat-completions style API.
-
-## Local Setup
-
-This project requires Node.js 22 or newer. In this workspace, load the bundled
-local tools before running npm commands:
+Install and start locally:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 . .\scripts\use-local-tools.ps1
 npm install
-```
-
-Start the API:
-
-```powershell
 npm run dev:api
 ```
 
 Start the web workbench in another terminal:
 
 ```powershell
+. .\scripts\use-local-tools.ps1
 npm run dev:web
 ```
 
@@ -153,53 +171,41 @@ npm run smoke:react-app
 
 ## API Surface
 
-- `GET /health`
-- `POST /runs`
-- `GET /runs`
-- `GET /runs/:id`
-- `DELETE /runs/:id`
-- `POST /runs/:id/execute`
-- `POST /runs/:id/preview`
-- `GET /runs/:id/files`
-- `GET /runs/:id/files/content`
-- `POST /runs/:id/approve`
-- `POST /runs/:id/request-repair`
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | API health check |
+| `POST` | `/runs` | Create a run |
+| `GET` | `/runs` | List runs |
+| `GET` | `/runs/:id` | Load run and result |
+| `DELETE` | `/runs/:id` | Delete run and workspace |
+| `POST` | `/runs/:id/execute` | Execute the Agent workflow |
+| `POST` | `/runs/:id/preview` | Start generated app preview |
+| `GET` | `/runs/:id/files` | List generated files |
+| `GET` | `/runs/:id/files/content` | Read generated file content |
+| `POST` | `/runs/:id/approve` | Human approval |
+| `POST` | `/runs/:id/request-repair` | Human repair feedback |
 
 ## Safety Model
 
 - Model output is treated as untrusted data.
 - File operations are resolved inside a run-specific workspace root.
-- Commands are allowlisted and run with bounded execution behavior.
+- Commands are allowlisted and bounded by timeout/output limits.
 - The Agent is not given arbitrary shell access.
 - Repair loops are bounded by `maxRepairAttempts`.
-- Preview ports are checked before use and Vite is launched with strict port
-  behavior.
+- Preview ports are checked before use and Vite uses strict port behavior.
 - Memory injected into prompts is bounded by recency and character budget.
 
 ## Current Status
 
-The main portfolio/demo flow is implemented:
+The main portfolio/demo loop is implemented:
 
 ```text
 goal -> create run -> coordinate -> real LLM agent -> write files -> build
      -> evaluate -> review -> repair if needed -> preview -> inspect trace/files
 ```
 
-The platform is local-first and resume-ready. It is not yet a production
+AppForge is local-first and portfolio-ready. It is not yet a production
 multi-tenant SaaS.
-
-## Current Limitations
-
-- Target generation stack is React/Vite TypeScript.
-- Version history currently shows attempts inside one run; full iterative
-  versioning is planned.
-- Memory uses structured local records, not vector search or relevance ranking
-  yet.
-- Coordinator creates deterministic plans and assignments; fully independent
-  LLM-backed sub-agents are a future extension.
-- JSON persistence is intended for local portfolio/demo usage, not production
-  storage.
-- Strong OS/container sandboxing is not yet implemented.
 
 ## Resume Bullets
 
@@ -215,11 +221,11 @@ multi-tenant SaaS.
 
 ## Roadmap
 
-- True versioning and iteration: `POST /runs/:id/iterate`, v1/v2/v3 snapshots,
-  diff, rollback, and continue-edit flow.
+- True versioning and iteration: v1/v2/v3 snapshots, diff, rollback, and
+  continue-edit flow.
 - Relevance-based Memory selection and optional LLM memory consolidation.
 - More realistic multi-agent execution with separate planner, coder, reviewer,
   and test agents.
 - Stronger sandboxing for command execution.
-- Richer visual evaluation with browser automation.
+- Browser-based visual and behavior evaluation.
 - Shareable run reports, export, and deployment packaging.
