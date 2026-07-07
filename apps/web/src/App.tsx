@@ -80,6 +80,7 @@ type ReactAppAgentResult = {
 type ExecuteResponse = {
     run: Run;
     result: ReactAppAgentResult;
+    versions:RunVersion[];
 };
 
 type FileResponse = {
@@ -106,6 +107,7 @@ type PreviewResponse = {
 type RunDetailResponse = {
     run: Run;
     result?: ReactAppAgentResult;
+    versions: RunVersion[];
 };
 
 type RunsResponse = {
@@ -127,6 +129,16 @@ type CoordinationResponse = {
     assignments: AgentAssignment[];
 };
 type ActivePanel = "overview" | "plan" | "trace" | "preview" | "files";
+
+type RunVersion = {
+    id: string;
+    runId: string;
+    versionNumber: number;
+    goal: string;
+    summary: string;
+    createdAt: string;
+};
+
 
 const CURRENT_RUN_ID_STORAGE_KEY = "appforge.currentRunId";
 const PREVIEW_STORAGE_KEY = "appforge.preview";
@@ -319,6 +331,11 @@ export function App() {
     const [activePanel, setActivePanel] =
         useState<ActivePanel>("overview");
     const [maxRepairAttempts,setMaxRepairAttempts] = useState(1);
+    const [versions,setVersions] = useState<RunVersion[]>([]);
+    const [selectedVersionNumber, setSelectedVersionNumber] =
+        useState<number | null>(null);
+    const [iterationPrompt, setIterationPrompt] = useState("");
+    const [isIterating, setIsIterating] = useState(false);
     async function createRun() {
         if (createInFlightRef.current) {
             return;
@@ -334,6 +351,9 @@ export function App() {
         setPreview(null);
         setCoordination(null);
         setActivePanel("overview");
+        setVersions([]);
+        setSelectedVersionNumber(null);
+        setIterationPrompt("");
         localStorage.removeItem(PREVIEW_STORAGE_KEY);
 
         try {
@@ -409,8 +429,11 @@ export function App() {
             const executeResponse = (await response.json()) as ExecuteResponse;
             setRun(executeResponse.run);
             setAgentResult(executeResponse.result);
+            setVersions(executeResponse.versions);
+            setSelectedVersionNumber(null);
             await loadGeneratedFiles(executeResponse.run.id, "src");
             await loadGeneratedFile(executeResponse.run.id, "src/App.tsx");
+            await refreshRun(executeResponse.run.id);
             await loadRuns();
         } catch (caughtError) {
             await refreshRun(runId);
@@ -460,7 +483,10 @@ export function App() {
 
             setRun(runDetail.run);
             setAgentResult(runDetail.result ?? null);
+            setVersions(runDetail.versions);
             setGeneratedFiles(null);
+            setSelectedVersionNumber(null);
+            setIterationPrompt("");
             setGeneratedFile(null);
             await loadCoordination(runDetail.run.id);
 
@@ -513,6 +539,9 @@ export function App() {
                 setPreview(null);
                 setCoordination(null);
                 setActivePanel("overview");
+                setVersions([]);
+                setSelectedVersionNumber(null);
+                setIterationPrompt("");
                 localStorage.removeItem(CURRENT_RUN_ID_STORAGE_KEY);
                 localStorage.removeItem(PREVIEW_STORAGE_KEY);
             }
@@ -536,8 +565,10 @@ export function App() {
             return;
         }
 
-        const runResponse = (await response.json()) as { run: Run };
-        setRun(runResponse.run);
+        const runDetail = (await response.json()) as RunDetailResponse;
+        setRun(runDetail.run);
+        setAgentResult(runDetail.result ?? null);
+        setVersions(runDetail.versions);
     }
 
     async function startPreview() {
@@ -656,6 +687,8 @@ export function App() {
             const repairResponse = (await response.json()) as ExecuteResponse;
             setRun(repairResponse.run);
             setAgentResult(repairResponse.result);
+            setVersions(repairResponse.versions);
+            setSelectedVersionNumber(null);
             await loadGeneratedFiles(repairResponse.run.id, "src");
             await loadGeneratedFile(repairResponse.run.id, "src/App.tsx");
             await loadRuns();
@@ -667,6 +700,92 @@ export function App() {
             );
         } finally {
             setIsRequestingRepair(false);
+        }
+    }
+    async function iterateRun(){
+        if(!run||iterationPrompt.trim().length === 0){
+            return;
+        }
+        setIsIterating(true);
+        setError(null);
+        try {
+            const response = await fetch(
+                `http://127.0.0.1:3000/runs/${run.id}/iterate`,
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        prompt: iterationPrompt,
+                    }),
+                },
+            );
+
+            if (!response.ok) {
+                throw new Error(`Iterate run failed with ${response.status}`);
+            }
+
+            const iterateResponse = (await response.json()) as ExecuteResponse;
+            setRun(iterateResponse.run);
+            setAgentResult(iterateResponse.result);
+            setVersions(iterateResponse.versions);
+            setSelectedVersionNumber(null);
+            setIterationPrompt("");
+            await loadGeneratedFiles(iterateResponse.run.id, "src");
+            await loadGeneratedFile(iterateResponse.run.id, "src/App.tsx");
+            await refreshRun(iterateResponse.run.id);
+            await loadRuns();
+            setActivePanel("preview");
+        } catch (caughtError) {
+            setError(
+                caughtError instanceof Error
+                    ? caughtError.message
+                    : "Iterate run failed",
+            );
+        } finally {
+            setIsIterating(false);
+        }
+    }
+    async function selectVersion(version:RunVersion){
+        if(!run){
+            return;
+        }
+        setSelectedVersionNumber(version.versionNumber);
+        setError(null);
+        try{
+            const response = await fetch(
+                `http://127.0.0.1:3000/runs/${run.id}/versions/${version.versionNumber}/files?path=src/App.tsx`,
+            );
+            if (!response.ok) {
+                throw new Error(`Load version failed with ${response.status}`);
+            }
+            const fileResponse = (await response.json()) as FileResponse;
+            setGeneratedFile(fileResponse);
+            const previewResponse = await fetch(
+                `http://127.0.0.1:3000/runs/${run.id}/preview`,
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        versionNumber: version.versionNumber,
+                    }),
+                },
+            );
+            if(!previewResponse.ok){
+                throw new Error(`Start version preview failed with ${previewResponse.status}`);
+            }
+            const previewBody = (await previewResponse.json()) as PreviewResponse;
+            setPreview(previewBody.preview);
+            setActivePanel("preview");
+        } catch(caughtError){
+            setError(
+                caughtError instanceof Error
+                    ? caughtError.message
+                    : "Load version failed",
+            );
         }
     }
     async function loadGeneratedFiles(runId: string, directory: string) {
@@ -740,6 +859,9 @@ export function App() {
         setPreview(null);
         setCoordination(null);
         setActivePanel("overview");
+        setVersions([]);
+        setSelectedVersionNumber(null);
+        setIterationPrompt("");
         localStorage.removeItem(CURRENT_RUN_ID_STORAGE_KEY);
         localStorage.removeItem(PREVIEW_STORAGE_KEY);
     }
@@ -955,7 +1077,7 @@ export function App() {
     }
 
     const isCurrentRunExecuting = executingRunId === run.id;
-    const currentRunVersions = agentResult ? getAgentAttempts(agentResult) : [];
+    const currentRunVersions = versions;
     const canExecuteCurrentRun =
         run.status === "queued" || run.status === "failed";
 
@@ -985,24 +1107,20 @@ export function App() {
                         </p>
                         <div className="history-list">
                             {currentRunVersions.length > 0 ? (
-                                currentRunVersions.map((attempt, index) => (
-                                    <article
-                                        className="history-item active"
-                                        key={`${attempt.kind}-${index}`}
-                                >
-                                        <span>v{index + 1}</span>
-                                        <strong>
-                                            {attempt.kind === "initial"
-                                                ? "Initial build"
-                                                : "Repair iteration"}
-                                        </strong>
-                                        <small>
-                                            {attempt.review.accepted
-                                                ? "accepted"
-                                                : "needs changes"}{" "}
-                                            / build exit {attempt.build.exitCode}
-                                        </small>
-                                    </article>
+                                currentRunVersions.map((version) => (
+                                    <button
+                                        type="button"
+                                        className={
+                                            selectedVersionNumber === version.versionNumber
+                                                ? "history-item active"
+                                                : "history-item"
+                                        }
+                                        key={version.id}
+                                        onClick={() => selectVersion(version)}
+                                    >
+                                        <span>v{version.versionNumber}</span>
+                                        <small>{new Date(version.createdAt).toLocaleString()}</small>
+                                    </button>
                                 ))
                             ) : (
                                 <article className="history-item active">
@@ -1024,6 +1142,17 @@ export function App() {
                         <p className="run-goal-preview" title={run.goal}>
                             {run.goal}
                         </p>
+                        {currentRunVersions.length > 0 ? (
+                            <p
+                                className="run-latest-request"
+                                title={
+                                    currentRunVersions[currentRunVersions.length - 1].goal
+                                }
+                            >
+                                Latest:{" "}
+                                {currentRunVersions[currentRunVersions.length - 1].goal}
+                            </p>
+                        ) : null}
                         <p className="run-short-id">#{run.id.slice(0, 8)}</p>
                         {canExecuteCurrentRun ||
                         isCurrentRunExecuting ||
@@ -1098,6 +1227,11 @@ export function App() {
                     <div className="preview-toolbar">
                         <div>
                             <h2>Live Preview</h2>
+                            <p className="muted-text">
+                                {selectedVersionNumber
+                                    ? `Previewing version v${selectedVersionNumber}`
+                                    : "Previewing latest run output"}
+                            </p>
                             {preview ? (
                                 <a href={preview.url} target="_blank" rel="noreferrer">
                                     {preview.url}
@@ -1141,6 +1275,33 @@ export function App() {
                             </p>
                         </div>
                     )}
+                    <div className="iteration-box">
+                        <textarea
+                            value={iterationPrompt}
+                            onChange={(event) =>
+                                setIterationPrompt(event.target.value)
+                            }
+                            placeholder="Describe the next change, for example: add dark mode or improve the layout..."
+                            rows={3}
+                        />
+                        <div className="iteration-actions">
+                            <span className="muted-text">
+                                Continue from the latest generated version.
+                            </span>
+                            <button
+                                type="button"
+                                onClick={iterateRun}
+                                disabled={
+                                    !run ||
+                                    isIterating ||
+                                    iterationPrompt.trim().length === 0 ||
+                                    run.status === "running"
+                                }
+                            >
+                                {isIterating ? "Iterating..." : "Send Iteration"}
+                            </button>
+                        </div>
+                    </div>
                 </section>
 
                 <aside className="workspace-inspector">

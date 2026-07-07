@@ -400,6 +400,20 @@ apps -> agent-core/workspace/harness -> protocol
 
 ## 15. 开发路线
 
+### 当前实现快照
+
+当前本地演示版已经完成主产品链路：
+
+- TypeScript Monorepo，包含 API、Web、Agent Core、Workspace、Protocol、Harness 等包。
+- Fastify API 已支持创建 Run、执行 Agent、预览、版本快照、生成文件查看、人工审批、人工返修、继续迭代、删除、JSON 持久化。
+- React/Vite 工作台已支持首页、Run Workspace、版本历史、大面积实时预览、继续修改输入框，以及 Overview / Plan / Trace / Files 检查面板。
+- 产品主链路使用真实 OpenAI-compatible provider。
+- Coding Agent Loop 已支持结构化 action 解析、安全 workspace 执行、步数预算和 finish 停止策略。
+- React/Vite app 工作流已支持复制 starter、Coordinator 分工、调用 Agent、安装依赖、构建、Harness/Eval、Reviewer 审查、自动修复、保存版本快照、预览指定版本和记录 Trace。
+- Coordinator、Skill、Memory、Human-in-the-loop、Harness/Eval、Preview Manager 都已经有最小可用实现。
+
+剩余工作不再是证明“Agent 能跑通”，而是继续增强平台深度：版本 diff / rollback、Memory 相关性与压缩、更独立的多 Agent 执行、更强 sandbox、浏览器行为评估、可分享 Run Report 和简历包装。
+
 ### 阶段一：产品设计
 
 - 明确范围、用户流程、安全边界、架构和验收标准。

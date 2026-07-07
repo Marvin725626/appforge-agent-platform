@@ -19,14 +19,17 @@ goal
   -> evaluate with Harness checks
   -> review result
   -> repair if needed
-  -> store trace/result/files/memory
+  -> store trace/result/files/memory/version snapshot
   -> preview in the web workbench
+  -> iterate with follow-up prompts
 ```
 
 ## Implemented Modules
 
-- `apps/api`: Fastify API, run orchestration, JSON persistence, preview manager.
-- `apps/web`: React workbench with landing page and run workspace.
+- `apps/api`: Fastify API, run orchestration, JSON persistence, version
+  snapshots, memory persistence, preview manager.
+- `apps/web`: React workbench with landing page, run workspace, version history,
+  live preview, files, trace, and iteration prompt.
 - `packages/agent-core`: OpenAI-compatible provider, Coding Agent, Agent loop,
   Coordinator, Skill, Memory, reviewer, and React app runner.
 - `packages/workspace`: safe path handling, file operations, and allowlisted
@@ -70,24 +73,27 @@ goal
 
 7. Open the workspace and show:
 
-   - live preview in the center;
-   - version attempts on the left;
-   - plan, trace, and generated files on the right;
-   - repair feedback when a run needs human review.
+  - live preview in the center;
+  - v1/v2/v3 version snapshots on the left;
+  - plan, trace, and generated files on the right;
+  - repair feedback when a run needs human review;
+  - follow-up prompt iteration after a successful generation.
 
 ## What Is Real
 
 - The model provider is real in the product path.
 - The generated code is written to a real workspace.
 - `npm install` and `npm run build` are actually executed.
-- Preview starts a real Vite dev process for the generated app.
+- Preview starts a real Vite dev process for the generated app or a selected
+  version snapshot.
 - Test fakes are only used in automated tests.
 
 ## Known Limitations
 
-- Version history currently means attempts inside one run, not full saved app
-  versions.
-- Memory is structured and bounded, but not relevance-ranked or compressed yet.
+- Version history now stores app snapshots, but diff and rollback are still
+  planned.
+- Memory is persisted, structured, and bounded, but not relevance-ranked or
+  compressed yet.
 - Multi-agent is represented by Coordinator assignments; fully independent LLM
   sub-agents are still planned.
 - The app uses JSON files for local persistence, not a production database.
@@ -96,9 +102,9 @@ goal
 
 ## Next Enhancements
 
-1. True versioned iteration: continue editing an existing run and create v1/v2/v3
-   snapshots.
-2. Memory relevance and compression: select memories related to the current goal.
+1. Version diff and rollback: compare snapshots and restore an earlier version.
+2. Memory relevance and compression: select memories related to the current goal
+   and summarize long histories.
 3. Real multi-agent execution: planner, coder, reviewer, and test agents with
    separate turns.
 4. Browser-based evaluation: use Playwright-style checks for generated UI

@@ -443,21 +443,24 @@ The local portfolio/demo implementation has completed the main product loop:
 
 - TypeScript monorepo with API, Web, Agent Core, Workspace, Protocol, and Harness
   packages.
-- Fastify API with run creation, execution, preview, generated-file inspection,
-  human approval, repair feedback, deletion, and JSON persistence.
-- React/Vite workbench with a landing page, run workspace, version-attempt list,
-  large preview area, and Overview/Plan/Trace/Files inspector.
+- Fastify API with run creation, execution, preview, version snapshot
+  inspection, generated-file inspection, human approval, repair feedback,
+  iteration, deletion, and JSON persistence.
+- React/Vite workbench with a landing page, run workspace, version history,
+  large preview area, follow-up iteration prompt, and Overview/Plan/Trace/Files
+  inspector.
 - Real OpenAI-compatible provider used by the product path.
 - Coding Agent loop with structured action parsing, safe workspace execution, and
   bounded step budget.
 - React/Vite app workflow: copy starter, coordinate, call Agent, install, build,
-  evaluate, review, repair, and record trace.
+  evaluate, review, repair, snapshot versions, preview selected versions, and
+  record trace.
 - Minimal Coordinator, Skill, Memory, Human-in-the-loop, Harness/Eval, and Preview
   Manager are implemented.
 
 The remaining work is no longer about proving the core Agent loop. The next
-milestones are product polish and deeper platform capabilities: true versioned
-iteration, stronger memory relevance/compression, more independent multi-agent
+milestones are product polish and deeper platform capabilities: version diff and
+rollback, stronger memory relevance/compression, more independent multi-agent
 execution, stronger sandboxing, richer browser-based evaluation, and shareable
 run reports.
 

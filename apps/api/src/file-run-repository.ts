@@ -1,7 +1,12 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { RunSchema, type Run } from "@appforge/protocol";
+import {
+    RunSchema,
+    RunVersionSchema,
+    type Run,
+    type RunVersion,
+} from "@appforge/protocol";
 import { z } from "zod";
 
 import type { RunReactAppAgentResult } from "./run-react-app-agent.js";
@@ -10,17 +15,20 @@ import type { RunRepositoryLike } from "./run-repository.js";
 const StoreSchema = z.object({
     runs: z.array(RunSchema),
     results: z.record(z.string(), z.unknown()),
+    versions: z.record(z.string(), z.array(RunVersionSchema)).default({}),
 });
 
 type StoreData = {
     runs: Run[];
     results: Record<string, RunReactAppAgentResult>;
+    versions: Record<string, RunVersion[]>;
 };
 
 function emptyStore(): StoreData {
     return {
         runs: [],
         results: {},
+        versions: {},
     };
 }
 
@@ -62,6 +70,7 @@ export class FileRunRepository implements RunRepositoryLike {
 
         store.runs = store.runs.filter((run) => run.id !== id);
         delete store.results[id];
+        delete store.versions[id];
 
         const deletedRun = store.runs.length !== initialRunCount;
 
@@ -90,6 +99,30 @@ export class FileRunRepository implements RunRepositoryLike {
         return store.results[runId];
     }
 
+    async listVersions(runId: string): Promise<RunVersion[]> {
+        const store = await this.readStore();
+
+        return store.versions[runId] ?? [];
+    }
+
+    async saveVersion(version: RunVersion): Promise<RunVersion> {
+        const store = await this.readStore();
+        const existingVersions = store.versions[version.runId] ?? [];
+
+        store.versions[version.runId] = [...existingVersions, version];
+
+        await this.writeStore(store);
+
+        return version;
+    }
+
+    async deleteVersions(runId: string): Promise<void> {
+        const store = await this.readStore();
+        delete store.versions[runId];
+
+        await this.writeStore(store);
+    }
+
     private async readStore(): Promise<StoreData> {
         try {
             const rawStore = await readFile(this.storePath, "utf8");
@@ -101,6 +134,7 @@ export class FileRunRepository implements RunRepositoryLike {
                     string,
                     RunReactAppAgentResult
                 >,
+                versions: parsedStore.versions,
             };
         } catch (error) {
             if (

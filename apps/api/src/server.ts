@@ -8,9 +8,11 @@ import {
     runReactAppAgent,
     type RunReactAppAgentOptions,
 } from "./run-react-app-agent.js";
+import { FileMemoryRepository } from "./file-memory-repository.js";
 
 const workspacesRoot = path.resolve(".appforge","workspaces");
 const runsStorePath = path.resolve(".appforge", "runs.json");
+const memoryStorePath = path.resolve(".appforge", "memory.json");
 const templateRoot = path.resolve(
     "..",
     "..",
@@ -18,11 +20,11 @@ const templateRoot = path.resolve(
     "fixtures",
     "vite-react-starter",
 );
-
 const workspaceManager = new WorkspaceManager(workspacesRoot);
 const baseUrl = process.env.APPFORGE_LLM_BASE_URL;
 const apiKey = process.env.APPFORGE_LLM_API_KEY;
 const model = process.env.APPFORGE_LLM_MODEL;
+
 
 if (!baseUrl || !apiKey || !model) {
     throw new Error("Missing required AppForge LLM environment variables");
@@ -53,6 +55,8 @@ const app = buildApp(
 
         return runReactAppAgent(agentOptions);
     },
+    undefined,
+    new FileMemoryRepository(memoryStorePath),
 );
 
 try {

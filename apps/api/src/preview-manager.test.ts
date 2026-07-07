@@ -78,6 +78,28 @@ describe("PreviewManager", () => {
         expect(spawnProcess).toHaveBeenCalledTimes(2);
     });
 
+    it("uses a new port for the same run with a different workspace", async () => {
+        const { previewManager, spawnProcess } = createPreviewManager();
+
+        await previewManager.start({
+            runId: "run-1",
+            workspaceRoot: "workspace-1",
+        });
+
+        const secondSession = await previewManager.start({
+            runId: "run-1",
+            workspaceRoot: "workspace-1/versions/v2",
+        });
+
+        expect(secondSession).toEqual({
+            runId: "run-1",
+            workspaceRoot: "workspace-1/versions/v2",
+            port: 5175,
+            url: "http://127.0.0.1:5175",
+        });
+        expect(spawnProcess).toHaveBeenCalledTimes(2);
+    });
+
     it("skips a port that is already in use", async () => {
         const unref = vi.fn();
         const spawnProcess = vi.fn(() => ({

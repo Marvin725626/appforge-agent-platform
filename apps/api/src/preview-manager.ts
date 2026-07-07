@@ -92,12 +92,15 @@ export class PreviewManager {
         private readonly checkPortAvailable: CheckPortAvailable = defaultCheckPortAvailable,
     ) {}
 
-    findByRunId(runId: string): PreviewSession | undefined {
-        return this.sessions.get(runId)?.session;
+    findByRunId(runId: string, workspaceRoot: string): PreviewSession | undefined {
+        return this.sessions.get(this.createSessionKey(runId, workspaceRoot))?.session;
     }
 
     async start(options: StartPreviewOptions): Promise<PreviewSession> {
-        const existingSession = this.findByRunId(options.runId);
+        const existingSession = this.findByRunId(
+            options.runId,
+            options.workspaceRoot,
+        );
 
         if (existingSession) {
             return existingSession;
@@ -120,12 +123,16 @@ export class PreviewManager {
 
         childProcess.unref();
 
-        this.sessions.set(options.runId, {
+        this.sessions.set(this.createSessionKey(options.runId, options.workspaceRoot), {
             process: childProcess,
             session,
         });
 
         return session;
+    }
+
+    private createSessionKey(runId: string, workspaceRoot: string): string {
+        return `${runId}:${workspaceRoot}`;
     }
 
     private async findNextAvailablePort(): Promise<number> {

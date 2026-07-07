@@ -306,10 +306,6 @@ textarea {
     font-weight: 700;
 }
 
-.history-item strong {
-    line-height: 1.5;
-}
-
 .workspace-card h2,
 .workspace-preview h2 {
     margin: 0 0 12px;
@@ -364,6 +360,17 @@ textarea {
     font-size: 0.98rem;
     font-weight: 700;
     line-height: 1.55;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+}
+
+.run-latest-request {
+    display: -webkit-box;
+    margin: -4px 0 0;
+    overflow: hidden;
+    color: #475467;
+    font-size: 0.9rem;
+    line-height: 1.5;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 3;
 }
@@ -930,6 +937,40 @@ pre {
 .nested-step {
     border-left: 3px solid #2563eb;
     padding-left: 12px;
+}
+
+.iteration-box {
+    margin-top: 1rem;
+    border: 1px solid rgba(148, 163, 184, 0.24);
+    border-radius: 24px;
+    background: rgba(15, 23, 42, 0.82);
+    padding: 1rem;
+    box-shadow: 0 18px 45px rgba(15, 23, 42, 0.18);
+}
+
+.iteration-box textarea {
+    width: 100%;
+    min-height: 88px;
+    resize: vertical;
+    border: 0;
+    outline: none;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.96);
+    color: #0f172a;
+    padding: 1rem;
+    font: inherit;
+}
+
+.iteration-actions {
+    margin-top: 0.85rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.iteration-actions .muted-text {
+    color: #cbd5e1;
 }
 
 @media (max-width: 1180px) {

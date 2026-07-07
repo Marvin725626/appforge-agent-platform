@@ -18,12 +18,16 @@ import { containsLikelyMojibake } from "@appforge/harness";
 import {
     formatMemoryContext,
     MemoryRepository,
+    type MemoryRepositoryLike,
 } from "./memory-repository.js";
+import { saveRunVersionSnapshot } from "./run-version-snapshot.js";
 
 const RepairRequestSchema = z.object({
     feedback: z.string().trim().min(1).max(2000),
 });
-
+const IterateRunInputSchema = z.object({
+    prompt: z.string().trim().min(1).max(2000),
+});
 export type ExecuteRun = (input:{
     goal:string;
     workspaceRoot:string;
@@ -33,7 +37,9 @@ export type ExecuteRun = (input:{
 const ExecuteRunInputSchema = z.object({
     maxRepairAttempts: z.number().int().min(0).max(3).optional(),
 });
-
+const PreviewRunInputSchema = z.object({
+    versionNumber: z.number().int().min(1).optional(),
+});
 function summarizeRunMemory(result: RunReactAppAgentResult): string {
     const passedChecks = result.eval.checks.filter((check) => check.passed).length;
 
@@ -52,7 +58,7 @@ export  function buildApp(
     ),
     executeRun?:ExecuteRun,
     previewManager=new PreviewManager(),
-    memoryRepository = new MemoryRepository(),
+    memoryRepository: MemoryRepositoryLike = new MemoryRepository(),
 ) {
     const app = Fastify();
 
@@ -69,7 +75,7 @@ export  function buildApp(
     });
     app.get("/memory", async () => {
         return {
-            memories: memoryRepository.list(),
+            memories: await memoryRepository.list(),
         };
     });
     app.get("/runs", async () => {
@@ -131,8 +137,9 @@ export  function buildApp(
             await runRepository.save(run);
 
             try {
+                const recentMemoryEntries = await memoryRepository.list();
                 const memoryContext = formatMemoryContext(
-                    memoryRepository.list().slice(-5),
+                    recentMemoryEntries.slice(-5),
                 ).slice(0, 2000);
 
                 const executeRunInput: Parameters<ExecuteRun>[0] = {
@@ -156,7 +163,7 @@ export  function buildApp(
                     : "waiting_for_human";
                 await runRepository.save(run);
                 await runRepository.saveResult(run.id,result);
-                memoryRepository.save({
+                await memoryRepository.save({
                     id: randomUUID(),
                     runId: run.id,
                     goal: run.goal,
@@ -164,10 +171,30 @@ export  function buildApp(
                     summary: summarizeRunMemory(result),
                     createdAt: new Date().toISOString(),
                 });
+                const existingVersion = await runRepository.listVersions(run.id);
+
+                if(existingVersion.length === 0){
+                    await runRepository.saveVersion({
+                        id: randomUUID(),
+                        runId: run.id,
+                        versionNumber: 1,
+                        goal: run.goal,
+                        summary: result.agent.finished
+                            ? "Initial generated version"
+                            : "Initial attempt did not finish",
+                        createdAt: new Date().toISOString(),
+                    });
+
+                    await saveRunVersionSnapshot({
+                        workspaceRoot: workspaceManager.resolve(run.id),
+                        versionNumber: 1,
+                    });
+                }
 
                 return reply.send({
                     run,
                     result,
+                    versions: await runRepository.listVersions(run.id),
                 });
             } catch (error) {
                 run.status = "failed";
@@ -255,7 +282,7 @@ export  function buildApp(
                     : "waiting_for_human";
                 await runRepository.save(run);
                 await runRepository.saveResult(run.id, result);
-                memoryRepository.save({
+                await memoryRepository.save({
                     id: randomUUID(),
                     runId: run.id,
                     goal: run.goal,
@@ -263,9 +290,29 @@ export  function buildApp(
                     summary: summarizeRunMemory(result),
                     createdAt: new Date().toISOString(),
                 });
+
+                const existingVersions =
+                    await runRepository.listVersions(run.id);
+                const nextVersionNumber = existingVersions.length + 1;
+
+                await runRepository.saveVersion({
+                    id: randomUUID(),
+                    runId: run.id,
+                    versionNumber: nextVersionNumber,
+                    goal: body.data.feedback,
+                    summary: result.review.accepted
+                        ? `Repair version ${nextVersionNumber}`
+                        : `Repair attempt ${nextVersionNumber} needs review`,
+                    createdAt: new Date().toISOString(),
+                });
+                await saveRunVersionSnapshot({
+                    workspaceRoot: workspaceManager.resolve(run.id),
+                    versionNumber: nextVersionNumber,
+                });
                 return reply.send({
                     run,
                     result,
+                    versions: await runRepository.listVersions(run.id),
                 });
             } catch (error) {
                 run.status = "failed";
@@ -281,7 +328,110 @@ export  function buildApp(
             }
         },
     );
+    app.post<{ Params:{ id:string } }>(
+        "/runs/:id/iterate",
+        async (request,reply)=>{
+            const body = IterateRunInputSchema.safeParse(request.body);
+            if(!body.success){
+                return reply.status(400).send({
+                    error: "Invalid iterate run input",
+                });
+            }
+            const run = await runRepository.findById(request.params.id);
 
+            if (!run) {
+                return reply.status(404).send({
+                    error: "Run not found",
+                });
+            }
+
+            if(!executeRun) {
+                return reply.status(501).send({
+                    error: "Run execution is not configured",
+                });
+            }
+            try{
+                const existingVersionsBeforeIteration =
+                    await runRepository.listVersions(run.id);
+                const existingResult =
+                    await runRepository.findResultByRunId(run.id);
+
+                if (
+                    existingVersionsBeforeIteration.length === 0 &&
+                    existingResult
+                ) {
+                    await runRepository.saveVersion({
+                        id: randomUUID(),
+                        runId: run.id,
+                        versionNumber: 1,
+                        goal: run.goal,
+                        summary: "Initial generated version",
+                        createdAt: new Date().toISOString(),
+                    });
+
+                    await saveRunVersionSnapshot({
+                        workspaceRoot: workspaceManager.resolve(run.id),
+                        versionNumber: 1,
+                    });
+                }
+
+                run.status = "running";
+                await runRepository.save(run);
+
+                const result = await executeRun({
+                    goal: `${run.goal}\n\nIteration request:\n${body.data.prompt}`,
+                    workspaceRoot: workspaceManager.resolve(run.id),
+                });
+                run.status = result.review.accepted
+                ?"succeeded":"waiting_for_human";
+                await runRepository.save(run);
+                await runRepository.saveResult(run.id,result);
+
+                await memoryRepository.save({
+                    id: randomUUID(),
+                    runId: run.id,
+                    goal: run.goal,
+                    outcome: run.status,
+                    summary: summarizeRunMemory(result),
+                    createdAt: new Date().toISOString(),
+                });
+
+                const existingVersions = await runRepository.listVersions(run.id);
+                const nextVersionNumber = existingVersions.length+1;
+
+                await runRepository.saveVersion({
+                    id: randomUUID(),
+                    runId: run.id,
+                    versionNumber: nextVersionNumber,
+                    goal: body.data.prompt,
+                    summary: result.review.accepted
+                        ? `Iteration version ${nextVersionNumber}`
+                        : `Iteration attempt ${nextVersionNumber} needs review`,
+                    createdAt: new Date().toISOString(),
+                });
+                await saveRunVersionSnapshot({
+                    workspaceRoot: workspaceManager.resolve(run.id),
+                    versionNumber: nextVersionNumber,
+                });
+                return reply.send({
+                    run,
+                    result,
+                    versions: await runRepository.listVersions(run.id),
+                });
+            }
+            catch (error){run.status = "failed";
+                await runRepository.save(run);
+
+                return reply.status(500).send({
+                    error: "Run iteration failed",
+                    message:
+                        error instanceof Error
+                            ? error.message
+                            : "Unknown iteration error",
+                });
+            }
+        },
+    );
     app.get<{Params:{ id:string }}>(
         "/runs/:id/coordination",
         async (request,reply)=>{
@@ -334,6 +484,7 @@ export  function buildApp(
             return reply.send({
                 run,
                 result: await runRepository.findResultByRunId(run.id),
+                versions: await runRepository.listVersions(run.id),
             });
         },);
     app.get<{
@@ -391,6 +542,46 @@ export  function buildApp(
             throw error;
         }
     });
+    app.get<{
+        Params:{
+            id:string;
+            versionNumber:string;
+        };
+        Querystring:{
+          path:string;
+        };
+    }>(
+        "/runs/:id/versions/:versionNumber/files",
+        async(request,reply)=>{
+            const run = await runRepository.findById(request.params.id);
+
+            if(!run){
+                return reply.status(404).send({
+                    error:"Run not found",
+                });
+            }
+            const versionNumber = Number(request.params.versionNumber);
+
+            if (!Number.isInteger(versionNumber)||versionNumber<1){
+                return reply.status(400).send({
+                    error: "Invalid version number",
+                });
+            }
+            const snapshotRoot = path.join(
+              workspaceManager.resolve(run.id),
+                "versions",
+                `v${versionNumber}`,
+            );
+            const content = await  readWorkspaceFile(
+                snapshotRoot,
+                request.query.path,
+            );
+            return reply.send({
+                path: request.query.path,
+                content,
+            });
+        },
+    );
     app.post<{Params:{ id: string}}>(
         "/runs/:id/preview",
         async (request,reply)=>{
@@ -401,9 +592,22 @@ export  function buildApp(
                     error: "Run not found",
                 });
             }
+            const input = PreviewRunInputSchema.safeParse(request.body??{});
+            if (!input.success) {
+                return reply.status(400).send({
+                    error: "Invalid preview input",
+                });
+            }
             const preview = await previewManager.start({
                runId:run.id,
-               workspaceRoot:workspaceManager.resolve(run.id),
+                workspaceRoot:
+                    input.data.versionNumber === undefined
+                        ? workspaceManager.resolve(run.id)
+                        : path.join(
+                            workspaceManager.resolve(run.id),
+                            "versions",
+                            `v${input.data.versionNumber}`,
+                        ),
             });
             return reply.send({
                 preview,

@@ -6,8 +6,11 @@ export type MemoryEntry = {
     summary: string;
     createdAt: string;
 };
-
-export class MemoryRepository {
+export interface MemoryRepositoryLike{
+    list():MemoryEntry[] | Promise<MemoryEntry[]>;
+    save(entry:MemoryEntry):void | Promise<void>;
+}
+export class MemoryRepository implements MemoryRepositoryLike {
     private readonly entries: MemoryEntry[] = [];
 
     list(): MemoryEntry[] {

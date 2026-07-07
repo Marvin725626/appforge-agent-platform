@@ -23,6 +23,7 @@ platform that proves the full engineering loop:
 
 ```text
 goal -> plan -> generate -> build -> evaluate -> repair -> preview -> inspect
+     -> iterate -> version snapshot
 ```
 
 The main product path calls a real OpenAI-compatible LLM. Fake providers are used
@@ -55,6 +56,9 @@ sequenceDiagram
     Web->>API: POST /runs/:id/preview
     API->>Preview: Start managed Vite process
     Preview-->>Web: Live generated app
+    User->>Web: Submit follow-up change
+    Web->>API: POST /runs/:id/iterate
+    API->>WS: Save version snapshot and rerun workflow
 ```
 
 ## Highlights
@@ -69,16 +73,18 @@ sequenceDiagram
 | Repair | Configurable `maxRepairAttempts` with structured failure context |
 | Human-in-the-loop | Approve or request repair with feedback |
 | Observability | Plan, trace events, attempts, generated files, command output, preview |
-| Persistence | Local JSON repository for runs/results and structured memory records |
-| Workbench | Landing page, run workspace, version attempts, preview, inspector tabs |
+| Versioning | Saved v1/v2/v3 snapshots for generated apps and version-specific preview |
+| Iteration | Continue editing an existing run with a follow-up prompt |
+| Persistence | Local JSON repositories for runs/results/versions and structured memory records |
+| Workbench | Landing page, run workspace, version history, preview, inspector tabs |
 
 ## Workbench Preview
 
 The web workbench has two surfaces:
 
 - **Home:** create a run from a product goal and open recent runs.
-- **Run Workspace:** inspect version attempts, run status, live preview, plan,
-  trace, and generated files.
+- **Run Workspace:** inspect version history, run status, live preview, plan,
+  trace, generated files, and follow-up iteration prompts.
 
 ![AppForge home](docs/assets/appforge-home.png)
 
@@ -91,6 +97,7 @@ flowchart TD
     User["User"] --> Web["apps/web React workbench"]
     Web --> API["apps/api Fastify API"]
     API --> Repo["JSON run repository"]
+    API --> Versions["Version snapshots"]
     API --> Coordinator["Coordinator"]
     API --> Memory["Memory Repository"]
     API --> Runner["runReactAppAgent"]
@@ -179,6 +186,9 @@ npm run smoke:react-app
 | `POST` | `/runs/:id/preview` | Start generated app preview |
 | `GET` | `/runs/:id/files` | List generated files |
 | `GET` | `/runs/:id/files/content` | Read generated file content |
+| `GET` | `/runs/:id/versions/:versionNumber/files` | List files from a version snapshot |
+| `GET` | `/runs/:id/versions/:versionNumber/files/content` | Read a file from a version snapshot |
+| `POST` | `/runs/:id/iterate` | Continue editing a run and create a new version |
 | `POST` | `/runs/:id/approve` | Human approval |
 | `POST` | `/runs/:id/request-repair` | Human repair feedback |
 
@@ -198,7 +208,8 @@ The main portfolio/demo loop is implemented:
 
 ```text
 goal -> create run -> coordinate -> real LLM agent -> write files -> build
-     -> evaluate -> review -> repair if needed -> preview -> inspect trace/files
+     -> evaluate -> review -> repair if needed -> save version -> preview
+     -> inspect trace/files -> iterate with follow-up prompts
 ```
 
 AppForge is local-first and portfolio-ready. It is not yet a production
@@ -211,16 +222,16 @@ multi-tenant SaaS.
 - Implemented a safe workspace layer with bounded file operations, allowlisted
   command execution, and repair-loop limits.
 - Designed a traceable Agent workflow with Coordinator planning, reusable Skills,
-  structured Memory, Harness/Eval checks, human approval, JSON persistence, and
-  live preview.
+  structured Memory, Harness/Eval checks, human approval, JSON persistence,
+  version snapshots, follow-up iteration, and live preview.
 - Added deterministic tests with fake model providers while keeping the product
   path on real LLM execution.
 
 ## Roadmap
 
-- True versioning and iteration: v1/v2/v3 snapshots, diff, rollback, and
-  continue-edit flow.
-- Relevance-based Memory selection and optional LLM memory consolidation.
+- Version diff and rollback on top of the existing v1/v2/v3 snapshot flow.
+- Relevance-based Memory selection, compression, and optional LLM memory
+  consolidation.
 - More realistic multi-agent execution with separate planner, coder, reviewer,
   and test agents.
 - Stronger sandboxing for command execution.

@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "./app.js";
 import { MemoryRepository } from "./memory-repository.js";
 import { PreviewManager } from "./preview-manager.js";
+import { RunRepository } from "./run-repository.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -210,6 +211,7 @@ describe("GET /runs/:id", () => {
     expect(getResponse.statusCode).toBe(200);
     expect(getResponse.json()).toEqual({
       run: createdRun,
+      versions: [],
     });
   });
 
@@ -370,6 +372,76 @@ describe("GET /runs/:id/files", () => {
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({
       error: "Invalid file path",
+    });
+  });
+});
+describe("GET /runs/:id/versions/:versionNumber/files", () => {
+  it("returns a file from a saved version snapshot", async () => {
+    const { app, workspaceManager } = await buildTestApp();
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/runs",
+      payload: {
+        goal: "Create a task application",
+      },
+    });
+
+    const createdRun = RunSchema.parse(createResponse.json());
+
+    await writeWorkspaceFile(
+        workspaceManager.resolve(createdRun.id),
+        "versions/v1/src/App.tsx",
+        "export function VersionOne() {}",
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/runs/${createdRun.id}/versions/1/files?path=src/App.tsx`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      path: "src/App.tsx",
+      content: "export function VersionOne() {}",
+    });
+  });
+
+  it("rejects an invalid version number", async () => {
+    const { app } = await buildTestApp();
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/runs",
+      payload: {
+        goal: "Create a task application",
+      },
+    });
+
+    const createdRun = RunSchema.parse(createResponse.json());
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/runs/${createdRun.id}/versions/0/files?path=src/App.tsx`,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: "Invalid version number",
+    });
+  });
+
+  it("returns 404 when the run does not exist", async () => {
+    const { app } = await buildTestApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/runs/missing-run/versions/1/files?path=src/App.tsx",
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({
+      error: "Run not found",
     });
   });
 });
@@ -620,6 +692,13 @@ describe("POST /runs/:id/execute", () => {
     expect(executeResponse.json()).toEqual({
       run: succeededRun,
       result: expectedResult,
+      versions: [
+        expect.objectContaining({
+          runId: createdRun.id,
+          versionNumber: 1,
+          summary: "Initial generated version",
+        }),
+      ],
     });
 
     const getResponse = await app.inject({
@@ -630,6 +709,13 @@ describe("POST /runs/:id/execute", () => {
     expect(getResponse.json()).toEqual({
       run: succeededRun,
       result: expectedResult,
+      versions: [
+        expect.objectContaining({
+          runId: createdRun.id,
+          versionNumber: 1,
+          summary: "Initial generated version",
+        }),
+      ],
     });
   });
 
@@ -755,6 +841,13 @@ describe("POST /runs/:id/execute", () => {
         ...rejectedResult,
         workspaceRoot: workspaceManager.resolve(createdRun.id),
       },
+      versions: [
+        expect.objectContaining({
+          runId: createdRun.id,
+          versionNumber: 1,
+          summary: "Initial generated version",
+        }),
+      ],
     });
   });
 
@@ -804,6 +897,7 @@ describe("POST /runs/:id/execute", () => {
       ...createdRun,
       status: "failed",
       },
+      versions: [],
     });
   });
   it("passes maxRepairAttempts from the request body to the executor", async () => {
@@ -1215,6 +1309,18 @@ describe("POST /runs/:id/request-repair", () => {
     });
 
     expect(repairResponse.statusCode).toBe(200);
+    expect(repairResponse.json().versions).toEqual([
+      expect.objectContaining({
+        runId: createdRun.id,
+        versionNumber: 1,
+        summary: "Initial generated version",
+      }),
+      expect.objectContaining({
+        runId: createdRun.id,
+        versionNumber: 2,
+        summary: "Repair version 2",
+      }),
+    ]);
     expect(repairResponse.json().run).toEqual({
       ...createdRun,
       status: "succeeded",
@@ -1224,6 +1330,249 @@ describe("POST /runs/:id/request-repair", () => {
       goal:
           "我想要一个介绍温州的页面\n\nHuman feedback:\n请改成中文，并增加温州美食、景点和交通信息。",
       workspaceRoot: workspaceManager.resolve(createdRun.id),
+    });
+  });
+});
+describe("POST /runs/:id/iterate", () => {
+  it("iterates an existing run and stores a new version", async () => {
+    const temporaryRoot = await mkdtemp(
+        path.join(os.tmpdir(), "appforge-api-"),
+    );
+
+    temporaryDirectories.push(temporaryRoot);
+
+    const workspaceManager = new WorkspaceManager(temporaryRoot);
+
+    const executeRun = vi.fn().mockResolvedValue({
+      workspaceRoot: "",
+      coordination: TEST_COORDINATION,
+      agent: {
+        finished: true,
+        steps: [],
+      },
+      install: {
+        exitCode: 0,
+        stdout: "install ok",
+        stderr: "",
+      },
+      build: {
+        exitCode: 0,
+        stdout: "build ok",
+        stderr: "",
+      },
+      eval: {
+        passed: true,
+        checks: [
+          {
+            name: "matches goal",
+            passed: true,
+          },
+        ],
+      },
+      review: {
+        accepted: true,
+        reason: "Iteration request was applied.",
+        checks: {
+          agentFinished: true,
+          installPassed: true,
+          buildPassed: true,
+          evalPassed: true,
+        },
+      },
+      attempts: [],
+    });
+
+    const app = buildApp(undefined, workspaceManager, executeRun);
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/runs",
+      payload: {
+        goal: "Create a task application",
+      },
+    });
+
+    const createdRun = RunSchema.parse(createResponse.json());
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/runs/${createdRun.id}/iterate`,
+      payload: {
+        prompt: "Add dark mode",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().run).toEqual({
+      ...createdRun,
+      status: "succeeded",
+    });
+    expect(response.json().versions).toEqual([
+      expect.objectContaining({
+        runId: createdRun.id,
+        versionNumber: 1,
+        summary: "Iteration version 1",
+      }),
+    ]);
+    expect(executeRun).toHaveBeenCalledWith({
+      goal: "Create a task application\n\nIteration request:\nAdd dark mode",
+      workspaceRoot: workspaceManager.resolve(createdRun.id),
+    });
+  });
+
+  it("preserves an existing generated result as v1 before iterating old runs", async () => {
+    const temporaryRoot = await mkdtemp(
+        path.join(os.tmpdir(), "appforge-api-"),
+    );
+
+    temporaryDirectories.push(temporaryRoot);
+
+    const runRepository = new RunRepository();
+    const workspaceManager = new WorkspaceManager(temporaryRoot);
+
+    const executeRun = vi.fn().mockResolvedValue({
+      workspaceRoot: "",
+      coordination: TEST_COORDINATION,
+      agent: {
+        finished: true,
+        steps: [],
+      },
+      install: {
+        exitCode: 0,
+        stdout: "install ok",
+        stderr: "",
+      },
+      build: {
+        exitCode: 0,
+        stdout: "build ok",
+        stderr: "",
+      },
+      eval: {
+        passed: true,
+        checks: [
+          {
+            name: "matches goal",
+            passed: true,
+          },
+        ],
+      },
+      review: {
+        accepted: true,
+        reason: "Iteration request was applied.",
+        checks: {
+          agentFinished: true,
+          installPassed: true,
+          buildPassed: true,
+          evalPassed: true,
+        },
+      },
+      attempts: [],
+    });
+
+    const app = buildApp(runRepository, workspaceManager, executeRun);
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/runs",
+      payload: {
+        goal: "Create a task application",
+      },
+    });
+
+    const createdRun = RunSchema.parse(createResponse.json());
+
+    await writeWorkspaceFile(
+        workspaceManager.resolve(createdRun.id),
+        "src/App.tsx",
+        "export function OldApp() {}",
+    );
+
+    await runRepository.saveResult(createdRun.id, {
+      workspaceRoot: workspaceManager.resolve(createdRun.id),
+      coordination: TEST_COORDINATION,
+      agent: {
+        finished: true,
+        steps: [],
+      },
+      install: {
+        exitCode: 0,
+        stdout: "install ok",
+        stderr: "",
+      },
+      build: {
+        exitCode: 0,
+        stdout: "build ok",
+        stderr: "",
+      },
+      eval: {
+        passed: true,
+        checks: [
+          {
+            name: "matches goal",
+            passed: true,
+          },
+        ],
+      },
+      review: {
+        accepted: true,
+        reason: "Initial result existed before version history.",
+        checks: {
+          agentFinished: true,
+          installPassed: true,
+          buildPassed: true,
+          evalPassed: true,
+        },
+      },
+      attempts: [],
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/runs/${createdRun.id}/iterate`,
+      payload: {
+        prompt: "Add dark mode",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().versions).toEqual([
+      expect.objectContaining({
+        runId: createdRun.id,
+        versionNumber: 1,
+        summary: "Initial generated version",
+      }),
+      expect.objectContaining({
+        runId: createdRun.id,
+        versionNumber: 2,
+        summary: "Iteration version 2",
+      }),
+    ]);
+  });
+
+  it("rejects an empty iteration prompt", async () => {
+    const { app } = await buildTestApp();
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/runs",
+      payload: {
+        goal: "Create a task application",
+      },
+    });
+
+    const createdRun = RunSchema.parse(createResponse.json());
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/runs/${createdRun.id}/iterate`,
+      payload: {
+        prompt: "   ",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: "Invalid iterate run input",
     });
   });
 });
@@ -1261,6 +1610,48 @@ describe("POST /runs/:id/preview", () => {
         url: "http://127.0.0.1:5174",
       },
     });
+  });
+  it("creates a preview session for a version snapshot", async () => {
+    const startPreview = vi.fn(() => ({
+      unref: vi.fn(),
+    }));
+
+    const previewManager = new PreviewManager(
+        startPreview,
+        vi.fn(async () => true),
+    );
+
+    const { app, workspaceManager } = await buildTestApp(previewManager);
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/runs",
+      payload: {
+        goal: "Create a task application",
+      },
+    });
+
+    const createdRun = RunSchema.parse(createResponse.json());
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/runs/${createdRun.id}/preview`,
+      payload: {
+        versionNumber: 1,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(startPreview).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceRoot: path.join(
+              workspaceManager.resolve(createdRun.id),
+              "versions",
+              "v1",
+          ),
+          port: expect.any(Number),
+        }),
+    );
   });
 });
 describe("GET /runs/:id/coordination", () => {

@@ -1,6 +1,6 @@
 # AppForge 当前状态
 
-这份文档用来记录当前项目进度、演示路线和后续增强项。它比产品设计文档更贴近“现在代码已经做到哪里”。
+这份文档用于记录当前项目进度、演示路线和后续增强项。它比产品设计文档更贴近“现在代码已经做到哪里”。
 
 ## 已完成主线
 
@@ -8,29 +8,30 @@
 
 ```text
 输入目标
-  -> 创建 run
+  -> 创建 Run
   -> Coordinator 生成计划和角色分工
   -> 调用真实 OpenAI-compatible LLM
   -> 解析结构化 Agent action
-  -> 在安全 workspace 内写文件
+  -> 在安全 Workspace 内写文件
   -> 安装依赖
   -> 构建生成的 React/Vite 应用
-  -> Harness 评估
+  -> Harness/Eval 评估
   -> Reviewer 审查
   -> 必要时自动修复
-  -> 保存 trace/result/files/memory
+  -> 保存 trace/result/files/memory/version snapshot
   -> 在 Web 工作台预览
+  -> 输入后续修改需求继续迭代
 ```
 
 ## 已实现模块
 
-- `apps/api`：Fastify API、run 编排、JSON 持久化、预览进程管理。
-- `apps/web`：React 工作台，包含首页和 run workspace。
+- `apps/api`：Fastify API、Run 编排、JSON 持久化、版本快照、Memory 持久化、预览进程管理。
+- `apps/web`：React 工作台，包含首页、Run Workspace、版本历史、实时预览、文件查看、Trace 和继续迭代输入框。
 - `packages/agent-core`：OpenAI-compatible provider、Coding Agent、Agent loop、Coordinator、Skill、Memory、Reviewer、React app runner。
 - `packages/workspace`：安全路径处理、文件操作、allowlisted command execution。
-- `packages/protocol`：共享 Zod schema 和协议类型。
+- `packages/protocol`：共享 Zod Schema 和协议类型。
 - `packages/harness`：对生成应用进行确定性检查。
-- `tests/fixtures/vite-react-starter`：每个 run 创建时复制的 React/Vite starter。
+- `tests/fixtures/vite-react-starter`：每个 Run 创建时复制的 React/Vite starter。
 
 ## 演示路线
 
@@ -61,35 +62,38 @@
    创建一个介绍温州的中文页面，包含美食、景点和交通信息。
    ```
 
-6. 创建 run 并执行。
+6. 创建 Run 并执行。
 
-7. 进入 workspace 后展示：
+7. 进入 Workspace 后展示：
 
    - 中间的大面积实时预览；
-   - 左侧的版本尝试；
+   - 左侧的 v1/v2/v3 版本快照；
    - 右侧的 Plan、Trace、Files；
-   - 如果需要人工介入，可以展示 Approve 和 Request Repair。
+   - 需要人工介入时的 Approve / Request Repair；
+   - 成功后继续输入后续修改需求并生成新版本。
 
 ## 哪些是真实的
 
 - 产品主链路调用真实 LLM。
-- 生成代码会写入真实 workspace。
+- 生成代码会写入真实 Workspace。
 - `npm install` 和 `npm run build` 会真实执行。
 - 预览会启动真实 Vite dev process。
+- 版本历史会保存生成应用的文件快照。
+- Memory 会写入本地 JSON 文件并在后续 Run 中注入有界上下文。
 - Fake/Mock 只用于自动化测试。
 
 ## 当前限制
 
-- Version History 目前表示同一个 run 里的 attempts，还不是真正的 v1/v2/v3 应用版本。
-- Memory 现在是结构化和有边界的，但还没有相关性排序、向量检索和压缩。
+- 版本系统已经支持快照和指定版本预览，但还没有 diff 和 rollback。
+- Memory 已经持久化、结构化、有边界，但还没有相关性排序、向量检索和压缩。
 - 多 Agent 目前主要体现在 Coordinator 的角色分工，真正多个 LLM 子 Agent 独立执行还在后续路线。
 - 当前使用 JSON 文件做本地持久化，不是生产数据库。
-- workspace 是应用层安全边界，还没有容器级沙箱。
+- Workspace 是应用层安全边界，还没有容器级沙箱。
 
 ## 下一步增强
 
-1. 真正的版本迭代：在已有 run/app 上继续修改，生成 v1/v2/v3 快照。
-2. Memory 相关性和压缩：只选择和当前目标相关的记忆。
+1. 版本 diff 和 rollback：对比 v1/v2/v3，并允许恢复旧版本。
+2. Memory 相关性和压缩：只选择与当前目标相关的记忆，并总结长历史。
 3. 更真实的多 Agent：planner、coder、reviewer、test agent 分开对话和协作。
 4. 浏览器行为评估：用类似 Playwright 的方式检查生成 UI 是否真的可用。
-5. 分享和导出：保存 run report、截图、产物，方便做简历和面试展示。
+5. 分享和导出：保存 Run Report、截图、产物，方便做简历和面试展示。
