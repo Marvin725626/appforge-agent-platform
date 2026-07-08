@@ -28,9 +28,9 @@ goal
 ## Implemented Modules
 
 - `apps/api`: Fastify API, run orchestration, JSON persistence, version
-  snapshots, three-layer memory MVP, preview manager.
+  snapshots, three-layer memory MVP, preview manager, and run reports.
 - `apps/web`: React workbench with landing page, run workspace, version history,
-  live preview, files, trace, and iteration prompt.
+  live preview, files, trace, run report, and iteration prompt.
 - `packages/agent-core`: OpenAI-compatible provider, Coding Agent, Agent loop,
   Coordinator, Skill, Memory, reviewer, and React app runner.
 - `packages/workspace`: safe path handling, file operations, and allowlisted
@@ -79,6 +79,7 @@ goal
   - Browser Checks under the preview;
   - v1/v2/v3 version snapshots on the left;
   - plan, trace, and generated files on the right;
+  - Run Report with eval/browser/memory evidence;
   - repair feedback when a run needs human review;
   - follow-up prompt iteration after a successful generation.
 
@@ -125,6 +126,7 @@ goal
 - Execute the run and show real LLM-generated code.
 - Show build, deterministic eval, browser eval, review, and trace evidence.
 - Start preview and show Browser Checks under the live app.
+- Open the Report tab and show the interview-ready summary.
 - Submit a follow-up iteration and show a new version snapshot.
 - Open generated files and explain the safe workspace boundary.
 - Explain that fake providers are used only in tests; the product path uses the

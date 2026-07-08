@@ -10,7 +10,7 @@
 [![Fastify](https://img.shields.io/badge/Fastify-API-111827?logo=fastify&logoColor=white)](https://fastify.dev/)
 [![Vitest](https://img.shields.io/badge/Vitest-tested-6e9f18?logo=vitest&logoColor=white)](https://vitest.dev/)
 
-[English](README.md) | [Chinese README](README.zh-CN.md) | [Product Design](docs/product_design.md) | [Current Status](docs/current_status.md)
+[English](README.md) | [Chinese README](README.zh-CN.md) | [Architecture](docs/architecture.md) | [Product Design](docs/product_design.md) | [Current Status](docs/current_status.md)
 
 </div>
 
@@ -29,7 +29,7 @@ goal -> plan -> generate -> build -> evaluate -> repair -> preview -> inspect
 The main product path calls a real OpenAI-compatible LLM. Fake providers are used
 only for deterministic automated tests.
 
-## Demo Flow
+## Portfolio Demo Flow
 
 ```mermaid
 sequenceDiagram
@@ -42,6 +42,7 @@ sequenceDiagram
     participant Eval as Harness/Eval
     participant Browser as Browser Harness
     participant Preview as Vite Preview
+    participant Report as Run Report
 
     User->>Web: Enter product goal
     Web->>API: POST /runs
@@ -56,8 +57,11 @@ sequenceDiagram
     API->>Preview: Start managed Vite process
     API->>Browser: Playwright behavior checks
     API->>Agent: Repair context if needed
+    API->>Report: Aggregate trace, eval, browser checks, files, memory
     Web->>API: POST /runs/:id/preview
     Preview-->>Web: Live generated app
+    Web->>API: GET /runs/:id/report
+    Report-->>Web: Interview-ready run report
     User->>Web: Submit follow-up change
     Web->>API: POST /runs/:id/iterate
     API->>WS: Save version snapshot and rerun workflow
@@ -100,21 +104,33 @@ The web workbench has two surfaces:
 flowchart TD
     User["User"] --> Web["apps/web React workbench"]
     Web --> API["apps/api Fastify API"]
-    API --> Repo["JSON run repository"]
-    API --> Versions["Version snapshots"]
-    API --> Coordinator["Coordinator"]
-    API --> Memory["Memory Repository"]
-    API --> Runner["runReactAppAgent"]
-    Runner --> Skill["React/Vite Skill"]
-    Runner --> AgentLoop["Coding Agent Loop"]
-    AgentLoop --> Provider["OpenAI-compatible Provider"]
-    AgentLoop --> Workspace["Safe Workspace Tools"]
-    Runner --> Harness["Harness / Eval"]
-    Runner --> BrowserHarness["Playwright Browser Harness"]
-    Runner --> Review["Reviewer"]
-    API --> Preview["Vite Preview Manager"]
+
+    subgraph APIBoundary["API orchestration"]
+      API --> Repo["JSON run/result repository"]
+      API --> Versions["Version snapshots"]
+      API --> Memory["Memory repository"]
+      API --> Coordinator["Coordinator"]
+      API --> Runner["runReactAppAgent"]
+      API --> Report["Run report builder"]
+      API --> Preview["Vite preview manager"]
+    end
+
+    subgraph AgentBoundary["Agent execution"]
+      Runner --> Skill["React/Vite skill"]
+      Runner --> AgentLoop["Coding Agent loop"]
+      AgentLoop --> Provider["OpenAI-compatible provider"]
+      AgentLoop --> Workspace["Safe workspace tools"]
+      Runner --> Harness["Deterministic Harness/Eval"]
+      Runner --> BrowserHarness["Playwright Browser Harness"]
+      Runner --> Review["Reviewer"]
+    end
+
+    Workspace --> Generated["Generated React/Vite app"]
+    Preview --> Generated
     Preview --> BrowserHarness
-    Workspace --> Generated["Generated React/Vite App"]
+    Repo --> Report
+    Versions --> Report
+    Memory --> Report
 ```
 
 ## Memory Model
@@ -202,16 +218,18 @@ npm run smoke:react-app
 | Method | Route | Purpose |
 | --- | --- | --- |
 | `GET` | `/health` | API health check |
+| `GET` | `/memory` | Inspect stored execution memory |
 | `POST` | `/runs` | Create a run |
 | `GET` | `/runs` | List runs |
 | `GET` | `/runs/:id` | Load run and result |
+| `GET` | `/runs/:id/report` | Load an interview-ready run report |
+| `GET` | `/runs/:id/coordination` | Load planner/coder/reviewer assignments |
 | `DELETE` | `/runs/:id` | Delete run and workspace |
 | `POST` | `/runs/:id/execute` | Execute the Agent workflow |
 | `POST` | `/runs/:id/preview` | Start generated app preview |
-| `GET` | `/runs/:id/files` | List generated files |
-| `GET` | `/runs/:id/files/content` | Read generated file content |
-| `GET` | `/runs/:id/versions/:versionNumber/files` | List files from a version snapshot |
-| `GET` | `/runs/:id/versions/:versionNumber/files/content` | Read a file from a version snapshot |
+| `GET` | `/runs/:id/files?directory=src` | List generated files |
+| `GET` | `/runs/:id/files?path=src/App.tsx` | Read a generated file |
+| `GET` | `/runs/:id/versions/:versionNumber/files?path=src/App.tsx` | Read a file from a version snapshot |
 | `POST` | `/runs/:id/iterate` | Continue editing a run and create a new version |
 | `POST` | `/runs/:id/approve` | Human approval |
 | `POST` | `/runs/:id/request-repair` | Human repair feedback |
@@ -236,7 +254,7 @@ The main portfolio/demo loop is implemented:
 ```text
 goal -> create run -> coordinate -> real LLM agent -> write files -> build
      -> evaluate -> browser check -> review -> repair if needed -> save version -> preview
-     -> inspect trace/files -> iterate with follow-up prompts
+     -> inspect trace/files/report -> iterate with follow-up prompts
 ```
 
 AppForge is local-first and portfolio-ready. It is not yet a production

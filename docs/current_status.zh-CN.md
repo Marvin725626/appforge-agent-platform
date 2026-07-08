@@ -4,15 +4,13 @@
 
 ## 已完成主线
 
-核心产品链路已经跑通：
-
 ```text
-输入目标
-  -> 创建 Run
+目标
+  -> 创建 run
   -> Coordinator 生成计划和角色分工
   -> 调用真实 OpenAI-compatible LLM
   -> 解析结构化 Agent action
-  -> 在安全 Workspace 内写文件
+  -> 在安全 workspace 内写文件
   -> 安装依赖
   -> 构建 React/Vite 应用
   -> 静态 Harness/Eval
@@ -20,14 +18,15 @@
   -> Reviewer 审查
   -> 必要时自动修复
   -> 保存 trace/result/files/memory/version snapshot
-  -> 在 Web 工作台预览
-  -> 输入后续修改需求继续迭代
+  -> 实时预览
+  -> Run Report
+  -> 后续需求继续迭代
 ```
 
 ## 已实现模块
 
-- `apps/api`：Fastify API、Run 编排、JSON 持久化、版本快照、三层 Memory、Preview Manager、Browser Harness 注入。
-- `apps/web`：React 工作台，包含首页、Run Workspace、版本历史、实时预览、Browser Checks、文件查看、Trace 和继续迭代输入框。
+- `apps/api`：Fastify API、Run 编排、JSON 持久化、版本快照、三层 Memory、Preview Manager、Browser Harness 注入、Run Report。
+- `apps/web`：React 工作台，包含首页、Run Workspace、版本历史、实时预览、Browser Checks、文件查看、Trace、Report 和继续迭代输入框。
 - `packages/agent-core`：OpenAI-compatible provider、Coding Agent、Agent loop、Coordinator、Skill。
 - `packages/workspace`：安全路径处理、文件操作、allowlisted command execution。
 - `packages/protocol`：共享 Zod Schema 和协议类型。
@@ -42,6 +41,7 @@
 - Browser Eval 会启动真实 Vite preview，并用 Playwright 检查页面行为。
 - Browser Eval 失败会进入自动修复闭环，并把失败原因写进 repair context。
 - Memory 会保存结构化执行经验、压缩长期 summary，并按当前 goal 检索相关经验。
+- Run Report 会汇总执行证据，方便面试和作品展示。
 - Fake/Mock 只用于自动化测试。
 
 ## 演示路线
@@ -67,7 +67,7 @@
 
 4. 打开 `http://127.0.0.1:5173`。
 
-5. 输入一个目标，例如：
+5. 输入目标，例如：
 
    ```text
    创建一个介绍温州的中文页面，包含美食、景点和交通信息。
@@ -78,8 +78,9 @@
    - 中间的大面积实时预览；
    - Preview 下方的 Browser Checks；
    - 左侧 v1/v2/v3 版本快照；
-   - 右侧 Plan、Trace、Files；
+   - 右侧 Plan、Trace、Report、Files；
    - Trace 中的 install、build、eval、browser eval、review；
+   - Report 中的面试可讲总结；
    - 成功后继续输入修改需求并生成新版本。
 
 ## 当前限制
