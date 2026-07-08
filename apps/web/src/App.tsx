@@ -49,6 +49,17 @@ type ReactAppEvalResult = {
     checks: EvalCheck[];
 };
 
+type BrowserCheck = {
+    name: string;
+    passed: boolean;
+    message?: string;
+};
+
+type BrowserEvalResult = {
+    passed: boolean;
+    checks: BrowserCheck[];
+};
+
 type AgentAttempt = {
     kind: "initial" | "repair";
     agent: AgentResult;
@@ -75,6 +86,7 @@ type ReactAppAgentResult = {
     attempts?: AgentAttempt[];
     trace?: TraceEvent[];
     coordination?: CoordinationResponse;
+    browserEval?: BrowserEvalResult;
 };
 
 type ExecuteResponse = {
@@ -102,6 +114,7 @@ type PreviewSession = {
 
 type PreviewResponse = {
     preview: PreviewSession;
+    browserEval?: BrowserEvalResult;
 };
 
 type RunDetailResponse = {
@@ -320,6 +333,9 @@ export function App() {
     const [openRunMenuId, setOpenRunMenuId] = useState<string | null>(null);
     const [isLoadingFile, setIsLoadingFile] = useState(false);
     const [preview, setPreview] = useState<PreviewSession | null>(null);
+    const [browserEval, setBrowserEval] = useState<BrowserEvalResult | null>(
+        null,
+    );
     const [isStartingPreview, setIsStartingPreview] = useState(false);
     const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
     const [coordination, setCoordination] =
@@ -349,6 +365,7 @@ export function App() {
         setGeneratedFiles(null);
         setGeneratedFile(null);
         setPreview(null);
+        setBrowserEval(null);
         setCoordination(null);
         setActivePanel("overview");
         setVersions([]);
@@ -429,6 +446,7 @@ export function App() {
             const executeResponse = (await response.json()) as ExecuteResponse;
             setRun(executeResponse.run);
             setAgentResult(executeResponse.result);
+            setBrowserEval(executeResponse.result.browserEval ?? null);
             setVersions(executeResponse.versions);
             setSelectedVersionNumber(null);
             await loadGeneratedFiles(executeResponse.run.id, "src");
@@ -465,6 +483,7 @@ export function App() {
     async function selectRun(runId:string){
         setError(null);
         setPreview(null);
+        setBrowserEval(null);
 
         try {
             localStorage.setItem(CURRENT_RUN_ID_STORAGE_KEY, runId);
@@ -483,6 +502,7 @@ export function App() {
 
             setRun(runDetail.run);
             setAgentResult(runDetail.result ?? null);
+            setBrowserEval(runDetail.result?.browserEval ?? null);
             setVersions(runDetail.versions);
             setGeneratedFiles(null);
             setSelectedVersionNumber(null);
@@ -537,6 +557,7 @@ export function App() {
                 setGeneratedFiles(null);
                 setGeneratedFile(null);
                 setPreview(null);
+                setBrowserEval(null);
                 setCoordination(null);
                 setActivePanel("overview");
                 setVersions([]);
@@ -568,6 +589,7 @@ export function App() {
         const runDetail = (await response.json()) as RunDetailResponse;
         setRun(runDetail.run);
         setAgentResult(runDetail.result ?? null);
+        setBrowserEval(runDetail.result?.browserEval ?? null);
         setVersions(runDetail.versions);
     }
 
@@ -602,6 +624,7 @@ export function App() {
 
             const previewResponse = (await response.json()) as PreviewResponse;
             setPreview(previewResponse.preview);
+            setBrowserEval(previewResponse.browserEval ?? null);
             localStorage.setItem(
                 PREVIEW_STORAGE_KEY,
                 JSON.stringify(previewResponse.preview),
@@ -687,6 +710,7 @@ export function App() {
             const repairResponse = (await response.json()) as ExecuteResponse;
             setRun(repairResponse.run);
             setAgentResult(repairResponse.result);
+            setBrowserEval(repairResponse.result.browserEval ?? null);
             setVersions(repairResponse.versions);
             setSelectedVersionNumber(null);
             await loadGeneratedFiles(repairResponse.run.id, "src");
@@ -729,6 +753,7 @@ export function App() {
             const iterateResponse = (await response.json()) as ExecuteResponse;
             setRun(iterateResponse.run);
             setAgentResult(iterateResponse.result);
+            setBrowserEval(iterateResponse.result.browserEval ?? null);
             setVersions(iterateResponse.versions);
             setSelectedVersionNumber(null);
             setIterationPrompt("");
@@ -779,6 +804,7 @@ export function App() {
             }
             const previewBody = (await previewResponse.json()) as PreviewResponse;
             setPreview(previewBody.preview);
+            setBrowserEval(previewBody.browserEval ?? null);
             setActivePanel("preview");
         } catch(caughtError){
             setError(
@@ -857,6 +883,7 @@ export function App() {
         setGeneratedFiles(null);
         setGeneratedFile(null);
         setPreview(null);
+        setBrowserEval(null);
         setCoordination(null);
         setActivePanel("overview");
         setVersions([]);
@@ -905,6 +932,7 @@ export function App() {
 
                 if (runDetail.result) {
                     setAgentResult(runDetail.result);
+                    setBrowserEval(runDetail.result.browserEval ?? null);
                     await loadGeneratedFiles(runDetail.run.id, "src");
                     await loadGeneratedFile(runDetail.run.id, "src/App.tsx");
                 }
@@ -1275,6 +1303,49 @@ export function App() {
                             </p>
                         </div>
                     )}
+                    {browserEval ? (
+                        <section className="browser-checks">
+                            <div className="browser-checks-heading">
+                                <div>
+                                    <h3>Browser Checks</h3>
+                                    <p>
+                                        Real browser validation after starting the
+                                        preview.
+                                    </p>
+                                </div>
+                                <span
+                                    className={
+                                        browserEval.passed
+                                            ? "browser-check-summary passed"
+                                            : "browser-check-summary failed"
+                                    }
+                                >
+                                    {
+                                        browserEval.checks.filter(
+                                            (check) => check.passed,
+                                        ).length
+                                    }
+                                    /{browserEval.checks.length} passed
+                                </span>
+                            </div>
+                            <div className="browser-check-grid">
+                                {browserEval.checks.map((check) => (
+                                    <article
+                                        className={
+                                            check.passed
+                                                ? "browser-check-card passed"
+                                                : "browser-check-card failed"
+                                        }
+                                        key={check.name}
+                                    >
+                                        <span>{check.passed ? "PASS" : "FAIL"}</span>
+                                        <strong>{check.name}</strong>
+                                        {check.message ? <p>{check.message}</p> : null}
+                                    </article>
+                                ))}
+                            </div>
+                        </section>
+                    ) : null}
                     <div className="iteration-box">
                         <textarea
                             value={iterationPrompt}
@@ -1361,6 +1432,17 @@ export function App() {
                                                 ).length
                                             }
                                             /{agentResult.eval.checks.length} checks passed
+                                        </p>
+                                    ) : null}
+                                    {browserEval ? (
+                                        <p>
+                                            <strong>Browser:</strong>{" "}
+                                            {
+                                                browserEval.checks.filter(
+                                                    (check) => check.passed,
+                                                ).length
+                                            }
+                                            /{browserEval.checks.length} checks passed
                                         </p>
                                     ) : null}
                                 </>

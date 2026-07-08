@@ -23,6 +23,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
     evaluateReactApp,
+    type BrowserEvalResult,
     type ReactAppEvalResult,
 } from "@appforge/harness";
 import { formatRepairContext } from "./format-repair-context.js";
@@ -42,6 +43,7 @@ export type RunReactAppAgentOptions = {
     model?: ModelProvider;
     maxRepairAttempts?: number;
     memoryContext?:string;
+    evaluateBrowser?: EvaluateBrowserForAttempt;
 };
 
 export type RunReactAppAgentCommandResult = {
@@ -50,12 +52,20 @@ export type RunReactAppAgentCommandResult = {
     stderr: string;
 };
 
+export type EvaluateBrowserForAttempt = (input: {
+    goal: string;
+    workspaceRoot: string;
+    kind: "initial" | "repair";
+    attemptNumber: number;
+}) => Promise<BrowserEvalResult>;
+
 export type RunReactAppAgentAttempt = {
     kind: "initial" | "repair";
     agent: RunCodingAgentLoopResult;
     install: RunReactAppAgentCommandResult;
     build: RunReactAppAgentCommandResult;
     eval: ReactAppEvalResult;
+    browserEval?: BrowserEvalResult;
     review: ReactAppAgentReview;
 };
 
@@ -66,6 +76,7 @@ export type RunReactAppAgentResult = {
     install: RunReactAppAgentCommandResult;
     build: RunReactAppAgentCommandResult;
     eval:ReactAppEvalResult;
+    browserEval?: BrowserEvalResult;
     review: ReactAppAgentReview;
     attempts: RunReactAppAgentAttempt[];
     trace?: TraceEvent[];
@@ -129,6 +140,16 @@ function buildTraceEvents(
                 attempt.eval.passed ? "succeeded" : "failed",
                 `${attempt.eval.checks.filter((check) => check.passed).length}/${attempt.eval.checks.length} checks passed`,
             ),
+            ...(attempt.browserEval
+                ? [
+                      createTraceEvent(
+                          `${prefix}-browser-eval`,
+                          "Evaluate app in browser",
+                          attempt.browserEval.passed ? "succeeded" : "failed",
+                          `${attempt.browserEval.checks.filter((check) => check.passed).length}/${attempt.browserEval.checks.length} browser checks passed`,
+                      ),
+                  ]
+                : []),
             createTraceEvent(
                 `${prefix}-review`,
                 "Review result",
@@ -182,6 +203,7 @@ export async function runReactAppAgent(
     async function runAttempt(
         kind: RunReactAppAgentAttempt["kind"],
         context: string,
+        attemptNumber: number,
     ): Promise<RunReactAppAgentAttempt> {
         const agent = await runCodingAgentLoop({
             goal: options.goal,
@@ -211,11 +233,24 @@ export async function runReactAppAgent(
             goal: options.goal,
         });
 
+        const browserEval =
+            options.evaluateBrowser &&
+            install.exitCode === 0 &&
+            build.exitCode === 0
+                ? await options.evaluateBrowser({
+                      goal: options.goal,
+                      workspaceRoot: options.workspaceRoot,
+                      kind,
+                      attemptNumber,
+                  })
+                : undefined;
+
         const review = reviewReactAppAgentResult({
             agent,
             install,
             build,
             eval: evalResult,
+            ...(browserEval ? { browserEval } : {}),
         });
 
         return {
@@ -224,6 +259,7 @@ export async function runReactAppAgent(
             install,
             build,
             eval: evalResult,
+            ...(browserEval ? { browserEval } : {}),
             review,
         };
     }
@@ -232,6 +268,7 @@ export async function runReactAppAgent(
     const firstAttempt = await runAttempt(
         "initial",
         baseContext,
+        1,
     );
 
     attempts.push(firstAttempt);
@@ -247,6 +284,9 @@ export async function runReactAppAgent(
         const repairContext = formatRepairContext({
             build: latestAttempt.build,
             eval: latestAttempt.eval,
+            ...(latestAttempt.browserEval
+                ? { browserEval: latestAttempt.browserEval }
+                : {}),
             review: latestAttempt.review,
         });
 
@@ -256,6 +296,7 @@ export async function runReactAppAgent(
                 baseContext,
                 repairContext,
             ].join("\n\n"),
+            repairAttempt + 2,
         );
 
         attempts.push(nextAttempt);
@@ -270,6 +311,9 @@ export async function runReactAppAgent(
         install: latestAttempt.install,
         build: latestAttempt.build,
         eval: latestAttempt.eval,
+        ...(latestAttempt.browserEval
+            ? { browserEval: latestAttempt.browserEval }
+            : {}),
         review: latestAttempt.review,
         attempts,
         trace: buildTraceEvents(attempts),

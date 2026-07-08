@@ -281,6 +281,127 @@ describe("runReactAppAgent", () => {
             "Eval passed: no",
         );
     }, 15_000);
+
+    it("repairs the app when browser eval fails", async () => {
+        const templateRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-template-"),
+        );
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-browser-repair-"),
+        );
+
+        temporaryDirectories.push(templateRoot, workspaceRoot);
+
+        await mkdir(path.join(templateRoot, "src"));
+
+        await writeFile(
+            path.join(templateRoot, "package.json"),
+            JSON.stringify({
+                scripts: {
+                    build: "node -e \"console.log('build ok')\"",
+                },
+            }),
+            "utf8",
+        );
+
+        await writeFile(
+            path.join(templateRoot, "src", "App.tsx"),
+            "export function App() { return null; }",
+            "utf8",
+        );
+
+        const taskApp =
+            "export function App() { const tasks = ['Learn']; return <div><input /><button>Add</button>{tasks.map((task) => <p>{task}</p>)}</div>; }";
+
+        const model = new FakeModelProvider([
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.tsx",
+                    content: taskApp,
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "Initial attempt done",
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.tsx",
+                    content: taskApp,
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "Browser repair done",
+                }),
+            },
+        ]);
+
+        const browserResults = [
+            {
+                passed: false,
+                checks: [
+                    {
+                        name: "adds a task item",
+                        passed: false,
+                        message: "The task text was not rendered.",
+                    },
+                ],
+            },
+            {
+                passed: true,
+                checks: [
+                    {
+                        name: "adds a task item",
+                        passed: true,
+                    },
+                ],
+            },
+        ];
+
+        const result = await runReactAppAgent({
+            goal: "Create a simple task app",
+            workspaceRoot,
+            templateRoot,
+            model,
+            maxRepairAttempts: 1,
+            evaluateBrowser: async () => {
+                const nextResult = browserResults.shift();
+
+                if (!nextResult) {
+                    throw new Error("Missing fake browser result");
+                }
+
+                return nextResult;
+            },
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        expect(result.review.accepted).toBe(true);
+        expect(result.browserEval?.passed).toBe(true);
+        expect(result.attempts).toHaveLength(2);
+        expect(result.attempts[0]?.review.reason).toBe(
+            "Rejected because browser eval failed.",
+        );
+        expect(result.attempts[0]?.browserEval?.passed).toBe(false);
+        expect(result.attempts[1]?.browserEval?.passed).toBe(true);
+        expect(model.requests[2]?.messages[1]?.content).toContain(
+            "Browser eval checks:",
+        );
+        expect(model.requests[2]?.messages[1]?.content).toContain(
+            "- adds a task item: failed (The task text was not rendered.)",
+        );
+    }, 15_000);
+
     it("keeps repairing until review passes or max repair attempts is reached", async () => {
         const templateRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-api-template-"),

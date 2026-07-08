@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { RunSchema } from "@appforge/protocol";
 import { WorkspaceManager, writeWorkspaceFile } from "@appforge/workspace";
+import { FakeBrowserEvaluator } from "@appforge/harness";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
@@ -29,7 +30,17 @@ async function buildTestApp(previewManager?: PreviewManager) {
   const workspaceManager = new WorkspaceManager(temporaryRoot);
 
   return {
-    app: buildApp(undefined, workspaceManager, undefined, previewManager),
+    app: buildApp(
+        undefined,
+        workspaceManager,
+        undefined,
+        previewManager,
+        undefined,
+        new FakeBrowserEvaluator({
+          passed: true,
+          checks: [],
+        }),
+    ),
     workspaceManager,
   };
 }
@@ -1897,6 +1908,10 @@ describe("POST /runs/:id/preview", () => {
         port: 5174,
         url: "http://127.0.0.1:5174",
       },
+      browserEval: {
+        passed: true,
+        checks: [],
+      },
     });
   });
   it("creates a preview session for a version snapshot", async () => {
@@ -1939,6 +1954,126 @@ describe("POST /runs/:id/preview", () => {
           ),
           port: expect.any(Number),
         }),
+    );
+  });
+
+  it("stores browser eval on the run result", async () => {
+    const previewManager = new PreviewManager(
+        vi.fn(() => ({
+          unref: vi.fn(),
+        })),
+        vi.fn(async () => true),
+    );
+    const runRepository = new RunRepository();
+    const temporaryRoot = await mkdtemp(
+        path.join(os.tmpdir(), "appforge-api-"),
+    );
+
+    temporaryDirectories.push(temporaryRoot);
+
+    const workspaceManager = new WorkspaceManager(temporaryRoot);
+    const browserEvaluator = new FakeBrowserEvaluator({
+      passed: false,
+      checks: [
+        {
+          name: "adds a task item",
+          passed: false,
+          message: "Task item was not rendered.",
+        },
+      ],
+    });
+    const app = buildApp(
+        runRepository,
+        workspaceManager,
+        undefined,
+        previewManager,
+        undefined,
+        browserEvaluator,
+    );
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/runs",
+      payload: {
+        goal: "Create a task application",
+      },
+    });
+
+    const createdRun = RunSchema.parse(createResponse.json());
+
+    await runRepository.saveResult(createdRun.id, {
+      workspaceRoot: workspaceManager.resolve(createdRun.id),
+      coordination: TEST_COORDINATION,
+      agent: {
+        finished: true,
+        steps: [],
+      },
+      install: {
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      },
+      build: {
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      },
+      eval: {
+        passed: true,
+        checks: [],
+      },
+      review: {
+        accepted: true,
+        reason: "ok",
+        checks: {
+          agentFinished: true,
+          installPassed: true,
+          buildPassed: true,
+          evalPassed: true,
+        },
+      },
+      attempts: [],
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/runs/${createdRun.id}/preview`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      preview: {
+        runId: createdRun.id,
+        workspaceRoot: workspaceManager.resolve(createdRun.id),
+        port: 5174,
+        url: "http://127.0.0.1:5174",
+      },
+      browserEval: {
+        passed: false,
+        checks: [
+          {
+            name: "adds a task item",
+            passed: false,
+            message: "Task item was not rendered.",
+          },
+        ],
+      },
+    });
+    const storedResult = runRepository.findResultByRunId(createdRun.id);
+
+    expect(storedResult).toEqual(
+      expect.objectContaining({
+        browserEval: {
+          passed: false,
+          checks: [
+            {
+              name: "adds a task item",
+              passed: false,
+              message: "Task item was not rendered.",
+            },
+          ],
+        },
+      }),
     );
   });
 });

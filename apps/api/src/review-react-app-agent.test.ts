@@ -72,4 +72,28 @@ describe("reviewReactAppAgentResult", () => {
         expect(review.reason).toBe("Rejected because eval failed.");
         expect(review.checks.evalPassed).toBe(false);
     });
+
+    it("rejects a result when browser eval fails", () => {
+        const review = reviewReactAppAgentResult({
+            agent: {
+                finished: true,
+            },
+            install: {
+                exitCode: 0,
+            },
+            build: {
+                exitCode: 0,
+            },
+            eval: {
+                passed: true,
+            },
+            browserEval: {
+                passed: false,
+            },
+        });
+
+        expect(review.accepted).toBe(false);
+        expect(review.reason).toBe("Rejected because browser eval failed.");
+        expect(review.checks.browserPassed).toBe(false);
+    });
 });

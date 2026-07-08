@@ -363,6 +363,7 @@ Initial trace events:
 - `tool.finished`
 - `workspace.file_changed`
 - `validation.finished`
+- `browser_eval.finished`
 - `human.input_requested`
 - `human.input_received`
 - `run.finished`
@@ -390,6 +391,7 @@ development regression testing and portfolio-quality evidence.
 
 - build succeeds;
 - tests pass;
+- browser behavior checks pass for generated UI flows when enabled;
 - requested features are present;
 - forbidden paths are untouched;
 - Agent stays within tool and repair budgets;
@@ -415,7 +417,7 @@ Typed Tools
     |
 Safe Workspace ------ Build / Test / Preview
     |
-Trace Store + Artifacts + Harness/Eval
+Trace Store + Artifacts + Harness/Eval + Browser Harness
 ```
 
 Package ownership:
@@ -453,18 +455,19 @@ The local portfolio/demo implementation has completed the main product loop:
 - Coding Agent loop with structured action parsing, safe workspace execution, and
   bounded step budget.
 - React/Vite app workflow: copy starter, coordinate, call Agent, install, build,
-  evaluate, review, repair, snapshot versions, preview selected versions, and
-  record trace.
+  evaluate, run Playwright browser checks, review, repair, snapshot versions,
+  preview selected versions, and record trace.
 - Minimal Coordinator, Skill, Human-in-the-loop, Harness/Eval, and Preview
-  Manager are implemented.
+  Manager are implemented. Browser Harness failures are fed back into the
+  bounded repair loop.
 - Memory has a three-layer MVP: persistent execution records, deterministic
   summary compaction, and keyword-based retrieval before prompt injection.
 
 The remaining work is no longer about proving the core Agent loop. The next
 milestones are product polish and deeper platform capabilities: version diff and
 rollback, LLM-based memory compaction, embedding/RAG retrieval, more independent
-multi-agent execution, stronger sandboxing, richer browser-based evaluation, and
-shareable run reports.
+multi-agent execution, stronger sandboxing, screenshot/accessibility browser
+evaluation, and shareable run reports.
 
 ### Phase 1: Product Design
 

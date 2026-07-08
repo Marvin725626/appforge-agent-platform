@@ -1,32 +1,39 @@
 # AppForge 工作流
 
-AppForge 是一个 Agent 平台，可以把用户的自然语言产品目标转换成一个生成出来的 React/Vite 应用。
+AppForge 是一个 Agent 平台，可以把用户的自然语言产品目标转换成一个真实生成出来的 React/Vite 应用。
 
-这个平台的核心不是简单 demo，而是围绕真实 Coding Agent 流程设计：创建任务、调用 OpenAI-compatible LLM 生成代码、构建应用、自动评估、失败修复，并在自动化不够可靠时交给人类审核。
+它不是简单 demo，而是围绕真实 Coding Agent 流程设计：
+
+```text
+创建任务 -> 调用真实 LLM -> 生成代码 -> 构建应用
+-> 静态评估 -> 浏览器行为评估 -> Review
+-> 自动修复 -> 人工介入 -> 继续迭代
+```
 
 ## 核心流程
 
 1. 用户用自然语言创建一个 run。
 2. API 为这个 run 创建独立 workspace。
-3. Coordinator 生成 planner、coder、reviewer 三类任务分工。
+3. Coordinator 生成 planner、coder、reviewer 的任务分工。
 4. Coding Agent 调用 OpenAI-compatible LLM。
 5. Agent 在 workspace 内写文件或执行允许的命令。
 6. API 安装依赖并构建生成出来的应用。
-7. Evaluator 检查生成结果是否满足用户目标。
-8. Reviewer 判断这次 run 是否可以被接受。
-9. 如果结果被拒绝，系统会自动进行一次 repair。
-10. 如果 repair 后仍然失败，run 进入人工审核状态。
-11. 人类可以选择直接批准结果，或者带反馈请求再次修复。
-12. 用户可以通过本地 Vite preview 查看生成出来的应用。
+7. Deterministic Harness 检查源码结构、语言、页面内容等。
+8. Browser Harness 启动 Vite preview，并用 Playwright 检查真实页面行为。
+9. Reviewer 判断这次 run 是否可以接受。
+10. 如果结果被拒绝，系统自动进入 repair。
+11. 如果自动 repair 后仍然失败，run 进入人工审核状态。
+12. 人类可以 Approve，也可以输入反馈 Request Repair。
+13. 用户可以继续输入新需求，基于当前版本生成新快照。
 
 ## Run 状态
 
 - `queued`：run 已创建，但还没有开始执行。
 - `running`：Agent 正在执行主要生成流程。
 - `repairing`：系统正在根据反馈进行修复。
-- `succeeded`：结果被 reviewer 接受，或被人类审核批准。
+- `succeeded`：结果被 reviewer 接受，或被人工批准。
 - `failed`：执行崩溃，或平台无法完成这次 run。
-- `waiting_for_human`：自动 review 拒绝了结果，需要人类介入。
+- `waiting_for_human`：自动 review 拒绝结果，需要人工介入。
 
 ## 主循环
 
@@ -37,63 +44,61 @@ flowchart TD
     C --> D["POST /runs/:id/execute"]
     D --> E["Coordinator 生成任务分工"]
     E --> F["Coding Agent 调用 LLM"]
-    F --> G["写文件 / 执行允许的命令"]
+    F --> G["写文件 / 执行允许命令"]
     G --> H["npm install"]
     H --> I["npm run build"]
-    I --> J["评估生成应用"]
-    J --> K["Review 结果"]
+    I --> J["静态 Harness Eval"]
+    J --> JB["Playwright Browser Eval"]
+    JB --> K["Review 结果"]
     K -->|通过| L["succeeded"]
     K -->|拒绝| M["自动 repair"]
-    M --> N["再次评估和 review"]
+    M --> N["再次 eval / browser eval / review"]
     N -->|通过| L
     N -->|拒绝| O["waiting_for_human"]
-    O --> P["Approve Anyway"]
+    O --> P["Approve"]
     O --> Q["Request Repair with Feedback"]
     P --> L
     Q --> M
 ```
 
+## Browser Harness
+
+Browser Harness 用来验证“页面在真实浏览器里是否真的能用”。
+
+当前检查包括：
+
+- 页面能否加载；
+- body 是否有可见文本；
+- task/todo/list 类型目标是否有输入框；
+- 是否有按钮；
+- 输入任务并点击按钮后，任务文本是否出现在页面上。
+
+如果 Browser Eval 失败，它会进入 `review`，然后触发自动 repair。失败原因会写入 repair context，例如：
+
+```text
+Browser eval checks:
+- adds a task item: failed (The task text was not rendered.)
+```
+
+这样下一轮 Agent 不只是修“代码长得像不像”，而是修“真实页面行为是否正确”。
+
 ## Human-in-the-loop
 
 Human-in-the-loop 用在自动化流程没有足够把握接受生成结果的时候。
 
-目前平台支持两种人工操作：
+当前支持两种人工动作：
 
-- `Approve Anyway`：人类审核后认为结果可以接受，把 run 标记为 `succeeded`。
-- `Request Repair`：人类输入反馈，平台把原始目标和反馈一起送回 Agent 流程，让 Agent 再修一次。
-
-这样平台不会盲目信任 Agent。自动 eval 太严格时，人可以放行；生成结果确实不完整时，人也可以给出更具体的修复方向。
-
-## 安全边界
-
-生成代码运行在独立 workspace 中。文件操作被限制在 workspace root 内，命令执行也只允许通过白名单检查。
-
-当前安全边界包括：
-
-- workspace 路径解析会阻止访问 run 目录之外的文件。
-- 文件读写通过 workspace helper 函数完成。
-- 命令执行必须通过 allowlist 检查。
-- 每个 run 的 preview server 独立启动。
-- 只有 `waiting_for_human` 状态的 run 才能被人工批准。
-- 只有 `waiting_for_human` 状态的 run 才能请求人工反馈修复。
+- `Approve`：人类认为结果可以接受，把 run 标记为 `succeeded`。
+- `Request Repair`：人类输入反馈，平台把原始目标和反馈一起送回 Agent，让 Agent 再修一次。
 
 ## Eval 和 Review
 
-Evaluator 会检查生成出来的 React 应用是否具备具体可验证的特征。
-
-当前 eval 检查包括：
-
-- 文本是否可读
-- 生成内容是否匹配用户请求的语言
-- 如果目标是任务应用，检查任务应用结构
-- 如果目标是介绍页或内容页，检查页面内容结构
-
 Reviewer 综合判断：
 
-- Agent 是否正常结束
-- install 是否通过
-- build 是否通过
-- eval 是否通过
+- Agent 是否正常结束；
+- install 是否通过；
+- build 是否通过；
+- deterministic eval 是否通过；
+- browser eval 是否通过。
 
-如果全部通过，run 会被接受。否则 run 会进入自动 repair，或者进入人工审核状态。
-
+只要其中关键检查失败，run 就会被拒绝，并进入自动 repair 或人工审核。

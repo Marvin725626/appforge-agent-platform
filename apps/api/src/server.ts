@@ -9,6 +9,8 @@ import {
     type RunReactAppAgentOptions,
 } from "./run-react-app-agent.js";
 import { FileMemoryRepository } from "./file-memory-repository.js";
+import { PlaywrightBrowserEvaluator } from "@appforge/harness";
+import { PreviewManager } from "./preview-manager.js";
 
 const workspacesRoot = path.resolve(".appforge","workspaces");
 const runsStorePath = path.resolve(".appforge", "runs.json");
@@ -21,6 +23,8 @@ const templateRoot = path.resolve(
     "vite-react-starter",
 );
 const workspaceManager = new WorkspaceManager(workspacesRoot);
+const previewManager = new PreviewManager();
+const browserEvaluator = new PlaywrightBrowserEvaluator();
 const baseUrl = process.env.APPFORGE_LLM_BASE_URL;
 const apiKey = process.env.APPFORGE_LLM_API_KEY;
 const model = process.env.APPFORGE_LLM_MODEL;
@@ -53,10 +57,23 @@ const app = buildApp(
             agentOptions.memoryContext = memoryContext;
         }
 
+        agentOptions.evaluateBrowser = async ({ goal, workspaceRoot }) => {
+            const preview = await previewManager.start({
+                runId: path.basename(workspaceRoot),
+                workspaceRoot,
+            });
+
+            return browserEvaluator.evaluate({
+                url: preview.url,
+                goal,
+            });
+        };
+
         return runReactAppAgent(agentOptions);
     },
-    undefined,
+    previewManager,
     new FileMemoryRepository(memoryStorePath),
+    browserEvaluator,
 );
 
 try {

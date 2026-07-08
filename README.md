@@ -40,6 +40,7 @@ sequenceDiagram
     participant LLM as OpenAI-compatible LLM
     participant WS as Safe Workspace
     participant Eval as Harness/Eval
+    participant Browser as Browser Harness
     participant Preview as Vite Preview
 
     User->>Web: Enter product goal
@@ -52,9 +53,10 @@ sequenceDiagram
     Agent->>WS: Execute validated action
     API->>WS: npm install + npm run build
     API->>Eval: Deterministic checks
+    API->>Preview: Start managed Vite process
+    API->>Browser: Playwright behavior checks
     API->>Agent: Repair context if needed
     Web->>API: POST /runs/:id/preview
-    API->>Preview: Start managed Vite process
     Preview-->>Web: Live generated app
     User->>Web: Submit follow-up change
     Web->>API: POST /runs/:id/iterate
@@ -69,10 +71,10 @@ sequenceDiagram
 | Agent loop | Structured actions, Zod validation, bounded steps, and finish policy |
 | Workspace safety | Path containment, safe file IO, allowlisted commands, timeout/output limits |
 | Build loop | Copy React/Vite starter, generate files, install dependencies, build app |
-| Evaluation | Deterministic Harness checks plus reviewer decision |
-| Repair | Configurable `maxRepairAttempts` with structured failure context |
+| Evaluation | Deterministic Harness checks plus Playwright browser behavior checks |
+| Repair | Configurable `maxRepairAttempts` with structured static/build/browser failure context |
 | Human-in-the-loop | Approve or request repair with feedback |
-| Observability | Plan, trace events, attempts, generated files, command output, preview |
+| Observability | Plan, trace events, attempts, generated files, command output, browser checks, preview |
 | Versioning | Saved v1/v2/v3 snapshots for generated apps and version-specific preview |
 | Iteration | Continue editing an existing run with a follow-up prompt |
 | Memory | Persistent execution memory, rule-based summary memory, and keyword retrieval memory |
@@ -107,8 +109,10 @@ flowchart TD
     AgentLoop --> Provider["OpenAI-compatible Provider"]
     AgentLoop --> Workspace["Safe Workspace Tools"]
     Runner --> Harness["Harness / Eval"]
+    Runner --> BrowserHarness["Playwright Browser Harness"]
     Runner --> Review["Reviewer"]
     API --> Preview["Vite Preview Manager"]
+    Preview --> BrowserHarness
     Workspace --> Generated["Generated React/Vite App"]
 ```
 
@@ -140,7 +144,7 @@ packages/
   agent-core/          Provider, Coding Agent, loop, Coordinator, Skills, Memory
   workspace/           Safe file operations and command execution
   protocol/            Shared Zod schemas and protocol types
-  harness/             Deterministic evaluation helpers
+  harness/             Deterministic and browser evaluation helpers
 tests/
   fixtures/            Vite React starter copied into run workspaces
 docs/
@@ -219,6 +223,8 @@ npm run smoke:react-app
 - The Agent is not given arbitrary shell access.
 - Repair loops are bounded by `maxRepairAttempts`.
 - Preview ports are checked before use and Vite uses strict port behavior.
+- Browser evaluation uses a managed preview server and Playwright checks, and its
+  failures are fed back into the bounded repair loop.
 - Memory injected into prompts is selected by relevance, bounded by entry count
   and character budget, and can include compact long-term summaries.
 
@@ -228,7 +234,7 @@ The main portfolio/demo loop is implemented:
 
 ```text
 goal -> create run -> coordinate -> real LLM agent -> write files -> build
-     -> evaluate -> review -> repair if needed -> save version -> preview
+     -> evaluate -> browser check -> review -> repair if needed -> save version -> preview
      -> inspect trace/files -> iterate with follow-up prompts
 ```
 
@@ -242,8 +248,9 @@ multi-tenant SaaS.
 - Implemented a safe workspace layer with bounded file operations, allowlisted
   command execution, and repair-loop limits.
 - Designed a traceable Agent workflow with Coordinator planning, reusable Skills,
-  three-layer Memory, Harness/Eval checks, human approval, JSON persistence,
-  version snapshots, follow-up iteration, and live preview.
+  three-layer Memory, deterministic Harness checks, Playwright browser checks,
+  human approval, JSON persistence, version snapshots, follow-up iteration, and
+  live preview.
 - Added deterministic tests with fake model providers while keeping the product
   path on real LLM execution.
 
@@ -255,5 +262,6 @@ multi-tenant SaaS.
 - More realistic multi-agent execution with separate planner, coder, reviewer,
   and test agents.
 - Stronger sandboxing for command execution.
-- Browser-based visual and behavior evaluation.
+- Visual regression and screenshot comparison on top of the current Playwright
+  behavior checks.
 - Shareable run reports, export, and deployment packaging.

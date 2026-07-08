@@ -79,4 +79,50 @@ describe("formatRepairContext", () => {
 
         expect(context).toContain("Build stderr:\nTypeScript error");
     });
+
+    it("includes browser eval failures", () => {
+        const context = formatRepairContext({
+            build: {
+                exitCode: 0,
+                stdout: "build ok",
+                stderr: "",
+            },
+            eval: {
+                passed: true,
+                checks: [
+                    {
+                        name: "has input",
+                        passed: true,
+                    },
+                ],
+            },
+            browserEval: {
+                passed: false,
+                checks: [
+                    {
+                        name: "adds a task item",
+                        passed: false,
+                        message: "The task text was not rendered.",
+                    },
+                ],
+            },
+            review: {
+                accepted: false,
+                reason: "Rejected because browser eval failed.",
+                checks: {
+                    agentFinished: true,
+                    installPassed: true,
+                    buildPassed: true,
+                    evalPassed: true,
+                    browserPassed: false,
+                },
+            },
+        });
+
+        expect(context).toContain("Browser eval checks:");
+        expect(context).toContain(
+            "- adds a task item: failed (The task text was not rendered.)",
+        );
+        expect(context).toContain("Reason: Rejected because browser eval failed.");
+    });
 });

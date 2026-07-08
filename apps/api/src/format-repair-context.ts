@@ -1,4 +1,7 @@
-import type { ReactAppEvalResult } from "@appforge/harness";
+import type {
+    BrowserEvalResult,
+    ReactAppEvalResult,
+} from "@appforge/harness";
 import type { ReactAppAgentReview } from "./review-react-app-agent.js";
 
 export type FormatRepairContextInput = {
@@ -8,6 +11,7 @@ export type FormatRepairContextInput = {
         stderr: string;
     };
     eval: ReactAppEvalResult;
+    browserEval?: BrowserEvalResult;
     review: ReactAppAgentReview;
 };
 
@@ -24,6 +28,13 @@ export function formatRepairContext(
             (check) =>
                 `- ${check.name}: ${check.passed ? "passed" : "failed"}`,
         ),
+        input.browserEval ? "Browser eval checks:" : "",
+        ...(input.browserEval?.checks.map((check) =>
+            [
+                `- ${check.name}: ${check.passed ? "passed" : "failed"}`,
+                check.message ? ` (${check.message})` : "",
+            ].join(""),
+        ) ?? []),
         `Reason: ${input.review.reason}`,
         input.build.stderr.length > 0
             ? `Build stderr:\n${input.build.stderr}`

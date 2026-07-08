@@ -378,7 +378,7 @@ Typed Tools
     |
 Safe Workspace ------ Build / Test / Preview
     |
-Trace Store + Artifacts + Harness/Eval
+Trace Store + Artifacts + Harness/Eval + Browser Harness
 ```
 
 包职责：
@@ -409,11 +409,12 @@ apps -> agent-core/workspace/harness -> protocol
 - React/Vite 工作台已支持首页、Run Workspace、版本历史、大面积实时预览、继续修改输入框，以及 Overview / Plan / Trace / Files 检查面板。
 - 产品主链路使用真实 OpenAI-compatible provider。
 - Coding Agent Loop 已支持结构化 action 解析、安全 workspace 执行、步数预算和 finish 停止策略。
-- React/Vite app 工作流已支持复制 starter、Coordinator 分工、调用 Agent、安装依赖、构建、Harness/Eval、Reviewer 审查、自动修复、保存版本快照、预览指定版本和记录 Trace。
-- Coordinator、Skill、Human-in-the-loop、Harness/Eval、Preview Manager 都已经有最小可用实现。
+- React/Vite app 工作流已支持复制 starter、Coordinator 分工、调用 Agent、安装依赖、构建、Harness/Eval、Playwright Browser Eval、Reviewer 审查、自动修复、保存版本快照、预览指定版本和记录 Trace。
+- Coordinator、Skill、Human-in-the-loop、Harness/Eval、Browser Harness、Preview Manager 都已经有最小可用实现。
+- Browser Eval 失败会写入 repair context，并进入 bounded repair loop，让 Agent 修复真实页面行为，而不只是修复源码结构。
 - Memory 已完成三层 MVP：结构化执行记忆、规则版长期总结压缩、按当前 goal 的关键词检索注入。
 
-剩余工作不再是证明“Agent 能跑通”，而是继续增强平台深度：版本 diff / rollback、LLM 记忆压缩、embedding/RAG 语义检索、更独立的多 Agent 执行、更强 sandbox、浏览器行为评估、可分享 Run Report 和简历包装。
+剩余工作不再是证明“Agent 能跑通”，而是继续增强平台深度：版本 diff / rollback、LLM 记忆压缩、embedding/RAG 语义检索、更独立的多 Agent 执行、更强 sandbox、截图对比与可访问性等浏览器评估增强、可分享 Run Report 和简历包装。
 
 ### 阶段一：产品设计
 

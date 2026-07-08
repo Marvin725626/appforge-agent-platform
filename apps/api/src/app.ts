@@ -16,6 +16,10 @@ import { PreviewManager } from "./preview-manager.js";
 import { coordinateAgents } from "@appforge/agent-core";
 import { containsLikelyMojibake } from "@appforge/harness";
 import {
+    PlaywrightBrowserEvaluator,
+    type BrowserEvaluator,
+} from "@appforge/harness";
+import {
     formatAgentMemoryContext,
     MemoryRepository,
     type MemoryRepositoryLike,
@@ -89,6 +93,7 @@ export  function buildApp(
     executeRun?:ExecuteRun,
     previewManager=new PreviewManager(),
     memoryRepository: MemoryRepositoryLike = new MemoryRepository(),
+    browserEvaluator: BrowserEvaluator = new PlaywrightBrowserEvaluator(),
 ) {
     const app = Fastify();
 
@@ -652,8 +657,23 @@ export  function buildApp(
                             `v${input.data.versionNumber}`,
                         ),
             });
+            const browserEval = await browserEvaluator.evaluate({
+                url: preview.url,
+                goal: run.goal,
+            });
+
+            const result = await runRepository.findResultByRunId(run.id);
+
+            if (result) {
+                await runRepository.saveResult(run.id, {
+                    ...result,
+                    browserEval,
+                });
+            }
+
             return reply.send({
                 preview,
+                browserEval,
             });
         },
     );

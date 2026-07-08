@@ -2,7 +2,10 @@
 
 AppForge is an agent platform that turns a natural-language product goal into a generated React/Vite application.
 
-The platform is designed around a real coding workflow: create a run, generate code with an OpenAI-compatible LLM, build the app, evaluate the result, repair failures, and allow a human to intervene when automation is not confident enough.
+The platform is designed around a real coding workflow: create a run, generate
+code with an OpenAI-compatible LLM, build the app, evaluate the result with
+deterministic and browser checks, repair failures, and allow a human to
+intervene when automation is not confident enough.
 
 ## Core Flow
 
@@ -12,12 +15,14 @@ The platform is designed around a real coding workflow: create a run, generate c
 4. The coding agent calls an OpenAI-compatible LLM.
 5. The agent writes files or runs allowed commands inside the workspace.
 6. The API installs dependencies and builds the generated app.
-7. The evaluator checks whether the generated app satisfies the goal.
-8. The reviewer decides whether the run should be accepted.
-9. If the result is rejected, the system performs an automatic repair attempt.
-10. If repair still fails, the run enters human review.
-11. A human can approve the result or request another repair with feedback.
-12. The generated app can be previewed with a local Vite server.
+7. The deterministic evaluator checks whether the generated app satisfies the
+   goal.
+8. The browser harness starts a managed preview and checks real UI behavior.
+9. The reviewer decides whether the run should be accepted.
+10. If the result is rejected, the system performs an automatic repair attempt.
+11. If repair still fails, the run enters human review.
+12. A human can approve the result or request another repair with feedback.
+13. The generated app can be previewed with a local Vite server.
 
 ## Run Statuses
 
@@ -40,8 +45,9 @@ flowchart TD
     F --> G["Write files / run allowed commands"]
     G --> H["npm install"]
     H --> I["npm run build"]
-    I --> J["Evaluate generated app"]
-    J --> K["Review result"]
+    I --> J["Deterministic eval"]
+    J --> JB["Browser eval"]
+    JB --> K["Review result"]
     K -->|accepted| L["succeeded"]
     K -->|rejected| M["automatic repair"]
     M --> N["Evaluate and review again"]
@@ -94,6 +100,9 @@ The reviewer combines:
 - whether install passed
 - whether build passed
 - whether eval passed
+- whether browser behavior checks passed, when browser evaluation is enabled
 
-If all checks pass, the run is accepted. Otherwise, it is rejected and may enter automatic repair or human review.
-
+If all checks pass, the run is accepted. Otherwise, it is rejected and may enter
+automatic repair or human review. Browser failures are included in the repair
+context so the next Agent attempt can fix real UI behavior, not only source-code
+shape.

@@ -5,6 +5,7 @@ import {
     containsLikelyMojibake,
     evaluateChecks,
     evaluateReactApp,
+    summarizeBrowserEval,
 } from "./index.js";
 
 describe("evaluateChecks", () => {
@@ -310,5 +311,30 @@ describe("evaluateReactApp", () => {
             name: "has readable text",
             passed: false,
         });
+    });
+});
+
+describe("summarizeBrowserEval", () => {
+    it("summarizes passed browser checks", () => {
+        const result = summarizeBrowserEval({
+            passed: false,
+            checks: [
+                {
+                    name: "page loads",
+                    passed: true,
+                },
+                {
+                    name: "has input",
+                    passed: true,
+                },
+                {
+                    name: "adds task",
+                    passed: false,
+                    message: "Task item was not rendered after clicking Add.",
+                },
+            ],
+        });
+
+        expect(result).toBe("2/3 browser checks passed");
     });
 });
