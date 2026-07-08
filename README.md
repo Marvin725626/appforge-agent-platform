@@ -75,6 +75,7 @@ sequenceDiagram
 | Repair | Configurable `maxRepairAttempts` with structured static/build/browser failure context |
 | Human-in-the-loop | Approve or request repair with feedback |
 | Observability | Plan, trace events, attempts, generated files, command output, browser checks, preview |
+| Run reports | `GET /runs/:id/report` and Report tab summarize goal, versions, trace, eval, browser checks, files, and memory evidence |
 | Versioning | Saved v1/v2/v3 snapshots for generated apps and version-specific preview |
 | Iteration | Continue editing an existing run with a follow-up prompt |
 | Memory | Persistent execution memory, rule-based summary memory, and keyword retrieval memory |
@@ -87,7 +88,7 @@ The web workbench has two surfaces:
 
 - **Home:** create a run from a product goal and open recent runs.
 - **Run Workspace:** inspect version history, run status, live preview, plan,
-  trace, generated files, and follow-up iteration prompts.
+  trace, generated files, run report, and follow-up iteration prompts.
 
 ![AppForge home](docs/assets/appforge-home.png)
 

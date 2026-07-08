@@ -66,6 +66,7 @@ type AgentAttempt = {
     install: CommandResult;
     build: CommandResult;
     eval: ReactAppEvalResult;
+    browserEval?: BrowserEvalResult;
     review: AgentReview;
 };
 
@@ -123,6 +124,38 @@ type RunDetailResponse = {
     versions: RunVersion[];
 };
 
+type RunReport = {
+    run: Run;
+    generatedAt: string;
+    statusLine: string;
+    summary: {
+        attempts: number;
+        agentFinished?: boolean;
+        buildExitCode?: number;
+        evalPassed?: boolean;
+        evalPassedChecks: number;
+        evalTotalChecks: number;
+        browserPassed?: boolean;
+        browserPassedChecks: number;
+        browserTotalChecks: number;
+        reviewAccepted?: boolean;
+        reviewReason?: string;
+    };
+    coordination?: {
+        plan: string[];
+        assignments: AgentAssignment[];
+    };
+    trace: TraceEvent[];
+    versions: RunVersion[];
+    files: string[];
+    memory: {
+        outcome: string;
+        summary: string;
+        createdAt: string;
+    }[];
+    narrative: string;
+};
+
 type RunsResponse = {
     runs:Run[];
 };
@@ -141,7 +174,7 @@ type CoordinationResponse = {
     plan:string[];
     assignments: AgentAssignment[];
 };
-type ActivePanel = "overview" | "plan" | "trace" | "preview" | "files";
+type ActivePanel = "overview" | "plan" | "trace" | "report" | "preview" | "files";
 
 type RunVersion = {
     id: string;
@@ -336,6 +369,8 @@ export function App() {
     const [browserEval, setBrowserEval] = useState<BrowserEvalResult | null>(
         null,
     );
+    const [runReport, setRunReport] = useState<RunReport | null>(null);
+    const [isLoadingReport, setIsLoadingReport] = useState(false);
     const [isStartingPreview, setIsStartingPreview] = useState(false);
     const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
     const [coordination, setCoordination] =
@@ -366,6 +401,7 @@ export function App() {
         setGeneratedFile(null);
         setPreview(null);
         setBrowserEval(null);
+        setRunReport(null);
         setCoordination(null);
         setActivePanel("overview");
         setVersions([]);
@@ -451,6 +487,7 @@ export function App() {
             setSelectedVersionNumber(null);
             await loadGeneratedFiles(executeResponse.run.id, "src");
             await loadGeneratedFile(executeResponse.run.id, "src/App.tsx");
+            await loadRunReport(executeResponse.run.id);
             await refreshRun(executeResponse.run.id);
             await loadRuns();
         } catch (caughtError) {
@@ -484,6 +521,7 @@ export function App() {
         setError(null);
         setPreview(null);
         setBrowserEval(null);
+        setRunReport(null);
 
         try {
             localStorage.setItem(CURRENT_RUN_ID_STORAGE_KEY, runId);
@@ -509,6 +547,7 @@ export function App() {
             setIterationPrompt("");
             setGeneratedFile(null);
             await loadCoordination(runDetail.run.id);
+            await loadRunReport(runDetail.run.id);
 
             if (runDetail.result) {
                 await loadGeneratedFiles(runDetail.run.id, "src");
@@ -558,6 +597,7 @@ export function App() {
                 setGeneratedFile(null);
                 setPreview(null);
                 setBrowserEval(null);
+                setRunReport(null);
                 setCoordination(null);
                 setActivePanel("overview");
                 setVersions([]);
@@ -591,6 +631,7 @@ export function App() {
         setAgentResult(runDetail.result ?? null);
         setBrowserEval(runDetail.result?.browserEval ?? null);
         setVersions(runDetail.versions);
+        await loadRunReport(runId);
     }
 
     async function startPreview() {
@@ -715,6 +756,7 @@ export function App() {
             setSelectedVersionNumber(null);
             await loadGeneratedFiles(repairResponse.run.id, "src");
             await loadGeneratedFile(repairResponse.run.id, "src/App.tsx");
+            await loadRunReport(repairResponse.run.id);
             await loadRuns();
         } catch (caughtError) {
             setError(
@@ -759,6 +801,7 @@ export function App() {
             setIterationPrompt("");
             await loadGeneratedFiles(iterateResponse.run.id, "src");
             await loadGeneratedFile(iterateResponse.run.id, "src/App.tsx");
+            await loadRunReport(iterateResponse.run.id);
             await refreshRun(iterateResponse.run.id);
             await loadRuns();
             setActivePanel("preview");
@@ -877,6 +920,30 @@ export function App() {
         setCoordination(coordinationResponse);
     }
 
+    async function loadRunReport(runId: string) {
+        setIsLoadingReport(true);
+
+        try {
+            const response = await fetch(
+                `http://127.0.0.1:3000/runs/${runId}/report`,
+            );
+
+            if (!response.ok) {
+                throw new Error(
+                    await getErrorMessage(
+                        response,
+                        `Load report failed with ${response.status}`,
+                    ),
+                );
+            }
+
+            const reportResponse = (await response.json()) as RunReport;
+            setRunReport(reportResponse);
+        } finally {
+            setIsLoadingReport(false);
+        }
+    }
+
     function goHome() {
         setRun(null);
         setAgentResult(null);
@@ -884,6 +951,7 @@ export function App() {
         setGeneratedFile(null);
         setPreview(null);
         setBrowserEval(null);
+        setRunReport(null);
         setCoordination(null);
         setActivePanel("overview");
         setVersions([]);
@@ -929,6 +997,7 @@ export function App() {
 
                 setRun(runDetail.run);
                 await loadCoordination(runDetail.run.id);
+                await loadRunReport(runDetail.run.id);
 
                 if (runDetail.result) {
                     setAgentResult(runDetail.result);
@@ -1400,6 +1469,13 @@ export function App() {
                         </button>
                         <button
                             type="button"
+                            className={activePanel === "report" ? "active" : ""}
+                            onClick={() => setActivePanel("report")}
+                        >
+                            Report
+                        </button>
+                        <button
+                            type="button"
                             className={activePanel === "files" ? "active" : ""}
                             onClick={() => setActivePanel("files")}
                         >
@@ -1521,6 +1597,71 @@ export function App() {
                             ) : (
                                 <p className="muted-text">
                                     Agent trace will appear after execution.
+                                </p>
+                            )}
+                        </section>
+                    ) : null}
+
+                    {activePanel === "report" ? (
+                        <section className="workspace-card report-card">
+                            <h2>Run Report</h2>
+                            {isLoadingReport ? (
+                                <p className="muted-text">Loading report...</p>
+                            ) : null}
+                            {runReport ? (
+                                <>
+                                    <p className="report-status">
+                                        {runReport.statusLine}
+                                    </p>
+                                    <div className="report-metrics">
+                                        <article>
+                                            <span>Attempts</span>
+                                            <strong>{runReport.summary.attempts}</strong>
+                                        </article>
+                                        <article>
+                                            <span>Eval</span>
+                                            <strong>
+                                                {runReport.summary.evalPassedChecks}/
+                                                {runReport.summary.evalTotalChecks}
+                                            </strong>
+                                        </article>
+                                        <article>
+                                            <span>Browser</span>
+                                            <strong>
+                                                {runReport.summary.browserPassedChecks}/
+                                                {runReport.summary.browserTotalChecks}
+                                            </strong>
+                                        </article>
+                                        <article>
+                                            <span>Versions</span>
+                                            <strong>{runReport.versions.length}</strong>
+                                        </article>
+                                    </div>
+                                    <h3>Interview Summary</h3>
+                                    <pre>{runReport.narrative}</pre>
+                                    {runReport.summary.reviewReason ? (
+                                        <>
+                                            <h3>Review</h3>
+                                            <p>{runReport.summary.reviewReason}</p>
+                                        </>
+                                    ) : null}
+                                    {runReport.memory.length > 0 ? (
+                                        <>
+                                            <h3>Memory Evidence</h3>
+                                            <div className="report-list">
+                                                {runReport.memory.map((memory) => (
+                                                    <article key={memory.createdAt}>
+                                                        <strong>{memory.outcome}</strong>
+                                                        <p>{memory.summary}</p>
+                                                    </article>
+                                                ))}
+                                            </div>
+                                        </>
+                                    ) : null}
+                                </>
+                            ) : (
+                                <p className="muted-text">
+                                    Report will appear after this run is loaded.
                                 </p>
                             )}
                         </section>

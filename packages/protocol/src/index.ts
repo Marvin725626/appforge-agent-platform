@@ -6,6 +6,7 @@ export {
     RunStatusSchema,
     RunVersionSchema,
 } from "./run.js";
+export { RunReportSchema } from "./report.js";
 export type { AgentAction } from "./agent-action.js";
 export type {
     CreateRunInput,
@@ -13,6 +14,7 @@ export type {
     RunStatus,
     RunVersion,
 } from "./run.js";
+export type { RunReport } from "./report.js";
 export {
     TraceEventSchema,
     TraceEventStatusSchema,

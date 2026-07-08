@@ -20,6 +20,112 @@ const TEST_COORDINATION = {
   assignments: [],
 };
 
+function createSuccessfulAgentResult(workspaceRoot: string) {
+  return {
+    workspaceRoot,
+    coordination: TEST_COORDINATION,
+    agent: {
+      finished: true,
+      steps: [],
+    },
+    install: {
+      exitCode: 0,
+      stdout: "install ok",
+      stderr: "",
+    },
+    build: {
+      exitCode: 0,
+      stdout: "build ok",
+      stderr: "",
+    },
+    eval: {
+      passed: true,
+      checks: [
+        {
+          name: "has input",
+          passed: true,
+        },
+        {
+          name: "has button",
+          passed: true,
+        },
+      ],
+    },
+    browserEval: {
+      passed: true,
+      checks: [
+        {
+          name: "adds a task item",
+          passed: true,
+        },
+      ],
+    },
+    review: {
+      accepted: true,
+      reason: "Agent finished and install/build/eval/browser checks passed.",
+      checks: {
+        agentFinished: true,
+        installPassed: true,
+        buildPassed: true,
+        evalPassed: true,
+        browserPassed: true,
+      },
+    },
+    attempts: [
+      {
+        kind: "initial" as const,
+        agent: {
+          finished: true,
+          steps: [],
+        },
+        install: {
+          exitCode: 0,
+          stdout: "install ok",
+          stderr: "",
+        },
+        build: {
+          exitCode: 0,
+          stdout: "build ok",
+          stderr: "",
+        },
+        eval: {
+          passed: true,
+          checks: [
+            {
+              name: "has input",
+              passed: true,
+            },
+            {
+              name: "has button",
+              passed: true,
+            },
+          ],
+        },
+        browserEval: {
+          passed: true,
+          checks: [
+            {
+              name: "adds a task item",
+              passed: true,
+            },
+          ],
+        },
+        review: {
+          accepted: true,
+          reason: "Agent finished and install/build/eval/browser checks passed.",
+          checks: {
+            agentFinished: true,
+            installPassed: true,
+            buildPassed: true,
+            evalPassed: true,
+            browserPassed: true,
+          },
+        },
+      },
+    ],
+  };
+}
+
 async function buildTestApp(previewManager?: PreviewManager) {
   const temporaryRoot = await mkdtemp(
     path.join(os.tmpdir(), "appforge-api-"),
@@ -232,6 +338,145 @@ describe("GET /runs/:id", () => {
     const response = await app.inject({
       method: "GET",
       url: "/runs/missing-run",
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({
+      error: "Run not found",
+    });
+  });
+});
+describe("GET /runs/:id/report", () => {
+  it("returns a report for a run before execution", async () => {
+    const { app } = await buildTestApp();
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/runs",
+      payload: {
+        goal: "Create a task application",
+      },
+    });
+
+    const createdRun = RunSchema.parse(createResponse.json());
+
+    const reportResponse = await app.inject({
+      method: "GET",
+      url: `/runs/${createdRun.id}/report`,
+    });
+
+    expect(reportResponse.statusCode).toBe(200);
+    expect(reportResponse.json()).toMatchObject({
+      run: createdRun,
+      statusLine:
+        "Run queued: execution has not produced an agent result yet.",
+      summary: {
+        attempts: 0,
+        evalPassedChecks: 0,
+        evalTotalChecks: 0,
+        browserPassedChecks: 0,
+        browserTotalChecks: 0,
+      },
+      versions: [],
+      files: [],
+      memory: [],
+    });
+  });
+
+  it("returns an execution report with files, versions, memory, and browser checks", async () => {
+    const temporaryRoot = await mkdtemp(
+      path.join(os.tmpdir(), "appforge-api-"),
+    );
+
+    temporaryDirectories.push(temporaryRoot);
+
+    const workspaceManager = new WorkspaceManager(temporaryRoot);
+    const memoryRepository = new MemoryRepository();
+
+    const executeRun = async (input: {
+      goal: string;
+      workspaceRoot: string;
+    }) => {
+      await writeWorkspaceFile(
+        input.workspaceRoot,
+        "src/App.tsx",
+        "export function App() { return <h1>Task App</h1>; }",
+      );
+
+      return createSuccessfulAgentResult(input.workspaceRoot);
+    };
+
+    const app = buildApp(
+      undefined,
+      workspaceManager,
+      executeRun,
+      undefined,
+      memoryRepository,
+      new FakeBrowserEvaluator({
+        passed: true,
+        checks: [],
+      }),
+    );
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/runs",
+      payload: {
+        goal: "Create a task application",
+      },
+    });
+
+    const createdRun = RunSchema.parse(createResponse.json());
+
+    await app.inject({
+      method: "POST",
+      url: `/runs/${createdRun.id}/execute`,
+    });
+
+    const reportResponse = await app.inject({
+      method: "GET",
+      url: `/runs/${createdRun.id}/report`,
+    });
+
+    expect(reportResponse.statusCode).toBe(200);
+    expect(reportResponse.json()).toMatchObject({
+      run: {
+        id: createdRun.id,
+        status: "succeeded",
+      },
+      summary: {
+        attempts: 1,
+        agentFinished: true,
+        buildExitCode: 0,
+        evalPassed: true,
+        evalPassedChecks: 2,
+        evalTotalChecks: 2,
+        browserPassed: true,
+        browserPassedChecks: 1,
+        browserTotalChecks: 1,
+        reviewAccepted: true,
+      },
+      versions: [
+        {
+          runId: createdRun.id,
+          versionNumber: 1,
+        },
+      ],
+      files: expect.arrayContaining(["src/App.tsx"]),
+      memory: [
+        {
+          outcome: "succeeded",
+        },
+      ],
+    });
+  });
+
+  it("returns 404 when the run does not exist", async () => {
+    const { app } = await buildTestApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/runs/missing-run/report",
     });
 
     expect(response.statusCode).toBe(404);

@@ -5,7 +5,13 @@ import cors from "@fastify/cors";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { RunRepository, type RunRepositoryLike } from "./run-repository.js";
-import { CreateRunInputSchema } from "@appforge/protocol";
+import {
+    CreateRunInputSchema,
+    RunReportSchema,
+    type Run,
+    type RunReport,
+    type RunVersion,
+} from "@appforge/protocol";
 import {
     listWorkspaceFiles,
     readWorkspaceFile,
@@ -22,6 +28,7 @@ import {
 import {
     formatAgentMemoryContext,
     MemoryRepository,
+    type MemoryEntry,
     type MemoryRepositoryLike,
 } from "./memory-repository.js";
 import { saveRunVersionSnapshot } from "./run-version-snapshot.js";
@@ -58,6 +65,118 @@ function summarizeRunMemory(result: RunReactAppAgentResult): string {
         `Eval: ${passedChecks}/${result.eval.checks.length} checks passed`,
         `Build exit code: ${result.build.exitCode}`,
     ].join(" ");
+}
+
+function countPassedChecks(checks: { passed: boolean }[] = []): number {
+    return checks.filter((check) => check.passed).length;
+}
+
+function buildRunReport(input: {
+    run: Run;
+    result?: RunReactAppAgentResult;
+    versions: RunVersion[];
+    files: string[];
+    memory: MemoryEntry[];
+}): RunReport {
+    const evalChecks = input.result?.eval.checks ?? [];
+    const browserChecks = input.result?.browserEval?.checks ?? [];
+    const attempts = input.result?.attempts.length ?? 0;
+    const reviewReason = input.result?.review.reason;
+    const evalPassedChecks = countPassedChecks(evalChecks);
+    const browserPassedChecks = countPassedChecks(browserChecks);
+
+    const statusLine = input.result
+        ? `Run ${input.run.status}: ${attempts} attempt(s), ${evalPassedChecks}/${evalChecks.length} eval checks, ${browserPassedChecks}/${browserChecks.length} browser checks.`
+        : `Run ${input.run.status}: execution has not produced an agent result yet.`;
+
+    const narrative = [
+        `Goal: ${input.run.goal}`,
+        statusLine,
+        reviewReason ? `Review: ${reviewReason}` : "",
+        input.versions.length > 0
+            ? `Versions: ${input.versions.length} snapshot(s) saved.`
+            : "Versions: no snapshots saved yet.",
+        input.files.length > 0
+            ? `Files: ${input.files.slice(0, 6).join(", ")}`
+            : "Files: no generated files listed yet.",
+    ]
+        .filter((part) => part.length > 0)
+        .join("\n");
+
+    const report: RunReport = {
+        run: input.run,
+        generatedAt: new Date().toISOString(),
+        statusLine,
+        summary: {
+            attempts,
+            evalPassedChecks,
+            evalTotalChecks: evalChecks.length,
+            browserPassedChecks,
+            browserTotalChecks: browserChecks.length,
+            ...(input.result
+                ? {
+                    agentFinished: input.result.agent.finished,
+                    buildExitCode: input.result.build.exitCode,
+                    evalPassed: input.result.eval.passed,
+                    reviewAccepted: input.result.review.accepted,
+                    reviewReason: input.result.review.reason,
+                }
+                : {}),
+            ...(input.result?.browserEval
+                ? {
+                    browserPassed: input.result.browserEval.passed,
+                }
+                : {}),
+        },
+        ...(input.result?.coordination
+            ? {
+                coordination: {
+                    plan: input.result.coordination.plan,
+                    assignments: input.result.coordination.assignments,
+                },
+            }
+            : {}),
+        trace: input.result?.trace ?? [],
+        versions: input.versions,
+        files: input.files,
+        memory: input.memory.map((entry) => ({
+            outcome: entry.outcome,
+            summary: entry.summary,
+            createdAt: entry.createdAt,
+        })),
+        narrative,
+    };
+
+    return RunReportSchema.parse(report);
+}
+
+async function listReportFiles(workspaceRoot: string): Promise<string[]> {
+    const files = new Set<string>();
+
+    for (const directory of [".", "src"]) {
+        try {
+            const directoryFiles = await listWorkspaceFiles(
+                workspaceRoot,
+                directory,
+            );
+
+            directoryFiles.forEach((filePath) =>
+                files.add(filePath.replaceAll("\\", "/")),
+            );
+        } catch (error) {
+            if (
+                error instanceof Error &&
+                "code" in error &&
+                error.code === "ENOENT"
+            ) {
+                continue;
+            }
+
+            throw error;
+        }
+    }
+
+    return [...files].sort();
 }
 
 async function maybeCompactMemory(
@@ -535,6 +654,35 @@ export  function buildApp(
                 versions: await runRepository.listVersions(run.id),
             });
         },);
+    app.get<{ Params: { id: string } }>(
+        "/runs/:id/report",
+        async (request, reply) => {
+            const run = await runRepository.findById(request.params.id);
+
+            if (!run) {
+                return reply.status(404).send({
+                    error: "Run not found",
+                });
+            }
+
+            const result = await runRepository.findResultByRunId(run.id);
+            const versions = await runRepository.listVersions(run.id);
+            const files = await listReportFiles(workspaceManager.resolve(run.id));
+            const memory = (await memoryRepository.list()).filter(
+                (entry) => entry.runId === run.id,
+            );
+
+            return reply.send(
+                buildRunReport({
+                    run,
+                    ...(result ? { result } : {}),
+                    versions,
+                    files,
+                    memory,
+                }),
+            );
+        },
+    );
     app.get<{
         Params: { id: string };
         Querystring: { directory?: string; path?: string };
