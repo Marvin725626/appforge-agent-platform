@@ -75,6 +75,7 @@ sequenceDiagram
 | Observability | Plan, trace events, attempts, generated files, command output, preview |
 | Versioning | Saved v1/v2/v3 snapshots for generated apps and version-specific preview |
 | Iteration | Continue editing an existing run with a follow-up prompt |
+| Memory | Persistent execution memory, rule-based summary memory, and keyword retrieval memory |
 | Persistence | Local JSON repositories for runs/results/versions and structured memory records |
 | Workbench | Landing page, run workspace, version history, preview, inspector tabs |
 
@@ -110,6 +111,24 @@ flowchart TD
     API --> Preview["Vite Preview Manager"]
     Workspace --> Generated["Generated React/Vite App"]
 ```
+
+## Memory Model
+
+AppForge memory is an execution-experience store, not a raw chat transcript.
+Completed runs save structured lessons that can improve later generation and
+repair without copying full prior conversations into unrelated runs.
+
+The current MVP has three layers:
+
+| Layer | Purpose | Current Implementation |
+| --- | --- | --- |
+| Persistent Memory | Store one structured execution record per run | JSON-backed `MemoryEntry` records |
+| Summary Memory | Compact many old records into long-term lessons | deterministic `MemorySummary` compaction |
+| Retrieval Memory | Select memories relevant to the current goal | keyword-based retrieval before prompt injection |
+
+The retrieval layer is intentionally pluggable. Keyword retrieval is used for the
+local MVP and deterministic tests; embedding-based RAG retrieval is planned as a
+future upgrade.
 
 ## Monorepo Layout
 
@@ -200,7 +219,8 @@ npm run smoke:react-app
 - The Agent is not given arbitrary shell access.
 - Repair loops are bounded by `maxRepairAttempts`.
 - Preview ports are checked before use and Vite uses strict port behavior.
-- Memory injected into prompts is bounded by recency and character budget.
+- Memory injected into prompts is selected by relevance, bounded by entry count
+  and character budget, and can include compact long-term summaries.
 
 ## Current Status
 
@@ -222,7 +242,7 @@ multi-tenant SaaS.
 - Implemented a safe workspace layer with bounded file operations, allowlisted
   command execution, and repair-loop limits.
 - Designed a traceable Agent workflow with Coordinator planning, reusable Skills,
-  structured Memory, Harness/Eval checks, human approval, JSON persistence,
+  three-layer Memory, Harness/Eval checks, human approval, JSON persistence,
   version snapshots, follow-up iteration, and live preview.
 - Added deterministic tests with fake model providers while keeping the product
   path on real LLM execution.
@@ -230,8 +250,8 @@ multi-tenant SaaS.
 ## Roadmap
 
 - Version diff and rollback on top of the existing v1/v2/v3 snapshot flow.
-- Relevance-based Memory selection, compression, and optional LLM memory
-  consolidation.
+- LLM-based memory compaction and embedding/RAG retrieval on top of the current
+  deterministic Memory pipeline.
 - More realistic multi-agent execution with separate planner, coder, reviewer,
   and test agents.
 - Stronger sandboxing for command execution.

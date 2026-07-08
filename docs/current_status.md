@@ -27,7 +27,7 @@ goal
 ## Implemented Modules
 
 - `apps/api`: Fastify API, run orchestration, JSON persistence, version
-  snapshots, memory persistence, preview manager.
+  snapshots, three-layer memory MVP, preview manager.
 - `apps/web`: React workbench with landing page, run workspace, version history,
   live preview, files, trace, and iteration prompt.
 - `packages/agent-core`: OpenAI-compatible provider, Coding Agent, Agent loop,
@@ -86,14 +86,17 @@ goal
 - `npm install` and `npm run build` are actually executed.
 - Preview starts a real Vite dev process for the generated app or a selected
   version snapshot.
+- Memory stores structured execution records, compacts them into long-term
+  summaries, retrieves relevant records by keyword, and injects bounded context
+  into later Agent runs.
 - Test fakes are only used in automated tests.
 
 ## Known Limitations
 
 - Version history now stores app snapshots, but diff and rollback are still
   planned.
-- Memory is persisted, structured, and bounded, but not relevance-ranked or
-  compressed yet.
+- Memory relevance and compression are implemented as deterministic MVP
+  strategies. LLM compaction and embedding/RAG retrieval are still planned.
 - Multi-agent is represented by Coordinator assignments; fully independent LLM
   sub-agents are still planned.
 - The app uses JSON files for local persistence, not a production database.
@@ -103,8 +106,8 @@ goal
 ## Next Enhancements
 
 1. Version diff and rollback: compare snapshots and restore an earlier version.
-2. Memory relevance and compression: select memories related to the current goal
-   and summarize long histories.
+2. LLM/RAG memory upgrade: replace or augment rule-based compaction with LLM
+   summarization, and replace keyword retrieval with embedding-based RAG.
 3. Real multi-agent execution: planner, coder, reviewer, and test agents with
    separate turns.
 4. Browser-based evaluation: use Playwright-style checks for generated UI

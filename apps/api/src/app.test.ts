@@ -974,6 +974,196 @@ describe("POST /runs/:id/execute", () => {
     });
   });
 
+  it("passes long-term memory summaries to the executor", async () => {
+    const temporaryRoot = await mkdtemp(
+        path.join(os.tmpdir(), "appforge-api-"),
+    );
+
+    temporaryDirectories.push(temporaryRoot);
+
+    const workspaceManager = new WorkspaceManager(temporaryRoot);
+    const memoryRepository = new MemoryRepository();
+
+    memoryRepository.saveSummary({
+      id: "summary-1",
+      content: [
+        "Long-term lessons:",
+        "- Prefer Chinese UI copy when the goal is written in Chinese.",
+      ].join("\n"),
+      sourceMemoryIds: ["memory-1"],
+      createdAt: "2026-07-08T00:00:00.000Z",
+    });
+
+    const executeRun = vi.fn(async (input: {
+      goal: string;
+      workspaceRoot: string;
+      memoryContext?: string;
+    }) => ({
+      workspaceRoot: input.workspaceRoot,
+      coordination: TEST_COORDINATION,
+      agent: {
+        finished: true,
+        steps: [],
+      },
+      install: {
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      },
+      build: {
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      },
+      eval: {
+        passed: true,
+        checks: [],
+      },
+      review: {
+        accepted: true,
+        reason: "ok",
+        checks: {
+          agentFinished: true,
+          installPassed: true,
+          buildPassed: true,
+          evalPassed: true,
+        },
+      },
+      attempts: [],
+    }));
+
+    const app = buildApp(
+        undefined,
+        workspaceManager,
+        executeRun,
+        undefined,
+        memoryRepository,
+    );
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/runs",
+      payload: {
+        goal: "Create a Chinese landing page",
+      },
+    });
+
+    const createdRun = RunSchema.parse(createResponse.json());
+
+    const executeResponse = await app.inject({
+      method: "POST",
+      url: `/runs/${createdRun.id}/execute`,
+    });
+
+    expect(executeResponse.statusCode).toBe(200);
+    expect(executeRun).toHaveBeenCalledWith({
+      goal: createdRun.goal,
+      workspaceRoot: workspaceManager.resolve(createdRun.id),
+      memoryContext: [
+        "Long-term memory:",
+        "Long-term lessons:",
+        "- Prefer Chinese UI copy when the goal is written in Chinese.",
+      ].join("\n"),
+    });
+  });
+
+  it("passes only relevant memory entries to the executor", async () => {
+    const temporaryRoot = await mkdtemp(
+        path.join(os.tmpdir(), "appforge-api-"),
+    );
+
+    temporaryDirectories.push(temporaryRoot);
+
+    const workspaceManager = new WorkspaceManager(temporaryRoot);
+    const memoryRepository = new MemoryRepository();
+
+    memoryRepository.save({
+      id: "memory-task",
+      runId: "run-task",
+      goal: "Create a task app",
+      outcome: "succeeded",
+      summary: "Generated a task list with input and add button.",
+      createdAt: "2026-07-08T00:00:00.000Z",
+    });
+    memoryRepository.save({
+      id: "memory-wenzhou",
+      runId: "run-wenzhou",
+      goal: "Create a Chinese Wenzhou landing page",
+      outcome: "succeeded",
+      summary: "Generated Chinese copy for food, attractions, and transportation.",
+      createdAt: "2026-07-08T01:00:00.000Z",
+    });
+
+    const executeRun = vi.fn(async (input: {
+      goal: string;
+      workspaceRoot: string;
+      memoryContext?: string;
+    }) => ({
+      workspaceRoot: input.workspaceRoot,
+      coordination: TEST_COORDINATION,
+      agent: {
+        finished: true,
+        steps: [],
+      },
+      install: {
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      },
+      build: {
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      },
+      eval: {
+        passed: true,
+        checks: [],
+      },
+      review: {
+        accepted: true,
+        reason: "ok",
+        checks: {
+          agentFinished: true,
+          installPassed: true,
+          buildPassed: true,
+          evalPassed: true,
+        },
+      },
+      attempts: [],
+    }));
+
+    const app = buildApp(
+        undefined,
+        workspaceManager,
+        executeRun,
+        undefined,
+        memoryRepository,
+    );
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/runs",
+      payload: {
+        goal: "Build a Chinese Wenzhou travel page",
+      },
+    });
+
+    const createdRun = RunSchema.parse(createResponse.json());
+
+    const executeResponse = await app.inject({
+      method: "POST",
+      url: `/runs/${createdRun.id}/execute`,
+    });
+
+    expect(executeResponse.statusCode).toBe(200);
+    const executeInput = executeRun.mock.calls[0]?.[0];
+
+    expect(executeInput?.memoryContext).toContain(
+        "Create a Chinese Wenzhou landing page",
+    );
+    expect(executeInput?.memoryContext).not.toContain("Create a task app");
+  });
+
   it("stores a memory entry after executing a run", async () => {
     const temporaryRoot = await mkdtemp(
         path.join(os.tmpdir(), "appforge-api-"),
@@ -1071,6 +1261,104 @@ describe("POST /runs/:id/execute", () => {
         },
       ],
     });
+  });
+
+  it("compacts memory after the threshold is reached", async () => {
+    const temporaryRoot = await mkdtemp(
+        path.join(os.tmpdir(), "appforge-api-"),
+    );
+
+    temporaryDirectories.push(temporaryRoot);
+
+    const workspaceManager = new WorkspaceManager(temporaryRoot);
+    const memoryRepository = new MemoryRepository();
+
+    for (let index = 1; index <= 9; index += 1) {
+      memoryRepository.save({
+        id: `memory-${index}`,
+        runId: `run-${index}`,
+        goal: `Create app ${index}`,
+        outcome: "succeeded",
+        summary: "Previous run succeeded.",
+        createdAt: "2026-07-07T00:00:00.000Z",
+      });
+    }
+
+    const executeRun = async (input: {
+      goal: string;
+      workspaceRoot: string;
+    }) => ({
+      workspaceRoot: input.workspaceRoot,
+      coordination: TEST_COORDINATION,
+      agent: {
+        finished: true,
+        steps: [],
+      },
+      install: {
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      },
+      build: {
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      },
+      eval: {
+        passed: true,
+        checks: [
+          {
+            name: "has input",
+            passed: true,
+          },
+        ],
+      },
+      review: {
+        accepted: true,
+        reason: "Agent finished and install/build/eval passed.",
+        checks: {
+          agentFinished: true,
+          installPassed: true,
+          buildPassed: true,
+          evalPassed: true,
+        },
+      },
+      attempts: [],
+    });
+
+    const app = buildApp(
+        undefined,
+        workspaceManager,
+        executeRun,
+        undefined,
+        memoryRepository,
+    );
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/runs",
+      payload: {
+        goal: "Create a task app",
+      },
+    });
+
+    const createdRun = RunSchema.parse(createResponse.json());
+
+    await app.inject({
+      method: "POST",
+      url: `/runs/${createdRun.id}/execute`,
+    });
+
+    const summaries = await memoryRepository.listSummaries();
+
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toEqual({
+      id: expect.any(String),
+      content: expect.stringContaining("- Source memories: 10"),
+      sourceMemoryIds: expect.arrayContaining(["memory-1", "memory-9"]),
+      createdAt: expect.any(String),
+    });
+    expect(summaries[0]?.sourceMemoryIds).toHaveLength(10);
   });
 });
 describe("POST /runs/:id/approve", () => {

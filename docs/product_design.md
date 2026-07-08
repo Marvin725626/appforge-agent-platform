@@ -455,14 +455,16 @@ The local portfolio/demo implementation has completed the main product loop:
 - React/Vite app workflow: copy starter, coordinate, call Agent, install, build,
   evaluate, review, repair, snapshot versions, preview selected versions, and
   record trace.
-- Minimal Coordinator, Skill, Memory, Human-in-the-loop, Harness/Eval, and Preview
+- Minimal Coordinator, Skill, Human-in-the-loop, Harness/Eval, and Preview
   Manager are implemented.
+- Memory has a three-layer MVP: persistent execution records, deterministic
+  summary compaction, and keyword-based retrieval before prompt injection.
 
 The remaining work is no longer about proving the core Agent loop. The next
 milestones are product polish and deeper platform capabilities: version diff and
-rollback, stronger memory relevance/compression, more independent multi-agent
-execution, stronger sandboxing, richer browser-based evaluation, and shareable
-run reports.
+rollback, LLM-based memory compaction, embedding/RAG retrieval, more independent
+multi-agent execution, stronger sandboxing, richer browser-based evaluation, and
+shareable run reports.
 
 ### Phase 1: Product Design
 
@@ -496,8 +498,9 @@ run reports.
 ### Phase 6: Memory, Skills, Human-in-the-Loop, Harness/Eval
 
 - Add scoped project/run memory.
-- Start with bounded structured memory, then later add relevance selection and
-  optional LLM-based memory consolidation for long histories.
+- Start with bounded structured memory, deterministic compaction, and keyword
+  retrieval; later add LLM-based memory consolidation and embedding/RAG
+  retrieval for semantic relevance.
 - Add reusable versioned Skills.
 - Add approval and clarification workflows.
 - Add regression scenarios and evaluation reports.

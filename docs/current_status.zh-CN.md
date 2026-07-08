@@ -25,7 +25,7 @@
 
 ## 已实现模块
 
-- `apps/api`：Fastify API、Run 编排、JSON 持久化、版本快照、Memory 持久化、预览进程管理。
+- `apps/api`：Fastify API、Run 编排、JSON 持久化、版本快照、三层 Memory MVP、预览进程管理。
 - `apps/web`：React 工作台，包含首页、Run Workspace、版本历史、实时预览、文件查看、Trace 和继续迭代输入框。
 - `packages/agent-core`：OpenAI-compatible provider、Coding Agent、Agent loop、Coordinator、Skill、Memory、Reviewer、React app runner。
 - `packages/workspace`：安全路径处理、文件操作、allowlisted command execution。
@@ -79,13 +79,13 @@
 - `npm install` 和 `npm run build` 会真实执行。
 - 预览会启动真实 Vite dev process。
 - 版本历史会保存生成应用的文件快照。
-- Memory 会写入本地 JSON 文件并在后续 Run 中注入有界上下文。
+- Memory 会写入本地 JSON 文件，压缩成长期 summary，并按当前 goal 检索相关经验后注入有界上下文。
 - Fake/Mock 只用于自动化测试。
 
 ## 当前限制
 
 - 版本系统已经支持快照和指定版本预览，但还没有 diff 和 rollback。
-- Memory 已经持久化、结构化、有边界，但还没有相关性排序、向量检索和压缩。
+- Memory 已经完成三层 MVP：Persistent Memory、Summary Memory、Keyword Retrieval Memory。LLM 压缩和 embedding/RAG 检索仍是后续增强。
 - 多 Agent 目前主要体现在 Coordinator 的角色分工，真正多个 LLM 子 Agent 独立执行还在后续路线。
 - 当前使用 JSON 文件做本地持久化，不是生产数据库。
 - Workspace 是应用层安全边界，还没有容器级沙箱。
@@ -93,7 +93,7 @@
 ## 下一步增强
 
 1. 版本 diff 和 rollback：对比 v1/v2/v3，并允许恢复旧版本。
-2. Memory 相关性和压缩：只选择与当前目标相关的记忆，并总结长历史。
+2. LLM/RAG Memory：用 LLM 提升长期总结质量，并用 embedding/RAG 替代或增强关键词检索。
 3. 更真实的多 Agent：planner、coder、reviewer、test agent 分开对话和协作。
 4. 浏览器行为评估：用类似 Playwright 的方式检查生成 UI 是否真的可用。
 5. 分享和导出：保存 Run Report、截图、产物，方便做简历和面试展示。

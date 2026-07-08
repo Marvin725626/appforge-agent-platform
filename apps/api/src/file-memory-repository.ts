@@ -5,42 +5,67 @@ import { z } from "zod";
 import type {
     MemoryEntry,
     MemoryRepositoryLike,
+    MemorySummary,
 } from "./memory-repository.js";
 
 const MemoryEntrySchema = z.object({
-   id:z.string(),
-   runId:z.string(),
+    id: z.string(),
+    runId: z.string(),
     goal: z.string(),
     outcome: z.enum(["succeeded", "waiting_for_human", "failed"]),
     summary: z.string(),
     createdAt: z.string(),
 });
 
+const MemorySummarySchema = z.object({
+    id: z.string(),
+    content: z.string(),
+    sourceMemoryIds: z.array(z.string()),
+    createdAt: z.string(),
+});
+
 const MemoryStoreSchema = z.object({
-    memories:z.array(MemoryEntrySchema).default([]),
+    memories: z.array(MemoryEntrySchema).default([]),
+    summaries: z.array(MemorySummarySchema).default([]),
 });
 
 type MemoryStore = {
-    memories:MemoryEntry[];
+    memories: MemoryEntry[];
+    summaries: MemorySummary[];
 };
 
-function emptyMemoryStore():MemoryStore{
+function emptyMemoryStore(): MemoryStore {
     return {
-        memories:[],
+        memories: [],
+        summaries: [],
     };
 }
 
 export class FileMemoryRepository implements MemoryRepositoryLike {
     constructor(private readonly storePath: string) {}
-    async list():Promise<MemoryEntry[]>{
+
+    async list(): Promise<MemoryEntry[]> {
         const store = await this.readStore();
         return store.memories;
     }
-    async save(entry:MemoryEntry):Promise<void>{
+
+    async save(entry: MemoryEntry): Promise<void> {
         const store = await this.readStore();
         store.memories.push(entry);
         await this.writeStore(store);
     }
+
+    async listSummaries(): Promise<MemorySummary[]> {
+        const store = await this.readStore();
+        return store.summaries;
+    }
+
+    async saveSummary(summary: MemorySummary): Promise<void> {
+        const store = await this.readStore();
+        store.summaries.push(summary);
+        await this.writeStore(store);
+    }
+
     private async readStore(): Promise<MemoryStore> {
         try {
             const content = await readFile(this.storePath, "utf8");
@@ -48,6 +73,7 @@ export class FileMemoryRepository implements MemoryRepositoryLike {
 
             return {
                 memories: parsedStore.memories,
+                summaries: parsedStore.summaries,
             };
         } catch (error) {
             if (
@@ -61,10 +87,12 @@ export class FileMemoryRepository implements MemoryRepositoryLike {
             throw error;
         }
     }
+
     private async writeStore(store: MemoryStore): Promise<void> {
-        await mkdir(path.dirname(this.storePath),{
-           recursive:true,
+        await mkdir(path.dirname(this.storePath), {
+            recursive: true,
         });
+
         await writeFile(
             this.storePath,
             `${JSON.stringify(store, null, 2)}\n`,

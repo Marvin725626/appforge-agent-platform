@@ -16,11 +16,16 @@ import { PreviewManager } from "./preview-manager.js";
 import { coordinateAgents } from "@appforge/agent-core";
 import { containsLikelyMojibake } from "@appforge/harness";
 import {
-    formatMemoryContext,
+    formatAgentMemoryContext,
     MemoryRepository,
     type MemoryRepositoryLike,
 } from "./memory-repository.js";
 import { saveRunVersionSnapshot } from "./run-version-snapshot.js";
+import {
+    compactMemoryEntries,
+    shouldCompactMemory,
+} from "./memory-compactor.js";
+import { retrieveRelevantMemory } from "./memory-retrieval.js";
 
 const RepairRequestSchema = z.object({
     feedback: z.string().trim().min(1).max(2000),
@@ -51,6 +56,31 @@ function summarizeRunMemory(result: RunReactAppAgentResult): string {
     ].join(" ");
 }
 
+async function maybeCompactMemory(
+    memoryRepository: MemoryRepositoryLike,
+): Promise<void> {
+    const memories = await memoryRepository.list();
+    const summaries = await memoryRepository.listSummaries();
+
+    if (
+        !shouldCompactMemory({
+            memoryCount: memories.length,
+            summaryCount: summaries.length,
+        })
+    ) {
+        return;
+    }
+
+    const summary = compactMemoryEntries({
+        entries: memories,
+    });
+
+    if (summary === undefined) {
+        return;
+    }
+
+    await memoryRepository.saveSummary(summary);
+}
 export  function buildApp(
     runRepository: RunRepositoryLike = new RunRepository(),
     workspaceManager = new WorkspaceManager(
@@ -137,10 +167,20 @@ export  function buildApp(
             await runRepository.save(run);
 
             try {
-                const recentMemoryEntries = await memoryRepository.list();
-                const memoryContext = formatMemoryContext(
-                    recentMemoryEntries.slice(-5),
-                ).slice(0, 2000);
+                const memoryEntries = await memoryRepository.list();
+                const memorySummaries = await memoryRepository.listSummaries();
+                const relevantMemoryEntries = retrieveRelevantMemory({
+                    goal: run.goal,
+                    entries: memoryEntries,
+                    maxEntries: 5,
+                });
+
+                const memoryContext = formatAgentMemoryContext({
+                    entries: relevantMemoryEntries,
+                    summaries: memorySummaries,
+                    maxEntries: 5,
+                    maxCharacters: 2000,
+                });
 
                 const executeRunInput: Parameters<ExecuteRun>[0] = {
                     goal: run.goal,
@@ -171,6 +211,7 @@ export  function buildApp(
                     summary: summarizeRunMemory(result),
                     createdAt: new Date().toISOString(),
                 });
+                await maybeCompactMemory(memoryRepository);
                 const existingVersion = await runRepository.listVersions(run.id);
 
                 if(existingVersion.length === 0){
@@ -290,6 +331,7 @@ export  function buildApp(
                     summary: summarizeRunMemory(result),
                     createdAt: new Date().toISOString(),
                 });
+                await maybeCompactMemory(memoryRepository);
 
                 const existingVersions =
                     await runRepository.listVersions(run.id);
@@ -395,6 +437,7 @@ export  function buildApp(
                     summary: summarizeRunMemory(result),
                     createdAt: new Date().toISOString(),
                 });
+                await maybeCompactMemory(memoryRepository);
 
                 const existingVersions = await runRepository.listVersions(run.id);
                 const nextVersionNumber = existingVersions.length+1;

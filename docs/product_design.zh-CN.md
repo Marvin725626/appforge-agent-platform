@@ -410,9 +410,10 @@ apps -> agent-core/workspace/harness -> protocol
 - 产品主链路使用真实 OpenAI-compatible provider。
 - Coding Agent Loop 已支持结构化 action 解析、安全 workspace 执行、步数预算和 finish 停止策略。
 - React/Vite app 工作流已支持复制 starter、Coordinator 分工、调用 Agent、安装依赖、构建、Harness/Eval、Reviewer 审查、自动修复、保存版本快照、预览指定版本和记录 Trace。
-- Coordinator、Skill、Memory、Human-in-the-loop、Harness/Eval、Preview Manager 都已经有最小可用实现。
+- Coordinator、Skill、Human-in-the-loop、Harness/Eval、Preview Manager 都已经有最小可用实现。
+- Memory 已完成三层 MVP：结构化执行记忆、规则版长期总结压缩、按当前 goal 的关键词检索注入。
 
-剩余工作不再是证明“Agent 能跑通”，而是继续增强平台深度：版本 diff / rollback、Memory 相关性与压缩、更独立的多 Agent 执行、更强 sandbox、浏览器行为评估、可分享 Run Report 和简历包装。
+剩余工作不再是证明“Agent 能跑通”，而是继续增强平台深度：版本 diff / rollback、LLM 记忆压缩、embedding/RAG 语义检索、更独立的多 Agent 执行、更强 sandbox、浏览器行为评估、可分享 Run Report 和简历包装。
 
 ### 阶段一：产品设计
 
@@ -446,7 +447,7 @@ apps -> agent-core/workspace/harness -> protocol
 ### 阶段六：Memory、Skill、Human-in-the-loop、Harness/Eval
 
 - 添加有作用域的 Project/Run Memory。
-- 先实现有边界的结构化 Memory，后续再加入相关性筛选和可选的 LLM 记忆压缩。
+- 先实现有边界的结构化 Memory、规则版压缩和关键词检索，后续再加入 LLM 记忆压缩和 embedding/RAG 语义检索。
 - 添加可复用、可版本化 Skill。
 - 添加审批与澄清流程。
 - 添加回归场景和评估报告。

@@ -72,6 +72,7 @@ sequenceDiagram
 | 人工介入 | 支持 Approve 和 Request Repair Feedback |
 | 版本系统 | 保存 v1/v2/v3 应用快照，并可预览指定版本 |
 | 继续迭代 | 在已有 Run 上输入后续修改需求，生成新版本 |
+| Memory | 执行记忆、长期总结记忆、关键词检索记忆三层 MVP |
 | 可观测性 | Plan、Trace、Attempts、生成文件、命令输出、实时预览 |
 | 持久化 | 本地 JSON 保存 Runs、Results、Versions、Memory |
 | Web 工作台 | 首页、Run Workspace、版本历史、预览、右侧检查面板 |
@@ -107,6 +108,20 @@ flowchart TD
     API --> Preview["Vite Preview Manager"]
     Workspace --> Generated["生成的 React/Vite App"]
 ```
+
+## Memory 模型
+
+AppForge 的 Memory 不是聊天记录，而是 Agent 执行经验库。它不会把 A 任务的完整对话直接塞给 B 任务，而是保存结构化执行经验，并在后续任务中按规则筛选后注入给 Agent。
+
+当前 Memory MVP 分三层：
+
+| 层级 | 作用 | 当前实现 |
+| --- | --- | --- |
+| Persistent Memory | 每次 Run 后保存一条结构化执行经验 | JSON-backed `MemoryEntry` |
+| Summary Memory | 多条旧经验压缩成长期经验 | 规则版 `MemorySummary` compaction |
+| Retrieval Memory | 根据当前 goal 筛选相关经验 | 关键词检索，最多注入相关 memory |
+
+后续会在这个接口上升级：用 LLM 做更高质量的记忆压缩，用 embedding/RAG 做语义检索。
 
 ## Monorepo 结构
 
@@ -178,7 +193,7 @@ npm run smoke:react-app
 - Agent 不获得任意 shell 权限。
 - Repair loop 由 `maxRepairAttempts` 限制。
 - 预览端口会先检查占用，并使用 Vite strict port。
-- Memory 注入 prompt 时限制最近记录和字符长度。
+- Memory 注入 prompt 前会先做相关性筛选，并限制条数和总字符长度；长期总结也会以有界上下文注入。
 
 ## 当前状态
 
@@ -196,13 +211,13 @@ npm run smoke:react-app
 
 - 从零实现 TypeScript Monorepo Agent 平台，使用真实 OpenAI-compatible LLM 完成 React/Vite 应用的生成、构建、评估、修复、版本化和预览。
 - 设计安全 Workspace 层，实现路径边界控制、allowlisted command execution 和有界 repair loop。
-- 构建可观测 Agent 工作流，包含 Coordinator、Skill、Memory、Trace、Harness/Eval、Human-in-the-loop、JSON 持久化、版本快照、继续迭代和实时预览。
+- 构建可观测 Agent 工作流，包含 Coordinator、Skill、三层 Memory、Trace、Harness/Eval、Human-in-the-loop、JSON 持久化、版本快照、继续迭代和实时预览。
 - 使用 FakeModelProvider 编写确定性测试，同时保持产品主链路使用真实 LLM。
 
 ## 后续增强
 
 - 版本 diff 和 rollback：在已有 v1/v2/v3 快照基础上支持对比和回滚。
-- Memory 相关性筛选、压缩和可选 LLM 记忆总结。
+- LLM 记忆压缩和 embedding/RAG 语义检索，在当前规则版 Memory 管道上继续升级。
 - 更真实的多 Agent：planner、coder、reviewer、test agent 分开对话和协作。
 - 更强的命令执行沙箱。
 - 基于浏览器自动化的视觉和行为评估。
