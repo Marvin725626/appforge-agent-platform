@@ -194,6 +194,7 @@ const app = buildApp(
         agentOptions.evaluateBrowser = async ({
             goal,
             workspaceRoot,
+            browserProbes,
             signal: browserSignal,
         }) => {
             browserSignal?.throwIfAborted();
@@ -206,6 +207,9 @@ const app = buildApp(
             return browserEvaluator.evaluate({
                 url: preview.url,
                 goal,
+                ...(browserProbes && browserProbes.length > 0
+                    ? { probes: browserProbes }
+                    : {}),
                 ...(browserSignal ? { signal: browserSignal } : {}),
             });
         };

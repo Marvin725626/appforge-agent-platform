@@ -97,6 +97,7 @@ type Scenario = {
     request: string;
     expectedMode: "fast_edit" | "structural_edit";
     expectedAccepted: boolean;
+    expectedScopeViolation?: boolean;
     responses: Array<{ content: string }>;
     browserEval?: BrowserEvalResult;
 };
@@ -106,6 +107,7 @@ type ScenarioResult = {
     expectedMode: Scenario["expectedMode"];
     actualMode: RunReactAppAgentResult["executionMode"];
     expectedAccepted: boolean;
+    expectedScopeViolation: boolean;
     actualAccepted: boolean;
     plannerCalls: number;
     codingCalls: number;
@@ -117,6 +119,9 @@ type ScenarioResult = {
     workspaceDiffModifiedFiles: string[];
     requirementStatuses: Array<{ id: string; status: string }>;
     unexpectedFileChanges: string[];
+    unexpectedRangeChanges: number;
+    scopeViolations: number;
+    browserEvidenceCount: number;
 };
 
 function editFile(filePath: string, oldText: string, newText: string) {
@@ -153,6 +158,7 @@ const scenarios: Scenario[] = [
             evidence: [
                 {
                     source: "browser",
+                    requirementId: "REQ-1",
                     selector: "button",
                     property: "textContent",
                     expected: "Submit",
@@ -176,6 +182,7 @@ const scenarios: Scenario[] = [
             evidence: [
                 {
                     source: "computed_style",
+                    requirementId: "REQ-1",
                     selector: ".sidebar",
                     property: "width",
                     expected: "220px",
@@ -199,6 +206,7 @@ const scenarios: Scenario[] = [
             evidence: [
                 {
                     source: "computed_style",
+                    requirementId: "REQ-1",
                     selector: ".hero",
                     property: "background-color",
                     expected: "dark gray",
@@ -220,6 +228,20 @@ const scenarios: Scenario[] = [
             ),
             finish,
         ],
+        browserEval: {
+            passed: true,
+            checks: [{ name: "second feature removed", passed: true }],
+            evidence: [
+                {
+                    source: "browser",
+                    requirementId: "REQ-1",
+                    selector: ".feature-two",
+                    property: "element_count",
+                    expected: "0",
+                    actual: "0",
+                },
+            ],
+        },
     },
     {
         name: "move_button",
@@ -236,6 +258,7 @@ const scenarios: Scenario[] = [
             evidence: [
                 {
                     source: "computed_style",
+                    requirementId: "REQ-1",
                     selector: "button",
                     property: "margin-left",
                     expected: "16px",
@@ -253,6 +276,20 @@ const scenarios: Scenario[] = [
             editFile("src/About.tsx", "<h1>About old</h1>", "<h1>About new</h1>"),
             finish,
         ],
+        browserEval: {
+            passed: true,
+            checks: [{ name: "about title changed", passed: true }],
+            evidence: [
+                {
+                    source: "browser",
+                    requirementId: "REQ-1",
+                    selector: ".about-page h1",
+                    property: "textContent",
+                    expected: "About new",
+                    actual: "About new",
+                },
+            ],
+        },
     },
     {
         name: "mobile_single_column",
@@ -273,6 +310,7 @@ const scenarios: Scenario[] = [
             evidence: [
                 {
                     source: "computed_style",
+                    requirementId: "REQ-1",
                     selector: ".feature-grid",
                     property: "grid-template-columns",
                     expected: "single column on mobile",
@@ -296,6 +334,7 @@ const scenarios: Scenario[] = [
             evidence: [
                 {
                     source: "browser",
+                    requirementId: "REQ-1",
                     selector: ".hero img",
                     property: "src",
                     expected: "/new-hero.jpg",
@@ -303,6 +342,56 @@ const scenarios: Scenario[] = [
                 },
             ],
         },
+    },
+    {
+        name: "scope_outside_css",
+        request: "Change the left sidebar width to 220px, other areas do not modify",
+        expectedMode: "fast_edit",
+        expectedAccepted: false,
+        expectedScopeViolation: true,
+        responses: [
+            editFile(
+                "src/App.css",
+                `.sidebar {
+    width: 260px;
+}
+
+.hero {
+    background: blue;
+    padding: 24px;
+}`,
+                `.sidebar {
+    width: 220px;
+}
+
+.hero {
+    background: red;
+    padding: 24px;
+}`,
+            ),
+            finish,
+        ],
+    },
+    {
+        name: "scope_outside_tsx",
+        request: "Change the button text from Start to Submit and do not modify other areas",
+        expectedMode: "fast_edit",
+        expectedAccepted: false,
+        expectedScopeViolation: true,
+        responses: [
+            editFile("src/App.tsx", "<h1>Welcome</h1>", "<h1>Unexpected title</h1>"),
+            finish,
+        ],
+    },
+    {
+        name: "missing_browser_evidence",
+        request: "Change the Hero background from blue to dark gray",
+        expectedMode: "fast_edit",
+        expectedAccepted: false,
+        responses: [
+            editFile("src/App.css", "background: blue;", "background: #202124;"),
+            finish,
+        ],
     },
     {
         name: "whole_redo",
@@ -399,6 +488,7 @@ async function runScenario(scenario: Scenario): Promise<ScenarioResult> {
             expectedMode: scenario.expectedMode,
             actualMode: result.executionMode,
             expectedAccepted: scenario.expectedAccepted,
+            expectedScopeViolation: scenario.expectedScopeViolation === true,
             actualAccepted: result.review.accepted,
             plannerCalls: result.metrics?.plannerCalls ?? 0,
             codingCalls: result.metrics?.codingCalls ?? 0,
@@ -421,6 +511,30 @@ async function runScenario(scenario: Scenario): Promise<ScenarioResult> {
                         ),
                     )
                     .filter((filePath, index, files) => files.indexOf(filePath) === index) ?? [],
+            unexpectedRangeChanges:
+                result.requirements?.reduce(
+                    (count, requirement) =>
+                        count +
+                        requirement.evidences.reduce(
+                            (innerCount, evidence) =>
+                                innerCount +
+                                (evidence.unexpectedRanges?.length ?? 0),
+                            0,
+                        ),
+                    0,
+                ) ?? 0,
+            scopeViolations: result.scopeViolations?.length ?? 0,
+            browserEvidenceCount:
+                result.requirements?.reduce(
+                    (count, requirement) =>
+                        count +
+                        requirement.evidences.filter(
+                            (evidence) =>
+                                evidence.source === "browser" ||
+                                evidence.source === "computed_style",
+                        ).length,
+                    0,
+                ) ?? 0,
         };
     } finally {
         await Promise.all([
@@ -482,40 +596,60 @@ async function main(): Promise<void> {
     const structuralScenarios = results.filter(
         (result) => result.expectedMode === "structural_edit",
     );
+    const scopeViolationScenarios = results.filter(
+        (result) => result.expectedScopeViolation,
+    );
     const summary = {
-        focused_edit_detection_accuracy: rate(
+        totalCases: results.length,
+        passedCases: results.filter(
+            (result) => result.actualAccepted === result.expectedAccepted,
+        ).length,
+        focusedEditDetectionAccuracy: rate(
             results.filter((result) => result.actualMode === result.expectedMode)
                 .length,
             results.length,
         ),
-        requirement_pass_accuracy: rate(
+        requirementPassAccuracy: rate(
             results.filter(
                 (result) => result.actualAccepted === result.expectedAccepted,
             ).length,
             results.length,
         ),
-        preservation_success_rate: rate(
+        preservationSuccessRate: rate(
             fastScenarios.filter(
                 (result) => result.unexpectedFileChanges.length === 0,
             ).length,
             fastScenarios.length,
         ),
-        unexpected_file_change_rate: rate(
+        scopeViolationDetectionRate: rate(
+            scopeViolationScenarios.filter((result) => result.scopeViolations > 0)
+                .length,
+            scopeViolationScenarios.length,
+        ),
+        unexpectedFileChangeRate: rate(
             results.filter((result) => result.unexpectedFileChanges.length > 0)
                 .length,
             results.length,
         ),
-        average_coding_calls: average(
+        unexpectedRangeChangeRate: rate(
+            results.filter((result) => result.unexpectedRangeChanges > 0).length,
+            results.length,
+        ),
+        browserProbeSuccessRate: rate(
+            results.filter((result) => result.browserEvidenceCount > 0).length,
+            results.filter((result) => result.expectedMode === "fast_edit").length,
+        ),
+        averageCodingCalls: average(
             results.map((result) => result.codingCalls),
         ),
-        average_total_duration_ms: average(
+        averageTotalDurationMs: average(
             results.map((result) => result.totalDurationMs),
         ),
-        npm_install_skip_rate: rate(
+        npmInstallSkipRate: rate(
             fastScenarios.filter((result) => result.npmInstallSkipped).length,
             fastScenarios.length,
         ),
-        false_fast_edit_rate: rate(
+        falseFastEditRate: rate(
             structuralScenarios.filter(
                 (result) => result.actualMode === "fast_edit",
             ).length,
@@ -529,9 +663,21 @@ async function main(): Promise<void> {
         results,
     };
 
+    const repositoryRoot = path.resolve(process.cwd(), "../..");
+    const artifactsDirectory = path.join(repositoryRoot, "artifacts");
+    const jsonPath = path.join(artifactsDirectory, "focused-edit-benchmark.json");
+    const markdownPath = path.join(artifactsDirectory, "focused-edit-benchmark.md");
+    const markdown = createMarkdown(summary, results);
+
+    await mkdir(artifactsDirectory, { recursive: true });
+    await writeFile(jsonPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    await writeFile(markdownPath, markdown, "utf8");
+
     console.log(JSON.stringify(payload, null, 2));
     console.log("\n--- markdown ---\n");
-    console.log(createMarkdown(summary, results));
+    console.log(markdown);
+    console.log(`Wrote ${jsonPath}`);
+    console.log(`Wrote ${markdownPath}`);
 }
 
 main().catch((error) => {

@@ -67,12 +67,54 @@ export type BrowserEvalResult = {
 
 export type BrowserEvalEvidence = {
     source: "browser" | "computed_style";
+    requirementId?: string;
     selector?: string;
     property?: string;
     expected?: string;
     actual?: string;
     before?: string;
     after?: string;
+    beforeElement?: ElementSnapshot;
+    afterElement?: ElementSnapshot;
+};
+
+export type BrowserProbe = {
+    requirementId: string;
+    route?: string;
+    selector: string;
+    viewport: {
+        width: number;
+        height: number;
+    };
+    measurement:
+        | "computed_style"
+        | "bounding_box"
+        | "visibility"
+        | "text"
+        | "attribute"
+        | "element_count";
+    property?: string;
+    expected?: string | number | boolean;
+    tolerance?: number;
+};
+
+export type ElementSnapshot = {
+    route: string;
+    selector: string;
+    viewport: {
+        width: number;
+        height: number;
+    };
+    exists: boolean;
+    visible: boolean;
+    text?: string;
+    boundingBox?: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+    };
+    computedStyles: Record<string, string>;
 };
 
 export type BrowserRuntimeEvidence = {
@@ -2085,6 +2127,7 @@ async function evaluateInternalNavigation(input: {
 export type BrowserEvaluateInput = {
     url: string;
     goal?: string;
+    probes?: BrowserProbe[];
     timeoutMs?: number;
     signal?: AbortSignal;
 };
@@ -2352,6 +2395,16 @@ export class PlaywrightBrowserEvaluator implements BrowserEvaluator {
             checks.push(...focusedEvidence.checks);
             evidence.push(...focusedEvidence.evidence);
 
+            if (input.probes && input.probes.length > 0) {
+                const probeEvidence = await evaluateBrowserProbes(
+                    page,
+                    input.url,
+                    input.probes,
+                );
+                checks.push(...probeEvidence.checks);
+                evidence.push(...probeEvidence.evidence);
+            }
+
             if (isTaskAppGoal(input.goal)) {
                 const inputLocator = page.locator("input, textarea").first();
                 const buttonLocator = page.locator("button").first();
@@ -2476,6 +2529,241 @@ export class PlaywrightBrowserEvaluator implements BrowserEvaluator {
             ...(evidence.length > 0 ? { evidence } : {}),
         };
     }
+}
+
+const ELEMENT_SNAPSHOT_STYLE_PROPERTIES = [
+    "display",
+    "position",
+    "width",
+    "height",
+    "margin",
+    "padding",
+    "gap",
+    "color",
+    "backgroundColor",
+    "borderRadius",
+    "transform",
+    "gridTemplateColumns",
+    "flexDirection",
+];
+
+function normalizeColor(value: string | undefined): string | undefined {
+    if (!value) {
+        return undefined;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    const hex = normalized.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/iu);
+
+    if (!hex) {
+        return normalized.replace(/\s+/gu, " ");
+    }
+
+    const raw = hex[1] ?? "";
+    const full =
+        raw.length === 3
+            ? raw
+                  .split("")
+                  .map((character) => `${character}${character}`)
+                  .join("")
+            : raw;
+
+    return `rgb(${Number.parseInt(full.slice(0, 2), 16)}, ${Number.parseInt(full.slice(2, 4), 16)}, ${Number.parseInt(full.slice(4, 6), 16)})`;
+}
+
+function probeValueMatches(input: {
+    expected: BrowserProbe["expected"];
+    actual: string | number | boolean | undefined;
+    tolerance?: number;
+    property?: string;
+}): boolean {
+    if (input.expected === undefined) {
+        return input.actual !== undefined;
+    }
+
+    if (typeof input.expected === "number") {
+        const actualNumber =
+            typeof input.actual === "number"
+                ? input.actual
+                : Number.parseFloat(String(input.actual ?? ""));
+
+        return (
+            Number.isFinite(actualNumber) &&
+            Math.abs(actualNumber - input.expected) <=
+                (input.tolerance ?? 0)
+        );
+    }
+
+    if (typeof input.expected === "boolean") {
+        return input.actual === input.expected;
+    }
+
+    const expected = /color/iu.test(input.property ?? "")
+        ? normalizeColor(input.expected)
+        : String(input.expected).trim().toLowerCase();
+    const actual = /color/iu.test(input.property ?? "")
+        ? normalizeColor(String(input.actual ?? ""))
+        : String(input.actual ?? "").trim().toLowerCase();
+
+    return actual === expected || (actual ?? "").includes(expected ?? "");
+}
+
+async function captureElementSnapshot(
+    page: Page,
+    probe: BrowserProbe,
+): Promise<ElementSnapshot> {
+    const locator = page.locator(probe.selector).first();
+    const exists = (await locator.count()) > 0;
+
+    if (!exists) {
+        return {
+            route: probe.route ?? "/",
+            selector: probe.selector,
+            viewport: probe.viewport,
+            exists: false,
+            visible: false,
+            computedStyles: {},
+        };
+    }
+
+    const visible = await locator.isVisible();
+    const box = await locator.boundingBox();
+    const text = await locator.innerText().catch(() => undefined);
+    const computedStyles = await locator.evaluate((element, properties) => {
+        const style = window.getComputedStyle(element);
+
+        return Object.fromEntries(
+            properties.map((property) => [
+                property,
+                String(
+                    style.getPropertyValue(property) ||
+                        style[property as keyof CSSStyleDeclaration] ||
+                        "",
+                ),
+            ]),
+        );
+    }, ELEMENT_SNAPSHOT_STYLE_PROPERTIES);
+
+    return {
+        route: probe.route ?? "/",
+        selector: probe.selector,
+        viewport: probe.viewport,
+        exists: true,
+        visible,
+        ...(text !== undefined ? { text } : {}),
+        ...(box
+            ? {
+                  boundingBox: {
+                      x: box.x,
+                      y: box.y,
+                      width: box.width,
+                      height: box.height,
+                  },
+              }
+            : {}),
+        computedStyles,
+    };
+}
+
+async function evaluateSingleBrowserProbe(
+    page: Page,
+    probe: BrowserProbe,
+): Promise<{ check: BrowserCheck; evidence: BrowserEvalEvidence }> {
+    await page.setViewportSize(probe.viewport);
+    const afterElement = await captureElementSnapshot(page, probe);
+    let actual: string | number | boolean | undefined;
+
+    if (probe.measurement === "element_count") {
+        actual = await page.locator(probe.selector).count();
+    } else if (probe.measurement === "visibility") {
+        actual =
+            afterElement.exists &&
+            afterElement.visible &&
+            afterElement.computedStyles.display !== "none" &&
+            afterElement.computedStyles.visibility !== "hidden" &&
+            afterElement.computedStyles.opacity !== "0";
+    } else if (probe.measurement === "text") {
+        actual = afterElement.text ?? "";
+    } else if (probe.measurement === "attribute") {
+        actual = await page
+            .locator(probe.selector)
+            .first()
+            .getAttribute(probe.property ?? "")
+            .then((value) => value ?? "")
+            .catch(() => "");
+    } else if (probe.measurement === "bounding_box") {
+        const box = afterElement.boundingBox;
+        actual = box
+            ? Number(box[probe.property as keyof typeof box] ?? Number.NaN)
+            : undefined;
+    } else {
+        actual =
+            afterElement.computedStyles[probe.property ?? ""] ??
+            afterElement.computedStyles[
+                (probe.property ?? "").replace(
+                    /-([a-z])/gu,
+                    (_, letter: string) => letter.toUpperCase(),
+                )
+            ];
+    }
+
+    const passed = probeValueMatches({
+        expected: probe.expected,
+        actual,
+        ...(probe.tolerance !== undefined
+            ? { tolerance: probe.tolerance }
+            : {}),
+        ...(probe.property ? { property: probe.property } : {}),
+    });
+
+    return {
+        check: {
+            name: `browser probe ${probe.requirementId}: ${probe.selector} ${probe.measurement}${probe.property ? `.${probe.property}` : ""}`,
+            passed,
+            ...(passed
+                ? {}
+                : {
+                      message: `Expected ${String(probe.expected)}, got ${String(actual)}.`,
+                  }),
+        },
+        evidence: {
+            source:
+                probe.measurement === "computed_style"
+                    ? "computed_style"
+                    : "browser",
+            requirementId: probe.requirementId,
+            selector: probe.selector,
+            ...(probe.property ? { property: probe.property } : {}),
+            ...(probe.expected !== undefined
+                ? { expected: String(probe.expected) }
+                : {}),
+            actual: String(actual),
+            afterElement,
+        },
+    };
+}
+
+async function evaluateBrowserProbes(
+    page: Page,
+    baseUrl: string,
+    probes: BrowserProbe[],
+): Promise<{ checks: BrowserCheck[]; evidence: BrowserEvalEvidence[] }> {
+    const checks: BrowserCheck[] = [];
+    const evidence: BrowserEvalEvidence[] = [];
+
+    for (const probe of probes) {
+        if (probe.route) {
+            await page.goto(new URL(probe.route, baseUrl).toString(), {
+                waitUntil: "domcontentloaded",
+            });
+        }
+
+        const result = await evaluateSingleBrowserProbe(page, probe);
+        checks.push(result.check);
+        evidence.push(result.evidence);
+    }
+
+    return { checks, evidence };
 }
 
 async function collectFocusedBrowserEvidence(

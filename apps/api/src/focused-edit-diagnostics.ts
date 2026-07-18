@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import ts from "typescript";
 
 import type { ActionExecutionResult } from "@appforge/agent-core";
 import type { AgentAction } from "@appforge/protocol";
@@ -26,8 +27,15 @@ export type WorkspaceDiff = {
 };
 
 export type RequirementEvidence = {
-    source: "file_diff" | "browser" | "computed_style" | "build" | "manual";
+    source:
+        | "file_diff"
+        | "browser"
+        | "computed_style"
+        | "build"
+        | "manual"
+        | "scope";
     file?: string;
+    requirementId?: string;
     selector?: string;
     property?: string;
     before?: string;
@@ -36,6 +44,24 @@ export type RequirementEvidence = {
     actual?: string;
     unexpectedFiles?: string[];
     unexpectedSelectors?: string[];
+    unexpectedRanges?: Array<{
+        file: string;
+        startLine: number;
+        endLine: number;
+    }>;
+    beforeElement?: ElementSnapshot;
+    afterElement?: ElementSnapshot;
+};
+
+export type FocusedEditRange = {
+    file: string;
+    kind: "css_rule" | "component" | "jsx_element" | "text_range";
+    symbol?: string;
+    selector?: string;
+    startOffset: number;
+    endOffset: number;
+    startLine: number;
+    endLine: number;
 };
 
 export type FocusedEditScope = {
@@ -54,10 +80,77 @@ export type FocusedEditScope = {
     allowedSelectorsOrComponents: string[];
     protectedFiles: string[];
     protectedSelectorsOrComponents: string[];
+    allowedRanges: FocusedEditRange[];
     confidence: number;
 };
 
 export type FocusedEditExecutionMode = "fast_edit" | "structural_edit";
+
+export type ScopeViolation = {
+    action: string;
+    file: string;
+    reason: string;
+    attemptedRange?: {
+        startOffset: number;
+        endOffset: number;
+    };
+    allowedRanges: FocusedEditRange[];
+};
+
+export type BrowserProbe = {
+    requirementId: string;
+    route?: string;
+    selector: string;
+    viewport: {
+        width: number;
+        height: number;
+    };
+    measurement:
+        | "computed_style"
+        | "bounding_box"
+        | "visibility"
+        | "text"
+        | "attribute"
+        | "element_count";
+    property?: string;
+    expected?: string | number | boolean;
+    tolerance?: number;
+};
+
+export type ElementSnapshot = {
+    route: string;
+    selector: string;
+    viewport: {
+        width: number;
+        height: number;
+    };
+    exists: boolean;
+    visible: boolean;
+    text?: string;
+    boundingBox?: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+    };
+    computedStyles: Record<string, string>;
+};
+
+export type PreservationResult = {
+    status: "PASS" | "FAIL" | "UNVERIFIED";
+    unexpectedFiles: string[];
+    unexpectedRanges: Array<{
+        file: string;
+        startLine: number;
+        endLine: number;
+    }>;
+    changedProtectedElements: Array<{
+        selector: string;
+        changedProperties: string[];
+        before?: ElementSnapshot;
+        after?: ElementSnapshot;
+    }>;
+};
 
 const SNAPSHOT_ROOT_FILES = [
     "package.json",
@@ -309,6 +402,326 @@ function extractExplicitSelectors(request: string): string[] {
     ].filter((selector) => selector.length > 0);
 }
 
+function lineForOffset(content: string, offset: number): number {
+    return content.slice(0, Math.max(0, offset)).split(/\r?\n/u).length;
+}
+
+function createRange(input: {
+    file: string;
+    content: string;
+    kind: FocusedEditRange["kind"];
+    startOffset: number;
+    endOffset: number;
+    symbol?: string;
+    selector?: string;
+}): FocusedEditRange {
+    return {
+        file: input.file,
+        kind: input.kind,
+        ...(input.symbol ? { symbol: input.symbol } : {}),
+        ...(input.selector ? { selector: input.selector } : {}),
+        startOffset: input.startOffset,
+        endOffset: input.endOffset,
+        startLine: lineForOffset(input.content, input.startOffset),
+        endLine: lineForOffset(input.content, input.endOffset),
+    };
+}
+
+type ParsedCssRule = {
+    selector: string;
+    startOffset: number;
+    endOffset: number;
+};
+
+function skipCssComment(content: string, offset: number): number {
+    const end = content.indexOf("*/", offset + 2);
+
+    return end === -1 ? content.length : end + 2;
+}
+
+function parseCssRules(content: string): ParsedCssRule[] {
+    const rules: ParsedCssRule[] = [];
+    const stack: Array<{ name: string; startOffset: number }> = [];
+    let segmentStart = 0;
+    let offset = 0;
+
+    while (offset < content.length) {
+        if (content.startsWith("/*", offset)) {
+            offset = skipCssComment(content, offset);
+            continue;
+        }
+
+        const character = content[offset];
+
+        if (character === "{") {
+            const rawHeader = content.slice(segmentStart, offset).trim();
+            const headerStart =
+                segmentStart +
+                content.slice(segmentStart, offset).search(/\S/u);
+            const safeHeaderStart = headerStart >= segmentStart ? headerStart : segmentStart;
+
+            stack.push({
+                name: rawHeader,
+                startOffset: safeHeaderStart,
+            });
+            segmentStart = offset + 1;
+        } else if (character === "}") {
+            const current = stack.pop();
+
+            if (current && current.name.length > 0 && !current.name.startsWith("@")) {
+                rules.push({
+                    selector: current.name,
+                    startOffset: current.startOffset,
+                    endOffset: offset + 1,
+                });
+            }
+
+            segmentStart = offset + 1;
+        }
+
+        offset += 1;
+    }
+
+    return rules;
+}
+
+function normalizeSelectorToken(selector: string): string {
+    return selector
+        .trim()
+        .replace(/:+[a-z-]+(?:\([^)]*\))?/giu, "")
+        .replace(/\s+/gu, " ");
+}
+
+function cssSelectorMatches(
+    ruleSelector: string,
+    requestedSelector: string,
+): boolean {
+    const requested = normalizeSelectorToken(requestedSelector);
+
+    if (
+        requested.length === 0 ||
+        requested === "Hero" ||
+        requested === "Button" ||
+        requested === "AboutPage"
+    ) {
+        return false;
+    }
+
+    return ruleSelector
+        .split(",")
+        .map(normalizeSelectorToken)
+        .some(
+            (selectorPart) =>
+                selectorPart === requested ||
+                selectorPart.includes(`${requested} `) ||
+                selectorPart.includes(` ${requested}`) ||
+                selectorPart.includes(requested),
+        );
+}
+
+function findCssAllowedRanges(input: {
+    snapshot: FileSnapshot;
+    selectors: readonly string[];
+}): FocusedEditRange[] {
+    if (!/\.(?:css|scss)$/iu.test(input.snapshot.path)) {
+        return [];
+    }
+
+    const rules = parseCssRules(input.snapshot.content);
+
+    return rules
+        .filter((rule) =>
+            input.selectors.some((selector) =>
+                cssSelectorMatches(rule.selector, selector),
+            ),
+        )
+        .map((rule) =>
+            createRange({
+                file: input.snapshot.path,
+                content: input.snapshot.content,
+                kind: "css_rule",
+                selector: rule.selector,
+                startOffset: rule.startOffset,
+                endOffset: rule.endOffset,
+            }),
+        );
+}
+
+function extractComponentNames(request: string): string[] {
+    return [
+        ...new Set(
+            [
+                ...request.matchAll(
+                    /\b([A-Z][A-Za-z0-9_]*(?:Button|Header|Hero|Page|Card|Panel|Section|Nav|Sidebar)?)\b/gu,
+                ),
+            ].map((match) => match[1] ?? ""),
+        ),
+    ].filter((name) => name.length > 0);
+}
+
+function jsxElementName(node: ts.JsxOpeningLikeElement): string | undefined {
+    const tagName = node.tagName;
+
+    if (ts.isIdentifier(tagName)) {
+        return tagName.text;
+    }
+
+    if (ts.isPropertyAccessExpression(tagName)) {
+        return tagName.name.text;
+    }
+
+    return undefined;
+}
+
+function jsxClassName(node: ts.JsxOpeningLikeElement): string | undefined {
+    for (const property of node.attributes.properties) {
+        if (
+            ts.isJsxAttribute(property) &&
+            ts.isIdentifier(property.name) &&
+            property.name.text === "className" &&
+            property.initializer
+        ) {
+            if (ts.isStringLiteral(property.initializer)) {
+                return property.initializer.text;
+            }
+
+            if (
+                ts.isJsxExpression(property.initializer) &&
+                property.initializer.expression &&
+                ts.isStringLiteral(property.initializer.expression)
+            ) {
+                return property.initializer.expression.text;
+            }
+        }
+    }
+
+    return undefined;
+}
+
+function nodeRange(node: ts.Node, sourceFile: ts.SourceFile): {
+    startOffset: number;
+    endOffset: number;
+} {
+    return {
+        startOffset: node.getStart(sourceFile),
+        endOffset: node.getEnd(),
+    };
+}
+
+function findTsxAllowedRanges(input: {
+    snapshot: FileSnapshot;
+    selectors: readonly string[];
+    request: string;
+}): FocusedEditRange[] {
+    if (!/\.(?:tsx|jsx|ts|js)$/iu.test(input.snapshot.path)) {
+        return [];
+    }
+
+    const sourceFile = ts.createSourceFile(
+        input.snapshot.path,
+        input.snapshot.content,
+        ts.ScriptTarget.Latest,
+        true,
+        input.snapshot.path.endsWith(".tsx") || input.snapshot.path.endsWith(".jsx")
+            ? ts.ScriptKind.TSX
+            : ts.ScriptKind.TS,
+    );
+    const ranges: FocusedEditRange[] = [];
+    const componentNames = new Set([
+        ...input.selectors.filter((selector) => /^[A-Z][A-Za-z0-9_]*$/u.test(selector)),
+        ...extractComponentNames(input.request),
+    ]);
+    const wantsButton = input.selectors.some((selector) =>
+        /button|Button/iu.test(selector),
+    );
+    const wantsHero = input.selectors.some((selector) =>
+        /hero|Hero/iu.test(selector),
+    );
+    const wantsFeature = input.selectors.some((selector) =>
+        /feature|card|section|article/iu.test(selector),
+    );
+
+    const visit = (node: ts.Node): void => {
+        if (
+            (ts.isFunctionDeclaration(node) ||
+                ts.isFunctionExpression(node) ||
+                ts.isArrowFunction(node)) &&
+            node.parent
+        ) {
+            const name = ts.isFunctionDeclaration(node)
+                ? node.name?.text
+                : ts.isVariableDeclaration(node.parent)
+                  ? ts.isIdentifier(node.parent.name)
+                      ? node.parent.name.text
+                      : undefined
+                  : undefined;
+
+            if (name && componentNames.has(name)) {
+                const range = nodeRange(
+                    ts.isVariableDeclaration(node.parent) ? node.parent : node,
+                    sourceFile,
+                );
+                ranges.push(
+                    createRange({
+                        file: input.snapshot.path,
+                        content: input.snapshot.content,
+                        kind: "component",
+                        symbol: name,
+                        ...range,
+                    }),
+                );
+            }
+        }
+
+        if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node)) {
+            const opening = ts.isJsxElement(node)
+                ? node.openingElement
+                : node;
+            const tagName = jsxElementName(opening);
+            const className = jsxClassName(opening);
+            const matchesButton = wantsButton && tagName === "button";
+            const matchesHero =
+                wantsHero && Boolean(className && /hero/iu.test(className));
+            const matchesFeature =
+                wantsFeature &&
+                (tagName === "section" ||
+                    tagName === "article" ||
+                    Boolean(className && /feature|card/iu.test(className)));
+            const matchesSelector = input.selectors.some((selector) => {
+                if (!className || !selector.startsWith(".")) {
+                    return false;
+                }
+
+                return className.split(/\s+/u).includes(selector.slice(1));
+            });
+
+            if (matchesButton || matchesHero || matchesFeature || matchesSelector) {
+                const range = nodeRange(node, sourceFile);
+                ranges.push(
+                    createRange({
+                        file: input.snapshot.path,
+                        content: input.snapshot.content,
+                        kind: "jsx_element",
+                        ...(tagName ? { symbol: tagName } : {}),
+                        ...(className
+                            ? { selector: `.${className.split(/\s+/u)[0]}` }
+                            : tagName
+                              ? { selector: tagName }
+                              : {}),
+                        ...range,
+                    }),
+                );
+            }
+        }
+
+        ts.forEachChild(node, visit);
+    };
+
+    visit(sourceFile);
+
+    return ranges;
+}
+
 function inferIntent(request: string): FocusedEditScope["intent"] {
     if (/\b(?:image|photo|hero image|asset)\b|图片|照片|素材/iu.test(request)) {
         return "asset";
@@ -361,8 +774,13 @@ export async function locateFocusedEditScope(input: {
             allowedSelectorsOrComponents: [],
             protectedFiles: sourceFiles,
             protectedSelectorsOrComponents: [],
+            allowedRanges: [],
             confidence: 0.35,
         };
+    }
+
+    for (const componentName of extractComponentNames(request)) {
+        selectors.add(componentName);
     }
 
     if (explicitSelectors.length > 0) {
@@ -476,9 +894,31 @@ export async function locateFocusedEditScope(input: {
     const protectedFiles = sourceFiles
         .filter((filePath) => !normalizedAllowedFiles.includes(filePath))
         .sort();
+    const allowedRanges = input.beforeSnapshots
+        .filter((snapshot) => normalizedAllowedFiles.includes(snapshot.path))
+        .flatMap((snapshot) => [
+            ...findCssAllowedRanges({
+                snapshot,
+                selectors: [...selectors],
+            }),
+            ...findTsxAllowedRanges({
+                snapshot,
+                selectors: [...selectors],
+                request,
+            }),
+        ])
+        .sort(
+            (left, right) =>
+                left.file.localeCompare(right.file) ||
+                left.startOffset - right.startOffset,
+        );
 
     if (normalizedAllowedFiles.length === 0) {
         confidence = Math.min(confidence, 0.45);
+    }
+
+    if (allowedRanges.length === 0) {
+        confidence = Math.min(confidence, 0.65);
     }
 
     return {
@@ -487,6 +927,7 @@ export async function locateFocusedEditScope(input: {
         allowedSelectorsOrComponents: [...selectors].sort(),
         protectedFiles,
         protectedSelectorsOrComponents: [],
+        allowedRanges,
         confidence,
     };
 }
@@ -499,6 +940,93 @@ function pathAllowedByScope(filePath: string, scope: FocusedEditScope): boolean 
             ? normalized.startsWith(allowedFile.slice(0, -1))
             : normalized === allowedFile,
     );
+}
+
+function rangeAllowedByScope(
+    filePath: string,
+    attemptedRange: { startOffset: number; endOffset: number },
+    scope: FocusedEditScope,
+): boolean {
+    const normalized = normalizeWorkspacePath(filePath);
+    const fileRanges = scope.allowedRanges.filter(
+        (range) => range.file === normalized,
+    );
+
+    if (fileRanges.length === 0) {
+        return false;
+    }
+
+    return fileRanges.some(
+        (range) =>
+            attemptedRange.startOffset >= range.startOffset &&
+            attemptedRange.endOffset <= range.endOffset,
+    );
+}
+
+function findEditOccurrences(
+    content: string,
+    oldText: string,
+    replaceAll: boolean | undefined,
+): Array<{ startOffset: number; endOffset: number }> {
+    if (oldText.length === 0) {
+        return [];
+    }
+
+    const ranges: Array<{ startOffset: number; endOffset: number }> = [];
+    let offset = content.indexOf(oldText);
+
+    while (offset !== -1) {
+        ranges.push({
+            startOffset: offset,
+            endOffset: offset + oldText.length,
+        });
+
+        if (!replaceAll) {
+            break;
+        }
+
+        offset = content.indexOf(oldText, offset + oldText.length);
+    }
+
+    return ranges;
+}
+
+export function createScopeViolationForAction(input: {
+    action: AgentAction;
+    scope: FocusedEditScope;
+    beforeSnapshots: FileSnapshot[];
+    reason: string;
+}): ScopeViolation {
+    const filePath =
+        input.action.type === "get_image"
+            ? input.action.outputPath
+            : input.action.type === "write_file" ||
+                input.action.type === "append_file" ||
+                input.action.type === "edit_file"
+              ? input.action.path
+              : "";
+    const normalizedPath = normalizeWorkspacePath(filePath);
+    const snapshot = input.beforeSnapshots.find(
+        (item) => item.path === normalizedPath,
+    );
+    const attemptedRange =
+        input.action.type === "edit_file" && snapshot
+            ? findEditOccurrences(
+                  snapshot.content,
+                  input.action.oldText,
+                  input.action.replaceAll,
+              )[0]
+            : undefined;
+
+    return {
+        action: input.action.type,
+        file: normalizedPath,
+        reason: input.reason,
+        ...(attemptedRange ? { attemptedRange } : {}),
+        allowedRanges: input.scope.allowedRanges.filter(
+            (range) => range.file === normalizedPath,
+        ),
+    };
 }
 
 function isMutatingAction(action: AgentAction): boolean {
@@ -554,7 +1082,7 @@ export function validateFocusedEditAction(input: {
     if (
         action.type === "write_file" &&
         snapshotFileExists(input.beforeSnapshots, normalizedPath) &&
-        /\.(?:tsx?|jsx?)$/iu.test(normalizedPath)
+        /\.(?:tsx?|jsx?|s?css)$/iu.test(normalizedPath)
     ) {
         return {
             ok: false,
@@ -563,12 +1091,53 @@ export function validateFocusedEditAction(input: {
         };
     }
 
-    if (action.type === "append_file" && /\.(?:tsx?|jsx?)$/iu.test(normalizedPath)) {
+    if (action.type === "append_file" && /\.(?:tsx?|jsx?|s?css)$/iu.test(normalizedPath)) {
         return {
             ok: false,
             changed: false,
             message: `Focused edit scope violation: append_file is not allowed for existing component source ${normalizedPath}.`,
         };
+    }
+
+    if (action.type === "edit_file") {
+        const snapshot = input.beforeSnapshots.find(
+            (item) => item.path === normalizedPath,
+        );
+
+        if (!snapshot) {
+            return {
+                ok: false,
+                changed: false,
+                message: `Focused edit scope violation: ${normalizedPath} was not present in the before snapshot.`,
+            };
+        }
+
+        const occurrences = findEditOccurrences(
+            snapshot.content,
+            action.oldText,
+            action.replaceAll,
+        );
+
+        if (occurrences.length === 0) {
+            return {
+                ok: false,
+                changed: false,
+                message: `Focused edit scope violation: oldText was not found in ${normalizedPath}; refusing an unbounded edit.`,
+            };
+        }
+
+        const forbiddenRange = occurrences.find(
+            (occurrence) =>
+                !rangeAllowedByScope(normalizedPath, occurrence, scope),
+        );
+
+        if (forbiddenRange) {
+            return {
+                ok: false,
+                changed: false,
+                message: `Focused edit scope violation: edit in ${normalizedPath} is outside allowed ranges.`,
+            };
+        }
     }
 
     if (action.type === "get_image" && scope.intent !== "asset") {
@@ -606,4 +1175,47 @@ export function findUnexpectedScopeFiles(
         ...workspaceDiff.deletedFiles,
         ...workspaceDiff.modifiedFiles,
     ].filter((filePath) => !pathAllowedByScope(filePath, scope));
+}
+
+export function findUnexpectedScopeRanges(
+    workspaceDiff: WorkspaceDiff,
+    scope: FocusedEditScope | undefined,
+): Array<{ file: string; startLine: number; endLine: number }> {
+    if (!scope) {
+        return [];
+    }
+
+    return workspaceDiff.changedRanges
+        .map((range) => {
+            const startLine =
+                range.beforeStartLine > 0
+                    ? range.beforeStartLine
+                    : range.afterStartLine;
+            const endLine =
+                range.beforeEndLine > 0
+                    ? range.beforeEndLine
+                    : range.afterEndLine;
+
+            return {
+                file: range.file,
+                startLine,
+                endLine: Math.max(startLine, endLine),
+            };
+        })
+        .filter((range) => pathAllowedByScope(range.file, scope))
+        .filter((range) => {
+            const allowedRanges = scope.allowedRanges.filter(
+                (allowedRange) => allowedRange.file === range.file,
+            );
+
+            if (allowedRanges.length === 0) {
+                return true;
+            }
+
+            return !allowedRanges.some(
+                (allowedRange) =>
+                    range.startLine >= allowedRange.startLine &&
+                    range.endLine <= allowedRange.endLine,
+            );
+        });
 }

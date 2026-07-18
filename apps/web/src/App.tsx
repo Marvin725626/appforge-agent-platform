@@ -129,6 +129,7 @@ type ReactAppAgentResult = {
     requirements?: RequirementResult[];
     workspaceDiff?: WorkspaceDiff;
     focusedEditScope?: FocusedEditScope;
+    scopeViolations?: ScopeViolation[];
     executionMode?: "fast_edit" | "structural_edit";
 };
 
@@ -162,7 +163,30 @@ type FocusedEditScope = {
     allowedSelectorsOrComponents: string[];
     protectedFiles: string[];
     protectedSelectorsOrComponents: string[];
+    allowedRanges: FocusedEditRange[];
     confidence: number;
+};
+
+type FocusedEditRange = {
+    file: string;
+    kind: "css_rule" | "component" | "jsx_element" | "text_range";
+    symbol?: string;
+    selector?: string;
+    startOffset: number;
+    endOffset: number;
+    startLine: number;
+    endLine: number;
+};
+
+type ScopeViolation = {
+    action: string;
+    file: string;
+    reason: string;
+    attemptedRange?: {
+        startOffset: number;
+        endOffset: number;
+    };
+    allowedRanges: FocusedEditRange[];
 };
 
 type RunMetrics = {
@@ -197,8 +221,9 @@ type RequirementResult = {
 };
 
 type RequirementEvidence = {
-    source: "file_diff" | "browser" | "computed_style" | "build" | "manual";
+    source: "file_diff" | "browser" | "computed_style" | "build" | "manual" | "scope";
     file?: string;
+    requirementId?: string;
     selector?: string;
     property?: string;
     before?: string;
@@ -207,6 +232,32 @@ type RequirementEvidence = {
     actual?: string;
     unexpectedFiles?: string[];
     unexpectedSelectors?: string[];
+    unexpectedRanges?: Array<{
+        file: string;
+        startLine: number;
+        endLine: number;
+    }>;
+    beforeElement?: ElementSnapshot;
+    afterElement?: ElementSnapshot;
+};
+
+type ElementSnapshot = {
+    route: string;
+    selector: string;
+    viewport: {
+        width: number;
+        height: number;
+    };
+    exists: boolean;
+    visible: boolean;
+    text?: string;
+    boundingBox?: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+    };
+    computedStyles: Record<string, string>;
 };
 
 type ExecuteResponse = {
@@ -3184,6 +3235,7 @@ export function App() {
     const requirementResults = agentResult?.requirements ?? [];
     const workspaceDiff = agentResult?.workspaceDiff;
     const focusedEditScope = agentResult?.focusedEditScope;
+    const scopeViolations = agentResult?.scopeViolations ?? [];
 
     return (
         <main className="app-shell workspace-shell">
@@ -3792,6 +3844,20 @@ export function App() {
                                                                                         ?.length
                                                                                         ? ` unexpected=${evidence.unexpectedFiles.join(", ")}`
                                                                                         : ""}
+                                                                                    {evidence.unexpectedRanges
+                                                                                        ?.length
+                                                                                        ? ` ranges=${evidence.unexpectedRanges
+                                                                                              .map(
+                                                                                                  (
+                                                                                                      range,
+                                                                                                  ) =>
+                                                                                                      `${range.file}:${range.startLine}-${range.endLine}`,
+                                                                                              )
+                                                                                              .join(", ")}`
+                                                                                        : ""}
+                                                                                    {evidence.afterElement
+                                                                                        ? ` snapshot=${evidence.afterElement.selector} ${evidence.afterElement.viewport.width}x${evidence.afterElement.viewport.height} visible=${String(evidence.afterElement.visible)}${evidence.afterElement.boundingBox ? ` bbox=${Math.round(evidence.afterElement.boundingBox.x)},${Math.round(evidence.afterElement.boundingBox.y)},${Math.round(evidence.afterElement.boundingBox.width)}x${Math.round(evidence.afterElement.boundingBox.height)}` : ""}`
+                                                                                        : ""}
                                                                                 </li>
                                                                             ),
                                                                         )}
@@ -3945,6 +4011,72 @@ export function App() {
                                                     ", ",
                                                 ) || "none"}
                                             </p>
+                                            {focusedEditScope.allowedRanges
+                                                .length > 0 ? (
+                                                <ul className="diagnostic-list">
+                                                    {focusedEditScope.allowedRanges.map(
+                                                        (range, index) => (
+                                                            <li
+                                                                key={`${range.file}-${range.startOffset}-${index}`}
+                                                            >
+                                                                <code>
+                                                                    {range.file}
+                                                                </code>{" "}
+                                                                lines{" "}
+                                                                {
+                                                                    range.startLine
+                                                                }
+                                                                –
+                                                                {range.endLine} ·{" "}
+                                                                {range.kind}
+                                                                {range.selector
+                                                                    ? ` · ${range.selector}`
+                                                                    : ""}
+                                                                {range.symbol
+                                                                    ? ` · ${range.symbol}`
+                                                                    : ""}
+                                                            </li>
+                                                        ),
+                                                    )}
+                                                </ul>
+                                            ) : (
+                                                <p className="muted-text">
+                                                    Allowed ranges: none
+                                                    resolved
+                                                </p>
+                                            )}
+                                            {scopeViolations.length > 0 ? (
+                                                <div className="requirement-evidence-list">
+                                                    <p>
+                                                        Scope violations:
+                                                    </p>
+                                                    <ul>
+                                                        {scopeViolations.map(
+                                                            (
+                                                                violation,
+                                                                index,
+                                                            ) => (
+                                                                <li
+                                                                    key={`${violation.file}-${violation.action}-${index}`}
+                                                                >
+                                                                    <code>
+                                                                        {
+                                                                            violation.file
+                                                                        }
+                                                                    </code>{" "}
+                                                                    {
+                                                                        violation.action
+                                                                    }
+                                                                    :{" "}
+                                                                    {
+                                                                        violation.reason
+                                                                    }
+                                                                </li>
+                                                            ),
+                                                        )}
+                                                    </ul>
+                                                </div>
+                                            ) : null}
                                         </div>
                                     ) : agentResult?.executionMode ? (
                                         <div className="run-metrics">

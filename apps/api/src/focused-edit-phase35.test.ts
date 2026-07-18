@@ -42,12 +42,13 @@ import { AboutPage } from './About';
 export function App() {
     return (
         <div className="app-shell">
+            <Header />
             <aside className="sidebar">Navigation</aside>
             <main className="content">
                 <section className="hero">
                     <img className="hero-image" src="/old-hero.jpg" alt="Hero" />
                     <h1>Welcome</h1>
-                    <button className="primary-button">Start</button>
+                    <SubmitButton />
                 </section>
                 <section className="feature-grid">
                     <article className="feature-card feature-one">First feature</article>
@@ -58,6 +59,14 @@ export function App() {
             </main>
         </div>
     );
+}
+
+function Header() {
+    return <header className="app-header">Header copy</header>;
+}
+
+function SubmitButton() {
+    return <button className="primary-button">Start</button>;
 }
 `;
 
@@ -77,6 +86,10 @@ const BASE_CSS = `.app-shell {
 
 .primary-button {
     margin-left: 0;
+}
+
+.content {
+    padding: 24px;
 }
 
 .feature-grid {
@@ -154,6 +167,7 @@ describe("Phase 3.5 focused edit hardening", () => {
         currentRequest: string;
         responses: Array<{ content: string }>;
         evaluateBrowser?: () => Promise<BrowserEvalResult>;
+        maxRepairAttempts?: number;
     }) {
         const workspace = await createWorkspace();
         const model = new FakeModelProvider(input.responses);
@@ -161,7 +175,7 @@ describe("Phase 3.5 focused edit hardening", () => {
             goal: "Iterate the existing workspace.",
             currentRequest: input.currentRequest,
             resetWorkspace: false,
-            maxRepairAttempts: 0,
+            maxRepairAttempts: input.maxRepairAttempts ?? 0,
             workspaceRoot: workspace.workspaceRoot,
             templateRoot: workspace.templateRoot,
             model,
@@ -210,6 +224,33 @@ describe("Phase 3.5 focused edit hardening", () => {
         expect(result.install.stdout).toContain("Skipped npm install");
         expect(result.workspaceDiff).toBeDefined();
         expect(result.requirements?.find((item) => item.id === "PRESERVE-1")?.status).toBe("PASS");
+    }
+
+    function elementSnapshot(width: number) {
+        return {
+            route: "/",
+            selector: ".sidebar",
+            viewport: { width: 1440, height: 900 },
+            exists: true,
+            visible: true,
+            text: "Navigation",
+            boundingBox: { x: 0, y: 0, width, height: 900 },
+            computedStyles: {
+                display: "block",
+                position: "static",
+                width: `${width}px`,
+                height: "900px",
+                margin: "0px",
+                padding: "0px",
+                gap: "normal",
+                color: "rgb(0, 0, 0)",
+                backgroundColor: "rgba(0, 0, 0, 0)",
+                borderRadius: "0px",
+                transform: "none",
+                gridTemplateColumns: "none",
+                flexDirection: "row",
+            },
+        };
     }
 
     it("changes a button text from Start to Submit with file-diff evidence", async () => {
@@ -277,6 +318,104 @@ describe("Phase 3.5 focused edit hardening", () => {
         );
     });
 
+    it("attaches before and after element snapshots to browser-backed evidence", async () => {
+        let browserCallCount = 0;
+        const { result } = await runScenario({
+            currentRequest: "Change the left sidebar width to 220px, other areas do not modify",
+            responses: [
+                editFile("src/App.css", "width: 260px;", "width: 220px;"),
+                finish,
+            ],
+            evaluateBrowser: async () => {
+                browserCallCount += 1;
+                const width = browserCallCount === 1 ? 260 : 220;
+
+                return {
+                    passed: true,
+                    checks: [{ name: `sidebar width is ${width}px`, passed: true }],
+                    evidence: [
+                        {
+                            source: "computed_style",
+                            requirementId: "REQ-1",
+                            selector: ".sidebar",
+                            property: "width",
+                            expected: "220px",
+                            actual: `${width}px`,
+                            afterElement: elementSnapshot(width),
+                        },
+                    ],
+                };
+            },
+        });
+        const widthEvidence = result.requirements?.[0]?.evidences.find(
+            (evidence) =>
+                evidence.requirementId === "REQ-1" &&
+                evidence.selector === ".sidebar" &&
+                evidence.property === "width",
+        );
+
+        expect(browserCallCount).toBe(2);
+        expect(result.review.accepted).toBe(true);
+        expect(widthEvidence?.beforeElement?.boundingBox?.width).toBe(260);
+        expect(widthEvidence?.afterElement?.boundingBox?.width).toBe(220);
+    });
+
+    it("runs one limited focused repair when a requirement browser probe fails", async () => {
+        let browserCallCount = 0;
+        const { result } = await runScenario({
+            currentRequest: "Change the left sidebar width to 220px, other areas do not modify",
+            maxRepairAttempts: 1,
+            responses: [
+                editFile("src/App.css", "width: 260px;", "width: 200px;"),
+                finish,
+                editFile("src/App.css", "width: 200px;", "width: 220px;"),
+                finish,
+            ],
+            evaluateBrowser: async () => {
+                browserCallCount += 1;
+                const width =
+                    browserCallCount === 1
+                        ? 260
+                        : browserCallCount === 2
+                          ? 200
+                          : 220;
+
+                return {
+                    passed: width === 220 || browserCallCount === 1,
+                    checks: [
+                        {
+                            name: "sidebar bounding box width is 220px",
+                            passed: width === 220 || browserCallCount === 1,
+                            ...(width !== 220 && browserCallCount !== 1
+                                ? { message: `actual width was ${width}px` }
+                                : {}),
+                        },
+                    ],
+                    evidence: [
+                        {
+                            source: "computed_style",
+                            requirementId: "REQ-1",
+                            selector: ".sidebar",
+                            property: "width",
+                            expected: "220px",
+                            actual: `${width}px`,
+                            afterElement: elementSnapshot(width),
+                        },
+                    ],
+                };
+            },
+        });
+
+        expect(result.executionMode).toBe("fast_edit");
+        expect(result.metrics?.retryCalls).toBe(1);
+        expect(result.metrics?.plannerCalls).toBe(0);
+        expect(result.metrics?.reviewerCalls).toBe(0);
+        expect(result.review.accepted).toBe(true);
+        expect(result.requirements?.find((item) => item.id === "REQ-1")?.status).toBe("PASS");
+        expect(result.requirements?.find((item) => item.id === "PRESERVE-1")?.status).toBe("PASS");
+        expect(browserCallCount).toBe(3);
+    });
+
     it("changes the Hero background from blue to dark gray with computed style evidence", async () => {
         const { result } = await runScenario({
             currentRequest: "Change the Hero background from blue to dark gray",
@@ -290,6 +429,7 @@ describe("Phase 3.5 focused edit hardening", () => {
                 evidence: [
                     {
                         source: "computed_style",
+                        requirementId: "REQ-1",
                         selector: ".hero",
                         property: "background-color",
                         expected: "dark gray",
@@ -315,6 +455,20 @@ describe("Phase 3.5 focused edit hardening", () => {
                 ),
                 finish,
             ],
+            evaluateBrowser: async () => ({
+                passed: true,
+                checks: [{ name: "second feature removed", passed: true }],
+                evidence: [
+                    {
+                        source: "browser",
+                        requirementId: "REQ-1",
+                        selector: ".feature-two",
+                        property: "element_count",
+                        expected: "0",
+                        actual: "0",
+                    },
+                ],
+            }),
         });
 
         expectFastEdit(result);
@@ -359,6 +513,20 @@ describe("Phase 3.5 focused edit hardening", () => {
                 editFile("src/About.tsx", "<h1>About old</h1>", "<h1>About new</h1>"),
                 finish,
             ],
+            evaluateBrowser: async () => ({
+                passed: true,
+                checks: [{ name: "about title changed", passed: true }],
+                evidence: [
+                    {
+                        source: "browser",
+                        requirementId: "REQ-1",
+                        selector: ".about-page h1",
+                        property: "textContent",
+                        expected: "About new",
+                        actual: "About new",
+                    },
+                ],
+            }),
         });
 
         expectFastEdit(result);
@@ -383,6 +551,7 @@ describe("Phase 3.5 focused edit hardening", () => {
                 evidence: [
                     {
                         source: "computed_style",
+                        requirementId: "REQ-1",
                         selector: ".feature-grid",
                         property: "grid-template-columns",
                         expected: "single column on mobile",
@@ -474,6 +643,86 @@ describe("Phase 3.5 focused edit hardening", () => {
         expect(result.executionMode).toBe("structural_edit");
         expect(result.review.accepted).toBe(false);
         expect(result.workspaceDiff?.modifiedFiles).toEqual([]);
+        expect(result.requirements?.[0]?.status).toBe("UNVERIFIED");
+    });
+
+    it("rejects a CSS edit that also changes a scope-outside rule in the same file", async () => {
+        const { workspaceRoot } = await createWorkspace();
+        const beforeSnapshots = await createWorkspaceSnapshot(workspaceRoot);
+        const scope = await locateFocusedEditScope({
+            request: "Change the left sidebar width to 220px, other areas do not modify",
+            workspaceRoot,
+            beforeSnapshots,
+        });
+        const rejected = validateFocusedEditAction({
+            scope,
+            beforeSnapshots,
+            action: {
+                type: "edit_file",
+                path: "src/App.css",
+                oldText: `.sidebar {
+    width: 260px;
+}
+
+.hero {
+    background: blue;
+    padding: 24px;
+}`,
+                newText: `.sidebar {
+    width: 220px;
+}
+
+.hero {
+    background: red;
+    padding: 24px;
+}`,
+            },
+        });
+
+        expect(scope.allowedRanges.some((range) => range.kind === "css_rule")).toBe(true);
+        expect(rejected?.ok).toBe(false);
+        expect(rejected?.message).toContain(
+            "outside allowed ranges",
+        );
+    });
+
+    it("rejects an AST-range edit to Header when the target is SubmitButton", async () => {
+        const { workspaceRoot } = await createWorkspace();
+        const beforeSnapshots = await createWorkspaceSnapshot(workspaceRoot);
+        const scope = await locateFocusedEditScope({
+            request: "Only modify SubmitButton text to Submit",
+            workspaceRoot,
+            beforeSnapshots,
+        });
+        const rejected = validateFocusedEditAction({
+            scope,
+            beforeSnapshots,
+            action: {
+                type: "edit_file",
+                path: "src/App.tsx",
+                oldText: "Header copy",
+                newText: "Unexpected header copy",
+            },
+        });
+
+        expect(scope.allowedRanges.some((range) => range.symbol === "SubmitButton")).toBe(true);
+        expect(rejected?.ok).toBe(false);
+        expect(rejected?.message).toContain(
+            "outside allowed ranges",
+        );
+    });
+
+    it("marks size requirements UNVERIFIED when browser evidence is missing", async () => {
+        const { result } = await runScenario({
+            currentRequest: "Change the left sidebar width to 220px",
+            responses: [
+                editFile("src/App.css", "width: 260px;", "width: 220px;"),
+                finish,
+            ],
+        });
+
+        expect(result.executionMode).toBe("fast_edit");
+        expect(result.review.accepted).toBe(false);
         expect(result.requirements?.[0]?.status).toBe("UNVERIFIED");
     });
 

@@ -52,15 +52,19 @@ import {
 } from "./run-parallel-react-pages-agent.js";
 import {
     createFileDiffEvidence,
+    createScopeViolationForAction,
     createWorkspaceSnapshot,
     diffWorkspaceSnapshots,
     findUnexpectedScopeFiles,
+    findUnexpectedScopeRanges,
     locateFocusedEditScope,
     validateFocusedEditAction,
     type FileSnapshot,
     type FocusedEditExecutionMode,
     type FocusedEditScope,
+    type BrowserProbe,
     type RequirementEvidence,
+    type ScopeViolation,
     type WorkspaceDiff,
 } from "./focused-edit-diagnostics.js";
 
@@ -183,6 +187,7 @@ export type Requirement = {
     priority: "must" | "should" | "must_preserve";
     target?: string;
     targetFiles?: string[];
+    browserProbes?: BrowserProbe[];
     verification: string;
 };
 
@@ -199,6 +204,7 @@ export type EvaluateBrowserForAttempt = (input: {
     workspaceRoot: string;
     kind: "initial" | "repair";
     attemptNumber: number;
+    browserProbes?: BrowserProbe[];
     signal?: AbortSignal;
 }) => Promise<BrowserEvalResult>;
 
@@ -231,6 +237,7 @@ export type RunReactAppAgentResult = {
     requirements?: RequirementResult[];
     workspaceDiff?: WorkspaceDiff;
     focusedEditScope?: FocusedEditScope;
+    scopeViolations?: ScopeViolation[];
     executionMode?: FocusedEditExecutionMode;
 };
 
@@ -505,6 +512,7 @@ function withRequirementLedgerResult(
     focusedEdit: boolean,
     workspaceDiff?: WorkspaceDiff,
     focusedEditScope?: FocusedEditScope,
+    scopeViolations: ScopeViolation[] = [],
 ): RunReactAppAgentResult {
     const metrics =
         result.metrics ??
@@ -513,6 +521,23 @@ function withRequirementLedgerResult(
             attempts: result.attempts,
             startedAt: Date.now(),
         });
+    const postExecutionScopeViolations =
+        workspaceDiff && focusedEditScope
+            ? findUnexpectedScopeRanges(workspaceDiff, focusedEditScope).map(
+                  (range): ScopeViolation => ({
+                      action: "workspace_diff",
+                      file: range.file,
+                      reason: `Workspace diff changed lines ${range.startLine}-${range.endLine} outside focused edit allowed ranges.`,
+                      allowedRanges: focusedEditScope.allowedRanges.filter(
+                          (allowedRange) => allowedRange.file === range.file,
+                      ),
+                  }),
+              )
+            : [];
+    const allScopeViolations = [
+        ...scopeViolations,
+        ...postExecutionScopeViolations,
+    ];
     const requirementResults = evaluateRequirementLedger({
         requirements,
         metrics,
@@ -520,6 +545,9 @@ function withRequirementLedgerResult(
         focusedEdit,
         ...(workspaceDiff ? { workspaceDiff } : {}),
         ...(focusedEditScope ? { focusedEditScope } : {}),
+        ...(allScopeViolations.length > 0
+            ? { scopeViolations: allScopeViolations }
+            : {}),
     });
     const ledgerReview = enforceRequirementLedgerReview({
         review: result.review,
@@ -551,6 +579,9 @@ function withRequirementLedgerResult(
         requirements: requirementResults,
         ...(workspaceDiff ? { workspaceDiff } : {}),
         ...(focusedEditScope ? { focusedEditScope } : {}),
+        ...(allScopeViolations.length > 0
+            ? { scopeViolations: allScopeViolations }
+            : {}),
         executionMode: focusedEdit ? "fast_edit" : "structural_edit",
         ...(trace ? { trace } : {}),
     };
@@ -3951,6 +3982,122 @@ function inferRequirementTargetFiles(instruction: string): string[] | undefined 
     return files.size > 0 ? [...files] : undefined;
 }
 
+function createBrowserProbesForRequirement(input: {
+    requirementId: string;
+    instruction: string;
+}): BrowserProbe[] | undefined {
+    const instruction = input.instruction;
+    const probes: BrowserProbe[] = [];
+    const defaultViewport = { width: 1440, height: 900 };
+    const pxMatch = instruction.match(/(\d+(?:\.\d+)?)\s*px/iu);
+    const expectedPx = pxMatch ? Number(pxMatch[1]) : undefined;
+
+    if (/\bsidebar\b|left\s+sidebar|left\s+rail|左侧栏|侧边栏/iu.test(instruction) && expectedPx !== undefined) {
+        probes.push({
+            requirementId: input.requirementId,
+            selector: ".sidebar, .app-sidebar, aside, [class*='sidebar']",
+            viewport: defaultViewport,
+            measurement: "bounding_box",
+            property: "width",
+            expected: expectedPx,
+            tolerance: 2,
+        });
+    }
+
+    if (/\bhero\b|首屏|头图/iu.test(instruction) && /\b(?:background|color|blue|gray|grey|dark)\b|背景|颜色|蓝色|灰色|深灰/iu.test(instruction)) {
+        const expectedColor = /#202124|深灰|dark\s+gr[ae]y/iu.test(instruction)
+            ? "rgb(32, 33, 36)"
+            : undefined;
+        probes.push({
+            requirementId: input.requirementId,
+            selector: ".hero, .page-hero, [class*='hero']",
+            viewport: defaultViewport,
+            measurement: "computed_style",
+            property: "backgroundColor",
+            ...(expectedColor ? { expected: expectedColor } : {}),
+        });
+    }
+
+    const submitMatch = instruction.match(/\b(?:to|为|成)\s+([A-Z][A-Za-z0-9_-]*)\b/u);
+    if (/\bbutton\b|按钮/iu.test(instruction) && /text|文字|文案|label|改为|change/iu.test(instruction)) {
+        probes.push({
+            requirementId: input.requirementId,
+            selector: "button, .button, [role='button']",
+            viewport: defaultViewport,
+            measurement: "text",
+            expected: submitMatch?.[1] ?? "Submit",
+        });
+    }
+
+    if (/\b(?:delete|remove)\b|删除|移除/iu.test(instruction)) {
+        probes.push({
+            requirementId: input.requirementId,
+            selector: ".feature-two, [data-feature='second'], .feature-card:nth-of-type(2)",
+            viewport: defaultViewport,
+            measurement: "element_count",
+            expected: 0,
+        });
+    }
+
+    if (/\b(?:move|right|left)\b|移动|右移|左移/iu.test(instruction) && expectedPx !== undefined) {
+        probes.push({
+            requirementId: input.requirementId,
+            selector: "button, .button, [role='button']",
+            viewport: defaultViewport,
+            measurement: "bounding_box",
+            property: "x",
+            expected: expectedPx,
+            tolerance: 2,
+        });
+    }
+
+    if (/\/about|\babout\b|关于/iu.test(instruction) && /title|标题|文字|text/iu.test(instruction)) {
+        const expectedTitle = /About new/iu.test(instruction)
+            ? "About new"
+            : undefined;
+        probes.push({
+            requirementId: input.requirementId,
+            route: "/about",
+            selector: "h1, [data-page='about'] h1, .about-page h1",
+            viewport: defaultViewport,
+            measurement: "text",
+            ...(expectedTitle ? { expected: expectedTitle } : {}),
+        });
+    }
+
+    if (/\b(?:mobile|responsive|single column)\b|手机|响应式|单列/iu.test(instruction)) {
+        probes.push(
+            {
+                requirementId: input.requirementId,
+                selector: ".feature-grid, .grid, [class*='grid']",
+                viewport: { width: 390, height: 844 },
+                measurement: "computed_style",
+                property: "gridTemplateColumns",
+                expected: "1fr",
+            },
+            {
+                requirementId: input.requirementId,
+                selector: ".feature-grid, .grid, [class*='grid']",
+                viewport: defaultViewport,
+                measurement: "computed_style",
+                property: "gridTemplateColumns",
+            },
+        );
+    }
+
+    if (/\b(?:image|photo|asset)\b|图片|照片|素材/iu.test(instruction)) {
+        probes.push({
+            requirementId: input.requirementId,
+            selector: ".hero img, .page-hero img, img",
+            viewport: defaultViewport,
+            measurement: "attribute",
+            property: "src",
+        });
+    }
+
+    return probes.length > 0 ? probes : undefined;
+}
+
 function parseRequirementLedger(input: {
     currentRequest: string;
     focusedEdit: boolean;
@@ -3968,12 +4115,19 @@ function parseRequirementLedger(input: {
                 instruction,
             );
 
+        const requirementId = `REQ-${index + 1}`;
+        const browserProbes = createBrowserProbesForRequirement({
+            requirementId,
+            instruction,
+        });
+
         return {
-            id: `REQ-${index + 1}`,
+            id: requirementId,
             instruction,
             priority: isPreserve ? "must_preserve" : isSoft ? "should" : "must",
             ...(target ? { target } : {}),
             ...(targetFiles ? { targetFiles } : {}),
+            ...(browserProbes ? { browserProbes } : {}),
             verification: target
                 ? `Verify that the ${target} request changed only the relevant source/CSS selectors.`
                 : "Verify that the current request is reflected in the workspace changes.",
@@ -4066,6 +4220,7 @@ function evaluateRequirementLedger(input: {
     workspaceDiff?: WorkspaceDiff;
     focusedEditScope?: FocusedEditScope;
     browserEvidence?: RequirementEvidence[];
+    scopeViolations?: ScopeViolation[];
 }): RequirementResult[] {
     const diffEvidence = input.workspaceDiff
         ? createFileDiffEvidence(input.workspaceDiff)
@@ -4083,6 +4238,13 @@ function evaluateRequirementLedger(input: {
               input.focusedEditScope,
           )
         : [];
+    const unexpectedScopeRanges = input.workspaceDiff
+        ? findUnexpectedScopeRanges(
+              input.workspaceDiff,
+              input.focusedEditScope,
+          )
+        : [];
+    const scopeViolations = input.scopeViolations ?? [];
 
     return input.requirements.map((requirement) => {
         const targetFiles = requirement.targetFiles ?? [];
@@ -4104,14 +4266,18 @@ function evaluateRequirementLedger(input: {
                     affectedFiles.length === 0 ||
                     affectedFiles.includes(item.file),
             ),
-            ...(input.browserEvidence ?? []).filter((item) =>
-                selectors.length === 0 || !item.selector
+            ...(input.browserEvidence ?? []).filter((item) => {
+                if (item.requirementId) {
+                    return item.requirementId === requirement.id;
+                }
+
+                return selectors.length === 0 || !item.selector
                     ? true
                     : selectors.includes(item.selector) ||
-                      selectors.some((selector) =>
-                          item.selector?.includes(selector),
-                      ),
-            ),
+                          selectors.some((selector) =>
+                              item.selector?.includes(selector),
+                          );
+            }),
         ];
 
         if (
@@ -4137,6 +4303,15 @@ function evaluateRequirementLedger(input: {
                   : "No workspace file change was recorded.";
         let status: RequirementResult["status"] =
             evidences.length > 0 ? "PASS" : "UNVERIFIED";
+        const requiresBrowserProbe =
+            input.focusedEdit && (requirement.browserProbes?.length ?? 0) > 0;
+        const hasBrowserProbeEvidence = evidences.some(
+            (evidence) =>
+                (evidence.source === "browser" ||
+                    evidence.source === "computed_style") &&
+                (!evidence.requirementId ||
+                    evidence.requirementId === requirement.id),
+        );
 
         if (requirement.priority === "must_preserve") {
             const forbiddenReasons: string[] = [];
@@ -4168,6 +4343,47 @@ function evaluateRequirementLedger(input: {
                 preserveEvidence.unexpectedFiles = unexpectedScopeFiles;
             }
 
+            if (unexpectedScopeRanges.length > 0) {
+                forbiddenReasons.push(
+                    `scope-outside ranges changed: ${unexpectedScopeRanges
+                        .map(
+                            (range) =>
+                                `${range.file}:${range.startLine}-${range.endLine}`,
+                        )
+                        .join(", ")}`,
+                );
+                preserveEvidence.unexpectedRanges = [
+                    ...(preserveEvidence.unexpectedRanges ?? []),
+                    ...unexpectedScopeRanges,
+                ];
+            }
+
+            if (scopeViolations.length > 0) {
+                forbiddenReasons.push(
+                    `scope violations: ${scopeViolations
+                        .map((violation) => `${violation.file}: ${violation.reason}`)
+                        .join("; ")}`,
+                );
+                preserveEvidence.unexpectedRanges = [
+                    ...(preserveEvidence.unexpectedRanges ?? []),
+                    ...scopeViolations.flatMap((violation) =>
+                        violation.attemptedRange
+                            ? [
+                                  {
+                                      file: violation.file,
+                                      startLine:
+                                          violation.allowedRanges[0]
+                                              ?.startLine ?? 1,
+                                      endLine:
+                                          violation.allowedRanges[0]?.endLine ??
+                                          1,
+                                  },
+                              ]
+                            : [],
+                    ),
+                ];
+            }
+
             evidences = [preserveEvidence];
             status = forbiddenReasons.length === 0 ? "PASS" : "FAIL";
             evidenceText = status === "PASS"
@@ -4176,6 +4392,13 @@ function evaluateRequirementLedger(input: {
         } else if (requirement.priority === "must" && evidences.length === 0) {
             status = "UNVERIFIED";
             evidenceText = `${evidenceText} No verifiable diff, browser, computed-style, build, or manual evidence was produced.`;
+        } else if (
+            requirement.priority === "must" &&
+            requiresBrowserProbe &&
+            !hasBrowserProbeEvidence
+        ) {
+            status = "UNVERIFIED";
+            evidenceText = `${evidenceText} Requirement has browser probes but no matching browser/computed-style evidence was produced.`;
         } else if (requirement.priority === "should" && evidences.length === 0) {
             status = "UNVERIFIED";
         }
@@ -4200,13 +4423,99 @@ function extractRequirementEvidenceFromBrowser(
 ): RequirementEvidence[] {
     return (browserEval?.evidence ?? []).map((item) => ({
         source: item.source,
+        ...(item.requirementId ? { requirementId: item.requirementId } : {}),
         ...(item.selector ? { selector: item.selector } : {}),
         ...(item.property ? { property: item.property } : {}),
         ...(item.before ? { before: item.before } : {}),
         ...(item.after ? { after: item.after } : {}),
         ...(item.expected ? { expected: item.expected } : {}),
         ...(item.actual ? { actual: item.actual } : {}),
+        ...(item.beforeElement ? { beforeElement: item.beforeElement } : {}),
+        ...(item.afterElement ? { afterElement: item.afterElement } : {}),
     }));
+}
+
+function mergeBeforeBrowserEvidence(
+    afterEvidence: RequirementEvidence[],
+    beforeEvidence: RequirementEvidence[],
+): RequirementEvidence[] {
+    if (beforeEvidence.length === 0) {
+        return afterEvidence;
+    }
+
+    const keyForEvidence = (evidence: RequirementEvidence): string =>
+        [
+            evidence.requirementId ?? "",
+            evidence.selector ?? "",
+            evidence.property ?? "",
+        ].join("\u0000");
+    const beforeByKey = new Map(
+        beforeEvidence.map((evidence) => [keyForEvidence(evidence), evidence]),
+    );
+
+    return afterEvidence.map((evidence) => {
+        const before = beforeByKey.get(keyForEvidence(evidence));
+
+        if (!before?.afterElement) {
+            return evidence;
+        }
+
+        return {
+            ...evidence,
+            ...(evidence.before ?? before.actual
+                ? { before: evidence.before ?? before.actual }
+                : {}),
+            beforeElement: before.afterElement,
+        };
+    });
+}
+
+function formatFocusedRequirementRepairContext(input: {
+    browserEval: BrowserEvalResult | undefined;
+    requirements: Requirement[];
+    focusedEditScope: FocusedEditScope | undefined;
+}): string {
+    const failedChecks =
+        input.browserEval?.checks
+            .filter((check) => !check.passed)
+            .map((check) =>
+                [check.name, check.message].filter(Boolean).join(": "),
+            ) ?? [];
+    const evidenceRequirementIds = new Set(
+        input.browserEval?.evidence
+            ?.map((evidence) => evidence.requirementId)
+            .filter((id): id is string => Boolean(id)) ?? [],
+    );
+    const failedRequirements = input.requirements.filter(
+        (requirement) =>
+            requirement.priority === "must" &&
+            (evidenceRequirementIds.size === 0 ||
+                evidenceRequirementIds.has(requirement.id)),
+    );
+
+    return [
+        "Limited focused requirement repair:",
+        "Repair only the failed focused-edit requirement. Do not redesign the page, regenerate the app, add dependencies, run topic/image lookup, or modify protected areas.",
+        "Use at most one small edit_file action inside the existing FocusedEditScope allowedRanges, then finish.",
+        failedChecks.length > 0
+            ? `Failed browser probe/check evidence:\n${failedChecks
+                  .map((check) => `- ${check}`)
+                  .join("\n")}`
+            : "Failed browser probe/check evidence: unavailable; repair only the explicit current request.",
+        failedRequirements.length > 0
+            ? `Relevant requirements:\n${failedRequirements
+                  .map(
+                      (requirement) =>
+                          `- ${requirement.id}: ${requirement.instruction}`,
+                  )
+                  .join("\n")}`
+            : "",
+        input.focusedEditScope
+            ? `FocusedEditScope: ${JSON.stringify(input.focusedEditScope)}`
+            : "",
+    ]
+        .filter((part) => part.length > 0)
+        .join("\n\n");
 }
 
 function enforceRequirementLedgerReview(input: {
@@ -4482,8 +4791,42 @@ export async function runReactAppAgent(
         currentRequest: executionRequest,
         focusedEdit: focusedEditRequest,
     });
+    let browserProbes = requirements.flatMap(
+        (requirement) => requirement.browserProbes ?? [],
+    );
+    let beforeBrowserProbeEvidence: RequirementEvidence[] = [];
     let beforeWorkspaceSnapshot: FileSnapshot[] | undefined;
     let focusedEditScope: FocusedEditScope | undefined;
+    const scopeViolations: ScopeViolation[] = [];
+    const validateFocusedActionWithRecording = async (
+        action: AgentAction,
+    ): Promise<ReturnType<typeof validateFocusedEditAction>> => {
+        if (!focusedEditScope || !beforeWorkspaceSnapshot) {
+            return undefined;
+        }
+
+        const actionWorkspaceSnapshot = await createWorkspaceSnapshot(
+            options.workspaceRoot,
+        );
+        const validation = validateFocusedEditAction({
+            action,
+            scope: focusedEditScope,
+            beforeSnapshots: actionWorkspaceSnapshot,
+        });
+
+        if (validation && !validation.ok) {
+            scopeViolations.push(
+                createScopeViolationForAction({
+                    action,
+                    scope: focusedEditScope,
+                    beforeSnapshots: actionWorkspaceSnapshot,
+                    reason: validation.message,
+                }),
+            );
+        }
+
+        return validation;
+    };
 
     if (options.model) {
         provider = options.model;
@@ -4647,14 +4990,41 @@ export async function runReactAppAgent(
             if (focusedEditScope.confidence < 0.7) {
                 focusedEditRequest = false;
                 focusedEditScope = undefined;
-                requirements = parseRequirementLedger({
-                    currentRequest: executionRequest,
-                    focusedEdit: false,
-                });
+            requirements = parseRequirementLedger({
+                currentRequest: executionRequest,
+                focusedEdit: false,
+            });
+            browserProbes = requirements.flatMap(
+                (requirement) => requirement.browserProbes ?? [],
+            );
                 activeImageAssetTool = imageAssetTool;
                 activeImageAssetModes = imageAssetModes;
                 imageToolContext =
                     formatImageToolContext(activeImageAssetModes);
+            }
+        }
+
+        if (
+            focusedEditRequest &&
+            browserProbes.length > 0 &&
+            options.evaluateBrowser
+        ) {
+            try {
+                const beforeBrowserEval = await options.evaluateBrowser({
+                    goal: executionRequest,
+                    workspaceRoot: options.workspaceRoot,
+                    kind: "initial",
+                    attemptNumber: 0,
+                    browserProbes,
+                    ...(options.signal ? { signal: options.signal } : {}),
+                });
+                beforeBrowserProbeEvidence =
+                    extractRequirementEvidenceFromBrowser(beforeBrowserEval);
+            } catch (error) {
+                if (options.signal?.aborted) {
+                    options.signal.throwIfAborted();
+                }
+                beforeBrowserProbeEvidence = [];
             }
         }
     }
@@ -4712,6 +5082,7 @@ export async function runReactAppAgent(
                           )
                         : undefined,
                     focusedEditScope,
+                    scopeViolations,
                 );
             }
         }
@@ -4767,6 +5138,7 @@ export async function runReactAppAgent(
                       )
                     : undefined,
                 focusedEditScope,
+                scopeViolations,
             );
         }
 
@@ -4811,6 +5183,7 @@ export async function runReactAppAgent(
                       )
                     : undefined,
                 focusedEditScope,
+                scopeViolations,
             );
         }
     }
@@ -5142,13 +5515,8 @@ export async function runReactAppAgent(
                         focusedEditScope &&
                         beforeWorkspaceSnapshot
                             ? {
-                                  validateAction: (action: AgentAction) =>
-                                      validateFocusedEditAction({
-                                          action,
-                                          scope: focusedEditScope!,
-                                          beforeSnapshots:
-                                              beforeWorkspaceSnapshot!,
-                                      }),
+                                  validateAction:
+                                      validateFocusedActionWithRecording,
                               }
                             : {}),
                     });
@@ -5180,13 +5548,7 @@ export async function runReactAppAgent(
                     focusedEditScope &&
                     beforeWorkspaceSnapshot
                         ? {
-                              validateAction: (action: AgentAction) =>
-                                  validateFocusedEditAction({
-                                      action,
-                                      scope: focusedEditScope!,
-                                      beforeSnapshots:
-                                          beforeWorkspaceSnapshot!,
-                                  }),
+                              validateAction: validateFocusedActionWithRecording,
                           }
                         : {}),
                 });
@@ -5378,6 +5740,9 @@ export async function runReactAppAgent(
                             workspaceRoot: options.workspaceRoot,
                             kind,
                             attemptNumber,
+                            ...(browserProbes.length > 0
+                                ? { browserProbes }
+                                : {}),
                             ...(options.signal ? { signal: options.signal } : {}),
                         }),
                 );
@@ -5460,6 +5825,9 @@ export async function runReactAppAgent(
                                 workspaceRoot: options.workspaceRoot,
                                 kind,
                                 attemptNumber: attemptNumber + 1,
+                                ...(browserProbes.length > 0
+                                    ? { browserProbes }
+                                    : {}),
                                 ...(options.signal
                                     ? { signal: options.signal }
                                     : {}),
@@ -5562,10 +5930,18 @@ export async function runReactAppAgent(
     let latestAttempt = firstAttempt;
     let repairAttempt = 0;
     while (
+        (focusedEditRequest &&
+            browserProbes.length > 0 &&
+            latestAttempt.browserEval?.passed === false &&
+            repairAttempt < Math.min(maxRepairAttempts, 1) &&
+            attemptMadeWorkspaceProgress(latestAttempt)) ||
         shouldRepair({
             review: latestAttempt.review,
             repairAttempt,
-            maxRepairAttempts,
+            maxRepairAttempts:
+                focusedEditRequest && browserProbes.length > 0
+                    ? Math.min(maxRepairAttempts, 1)
+                    : maxRepairAttempts,
             attemptMadeProgress:
                 attemptMadeWorkspaceProgress(latestAttempt),
             ...(latestAttempt.agent.stopReason
@@ -5599,16 +5975,30 @@ export async function runReactAppAgent(
                 options.workspaceRoot,
                 latestAttempt.agent,
             );
+        const focusedRequirementRepairContext =
+            focusedEditRequest && browserProbes.length > 0
+                ? formatFocusedRequirementRepairContext({
+                      browserEval: latestAttempt.browserEval,
+                      requirements,
+                      focusedEditScope,
+                  })
+                : "";
 
         try {
             runMetrics.retryCalls += 1;
             const nextAttempt = await runAttempt(
                 "repair",
-                [
-                    formatAttemptBaseContext(latestWorkspaceContext),
-                    repairContext,
-                    failedActionContext,
-                ].join("\n\n"),
+                focusedRequirementRepairContext.length > 0
+                    ? [
+                          formatAttemptBaseContext(latestWorkspaceContext),
+                          focusedRequirementRepairContext,
+                          failedActionContext,
+                      ].join("\n\n")
+                    : [
+                          formatAttemptBaseContext(latestWorkspaceContext),
+                          repairContext,
+                          failedActionContext,
+                      ].join("\n\n"),
                 repairAttempt + 2,
             );
 
@@ -5648,6 +6038,27 @@ export async function runReactAppAgent(
     const browserRequirementEvidence = extractRequirementEvidenceFromBrowser(
         latestAttempt.browserEval,
     );
+    const mergedBrowserRequirementEvidence = mergeBeforeBrowserEvidence(
+        browserRequirementEvidence,
+        beforeBrowserProbeEvidence,
+    );
+    const postExecutionScopeViolations =
+        workspaceDiff && focusedEditScope
+            ? findUnexpectedScopeRanges(workspaceDiff, focusedEditScope).map(
+                  (range): ScopeViolation => ({
+                      action: "workspace_diff",
+                      file: range.file,
+                      reason: `Workspace diff changed lines ${range.startLine}-${range.endLine} outside focused edit allowed ranges.`,
+                      allowedRanges: focusedEditScope.allowedRanges.filter(
+                          (allowedRange) => allowedRange.file === range.file,
+                      ),
+                  }),
+              )
+            : [];
+    const allScopeViolations = [
+        ...scopeViolations,
+        ...postExecutionScopeViolations,
+    ];
     const requirementResults = evaluateRequirementLedger({
         requirements,
         metrics: finalizedMetrics,
@@ -5655,8 +6066,11 @@ export async function runReactAppAgent(
         focusedEdit: focusedEditRequest,
         ...(workspaceDiff ? { workspaceDiff } : {}),
         ...(focusedEditScope ? { focusedEditScope } : {}),
-        ...(browserRequirementEvidence.length > 0
-            ? { browserEvidence: browserRequirementEvidence }
+        ...(allScopeViolations.length > 0
+            ? { scopeViolations: allScopeViolations }
+            : {}),
+        ...(mergedBrowserRequirementEvidence.length > 0
+            ? { browserEvidence: mergedBrowserRequirementEvidence }
             : {}),
     });
     const ledgerReview = enforceRequirementLedgerReview({
@@ -5694,6 +6108,9 @@ export async function runReactAppAgent(
         requirements: requirementResults,
         ...(workspaceDiff ? { workspaceDiff } : {}),
         ...(focusedEditScope ? { focusedEditScope } : {}),
+        ...(allScopeViolations.length > 0
+            ? { scopeViolations: allScopeViolations }
+            : {}),
         executionMode: focusedEditRequest ? "fast_edit" : "structural_edit",
         trace: buildTraceEvents(
             attempts,
