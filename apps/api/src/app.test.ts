@@ -33,6 +33,15 @@ vi.mock("./run-version-snapshot.js", async (importOriginal) => {
 
 const temporaryDirectories: string[] = [];
 
+async function removeTemporaryDirectory(directory: string): Promise<void> {
+  await rm(directory, {
+    recursive: true,
+    force: true,
+    maxRetries: 8,
+    retryDelay: 75,
+  });
+}
+
 const TEST_COORDINATION = {
   goal: "Create a task application",
   plan: [],
@@ -327,12 +336,7 @@ async function buildTestApp(
 
 afterEach(async () => {
   await Promise.all(
-    temporaryDirectories.map((directory) =>
-      rm(directory, {
-        recursive: true,
-        force: true,
-      }),
-    ),
+    temporaryDirectories.map((directory) => removeTemporaryDirectory(directory)),
   );
 
   temporaryDirectories.length = 0;
@@ -436,7 +440,7 @@ describe("POST /runs", () => {
       method: "POST",
       url: "/runs",
       payload: {
-        goal: "我想要一个介绍温州的界面",
+        goal: "鎴戞兂瑕佷竴涓粙缁嶆俯宸炵殑鐣岄潰",
       },
     });
 
@@ -2849,6 +2853,26 @@ describe("POST /runs/:id/execute", () => {
         resetWorkspace: true,
       }),
     );
+    await vi.waitFor(async () => {
+      const detailResponse = await app.inject({
+        method: "GET",
+        url: `/runs/${createdRun.id}`,
+      });
+      const detail = detailResponse.json();
+
+      expect(detail.run).toEqual(
+        expect.objectContaining({
+          id: createdRun.id,
+          status: "succeeded",
+        }),
+      );
+      expect(detail.run).not.toHaveProperty("operation");
+      expect(detail.result.review).toEqual(
+        expect.objectContaining({
+          accepted: true,
+        }),
+      );
+    });
   });
 
   it("restarts a failed no-version run from the starter even when the client requests continuation", async () => {
@@ -2929,6 +2953,26 @@ describe("POST /runs/:id/execute", () => {
         resetWorkspace: true,
       }),
     );
+    await vi.waitFor(async () => {
+      const detailResponse = await app.inject({
+        method: "GET",
+        url: `/runs/${createdRun.id}`,
+      });
+      const detail = detailResponse.json();
+
+      expect(detail.run).toEqual(
+        expect.objectContaining({
+          id: createdRun.id,
+          status: "succeeded",
+        }),
+      );
+      expect(detail.run).not.toHaveProperty("operation");
+      expect(detail.result.review).toEqual(
+        expect.objectContaining({
+          accepted: true,
+        }),
+      );
+    });
   });
 
   it("treats a new iteration after a zero-progress failure as fresh generation", async () => {

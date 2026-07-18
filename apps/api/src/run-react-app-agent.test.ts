@@ -238,6 +238,20 @@ describe("runReactAppAgent", () => {
             workspaceRoot,
             templateRoot,
             model,
+            evaluateBrowser: async () => ({
+                passed: true,
+                checks: [{ name: "button text is Submit", passed: true }],
+                evidence: [
+                    {
+                        source: "browser",
+                        requirementId: "REQ-1",
+                        selector: "button",
+                        property: "textContent",
+                        expected: "Submit",
+                        actual: "Submit",
+                    },
+                ],
+            }),
             llm: {
                 baseUrl: "https://example.com/v1",
                 apiKey: "test-key",
@@ -251,6 +265,9 @@ describe("runReactAppAgent", () => {
         expect(result.metrics?.installDurationMs).toBe(0);
         expect(result.install.stdout).toContain("Skipped npm install");
         expect(result.metrics?.modifiedFiles).toEqual(["src/App.tsx"]);
+        expect(
+            result.requirements?.find((item) => item.id === "REQ-1")?.status,
+        ).toBe("PASS");
         expect(
             result.requirements?.find((item) => item.id === "PRESERVE-1")
                 ?.status,
@@ -1619,6 +1636,7 @@ describe("runReactAppAgent", () => {
         await writeFile(
             path.join(workspaceRoot, "src", "App.tsx"),
             [
+                "import React from 'react';",
                 "import './App.css';",
                 "export function App() {",
                 "  return <main className=\"route-main\">",
@@ -1832,10 +1850,11 @@ describe("runReactAppAgent", () => {
         await writeFile(
             path.join(workspaceRoot, "src", "App.tsx"),
             [
+                "import React from 'react';",
                 "import './App.css';",
                 "export function App() {",
                 "  return <main className=\"route-main\">",
-                "    <article className=\"page-card\"><img src=\"/assets/craft.jpg\" /><h2>百工巧技</h2></article>",
+                "    <article className=\"page-card\"><img src=\"/assets/craft.jpg\" alt=\"Craft\" /><h2>百工巧技</h2></article>",
                 "    <article className=\"metric\"><strong>2200+</strong><p>建城历史</p></article>",
                 "  </main>;",
                 "}",
@@ -1844,18 +1863,19 @@ describe("runReactAppAgent", () => {
         );
         await writeFile(
             path.join(workspaceRoot, "src", "App.css"),
-            ".page-card img { object-fit: cover; height: 22rem; } .metric strong { font-size: 5rem; }",
+            ".page-card img, .metric strong { object-fit: cover; height: 22rem; font-size: 5rem; }",
             "utf8",
         );
 
         const model = new FakeModelProvider([
-            PLANNER_RESPONSE,
             {
                 content: JSON.stringify({
-                    type: "write_file",
+                    type: "edit_file",
                     path: "src/App.css",
-                    content:
-                        ".page-card img { object-fit: contain; width: 100%; max-height: clamp(9rem, 22vw, 15rem); height: auto; }\n.metric strong { display: block; font-size: clamp(1.8rem, 5vw, 3rem); word-break: keep-all; }\n",
+                    oldText:
+                        ".page-card img, .metric strong { object-fit: cover; height: 22rem; font-size: 5rem; }",
+                    newText:
+                        ".page-card img, .metric strong { object-fit: contain; width: 100%; max-height: clamp(9rem, 22vw, 15rem); height: auto; display: block; font-size: clamp(1.8rem, 5vw, 3rem); word-break: keep-all; }",
                 }),
             },
             {
@@ -1864,15 +1884,40 @@ describe("runReactAppAgent", () => {
                     summary: "Focused image and typography update completed.",
                 }),
             },
-            APPROVED_REVIEW_RESPONSE,
         ]);
 
         const result = await runReactAppAgent({
             goal: "\u56fe\u7247\u4e0d\u80fd\u5f88\u597d\u7684\u653e\u5728\u91cc\u9762\uff0c\u800c\u4e14\u5b57\u4f53\u5f88\u5927",
+            currentRequest:
+                "\u8c03\u6574 .page-card img \u7684\u56fe\u7247\u9002\u914d\u548c\u5b57\u4f53\u5927\u5c0f",
             workspaceRoot,
             templateRoot,
             model,
             resetWorkspace: false,
+            evaluateBrowser: async () => ({
+                passed: true,
+                checks: [
+                    { name: "image fit and text size adjusted", passed: true },
+                ],
+                evidence: [
+                    {
+                        source: "computed_style",
+                        requirementId: "REQ-1",
+                        selector: ".page-card img",
+                        property: "object-fit",
+                        expected: "contain",
+                        actual: "contain",
+                    },
+                    {
+                        source: "computed_style",
+                        requirementId: "REQ-1",
+                        selector: ".metric strong",
+                        property: "font-size",
+                        expected: "clamped below oversized value",
+                        actual: "32px",
+                    },
+                ],
+            }),
             llm: {
                 baseUrl: "https://example.com/v1",
                 apiKey: "test-key",
@@ -1943,22 +1988,19 @@ describe("runReactAppAgent", () => {
         );
         await writeFile(
             path.join(workspaceRoot, "src", "App.css"),
-            [
-                ".page-genre-game .game-stage { border-radius: 2rem; }",
-                ".game-panel, .game-callout { padding: 2rem; border-radius: 1.5rem; background: rgba(255,255,255,.1); }",
-                ".game-panel h2, .game-callout h2 { font-size: 3.2rem; }",
-            ].join("\n"),
+            ".page-genre-game .game-panel, .page-genre-game .game-callout { padding: 2rem; border-radius: 1.5rem; background: rgba(255,255,255,.1); font-size: 3.2rem; }",
             "utf8",
         );
 
         const model = new FakeModelProvider([
-            PLANNER_RESPONSE,
             {
                 content: JSON.stringify({
-                    type: "write_file",
+                    type: "edit_file",
                     path: "src/App.css",
-                    content:
-                        ".page-genre-game .game-stage { border-radius: .35rem; }\n.page-genre-game .game-panel, .page-genre-game .game-callout { padding: clamp(.85rem, 1.9vw, 1.35rem); border-radius: .35rem; clip-path: polygon(0 0, calc(100% - .75rem) 0, 100% .75rem, 100% 100%, .75rem 100%, 0 calc(100% - .75rem)); }\n.page-genre-game .game-panel h2, .page-genre-game .game-callout h2 { font-size: clamp(1.05rem, 1.5vw, 1.45rem); }\n",
+                    oldText:
+                        ".page-genre-game .game-panel, .page-genre-game .game-callout { padding: 2rem; border-radius: 1.5rem; background: rgba(255,255,255,.1); font-size: 3.2rem; }",
+                    newText:
+                        ".page-genre-game .game-panel, .page-genre-game .game-callout { padding: clamp(.85rem, 1.9vw, 1.35rem); border-radius: .35rem; background: rgba(255,255,255,.1); clip-path: polygon(0 0, calc(100% - .75rem) 0, 100% .75rem, 100% 100%, .75rem 100%, 0 calc(100% - .75rem)); font-size: clamp(1.05rem, 1.5vw, 1.45rem); }",
                 }),
             },
             {
@@ -1967,15 +2009,40 @@ describe("runReactAppAgent", () => {
                     summary: "Focused game visual grammar update completed.",
                 }),
             },
-            APPROVED_REVIEW_RESPONSE,
         ]);
 
         const result = await runReactAppAgent({
             goal: "\u8fd9\u4e0d\u8fd8\u662f\u5361\u7247\u7684\u5417\uff0c\u800c\u4e14\u5b57\u4f53\u8d85\u7ea7\u5927",
+            currentRequest:
+                "\u8c03\u6574 .game-panel \u548c .game-callout \u7684\u6e38\u620f\u89c6\u89c9\u8bed\u6cd5\uff0c\u7f29\u5c0f\u8fc7\u5927\u5b57\u4f53\uff0c\u5176\u4ed6\u533a\u57df\u4e0d\u8981\u6539",
             workspaceRoot,
             templateRoot,
             model,
             resetWorkspace: false,
+            evaluateBrowser: async () => ({
+                passed: true,
+                checks: [
+                    { name: "game panel typography and shape stabilized", passed: true },
+                ],
+                evidence: [
+                    {
+                        source: "computed_style",
+                        requirementId: "REQ-1",
+                        selector: ".game-panel",
+                        property: "font-size",
+                        expected: "smaller game panel text",
+                        actual: "20px",
+                    },
+                    {
+                        source: "computed_style",
+                        requirementId: "REQ-1",
+                        selector: ".game-panel",
+                        property: "border-radius",
+                        expected: ".35rem",
+                        actual: "5.6px",
+                    },
+                ],
+            }),
             llm: {
                 baseUrl: "https://example.com/v1",
                 apiKey: "test-key",
@@ -1989,7 +2056,7 @@ describe("runReactAppAgent", () => {
         );
 
         expect(model.requests.length).toBeGreaterThan(0);
-        expect(result.agent.steps[0]?.action.type).toBe("write_file");
+        expect(result.agent.steps[0]?.action.type).toBe("edit_file");
         expect(cssSource).toContain(".page-genre-game .game-panel");
         expect(cssSource).toContain("clip-path: polygon");
         expect(cssSource).toContain("font-size: clamp(1.05rem");
@@ -2061,13 +2128,14 @@ describe("runReactAppAgent", () => {
         );
 
         const model = new FakeModelProvider([
-            PLANNER_RESPONSE,
             {
                 content: JSON.stringify({
-                    type: "write_file",
+                    type: "edit_file",
                     path: "src/App.css",
-                    content:
-                        ".feature-list strong, .place-name { display: inline; font-size: clamp(1rem, 1.45vw, 1.32rem); line-height: 1.35; word-break: keep-all; overflow-wrap: normal; }\n",
+                    oldText:
+                        ".feature-list strong { display: block; font-size: 3.8rem; }",
+                    newText:
+                        ".feature-list strong, .place-name { display: inline; font-size: clamp(1rem, 1.45vw, 1.32rem); line-height: 1.35; word-break: keep-all; overflow-wrap: normal; }",
                 }),
             },
             {
@@ -2076,15 +2144,39 @@ describe("runReactAppAgent", () => {
                     summary: "Focused route stop typography update completed.",
                 }),
             },
-            APPROVED_REVIEW_RESPONSE,
         ]);
 
         const result = await runReactAppAgent({
             goal: request,
+            currentRequest: `${request}，只调整 .feature-list strong 和 .place-name 的字体与换行，其他区域不要修改`,
             workspaceRoot,
             templateRoot,
             model,
             resetWorkspace: false,
+            evaluateBrowser: async () => ({
+                passed: true,
+                checks: [
+                    { name: "route stop names are smaller and stay readable", passed: true },
+                ],
+                evidence: [
+                    {
+                        source: "computed_style",
+                        requirementId: "REQ-1",
+                        selector: ".feature-list strong",
+                        property: "font-size",
+                        expected: "clamped route stop name size",
+                        actual: "18px",
+                    },
+                    {
+                        source: "computed_style",
+                        requirementId: "REQ-1",
+                        selector: ".feature-list strong",
+                        property: "word-break",
+                        expected: "keep-all",
+                        actual: "keep-all",
+                    },
+                ],
+            }),
             llm: {
                 baseUrl: "https://example.com/v1",
                 apiKey: "test-key",
@@ -2098,7 +2190,7 @@ describe("runReactAppAgent", () => {
         );
 
         expect(model.requests.length).toBeGreaterThan(0);
-        expect(result.agent.steps[0]?.action.type).toBe("write_file");
+        expect(result.agent.steps[0]?.action.type).toBe("edit_file");
         expect(cssSource).toContain(".feature-list strong");
         expect(cssSource).toContain(".place-name");
         expect(cssSource).toContain("font-size: clamp(1rem, 1.45vw, 1.32rem)");

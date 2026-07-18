@@ -599,6 +599,16 @@ async function main(): Promise<void> {
     const scopeViolationScenarios = results.filter(
         (result) => result.expectedScopeViolation,
     );
+    const acceptedScenarios = results.filter((result) => result.actualAccepted);
+    const acceptedFastScenarios = fastScenarios.filter(
+        (result) => result.actualAccepted,
+    );
+    const requiredBrowserProbeScenarios = fastScenarios.filter(
+        (result) => !result.expectedScopeViolation,
+    );
+    const executedBrowserProbeScenarios = results.filter(
+        (result) => result.browserEvidenceCount > 0,
+    );
     const summary = {
         totalCases: results.length,
         passedCases: results.filter(
@@ -626,18 +636,37 @@ async function main(): Promise<void> {
                 .length,
             scopeViolationScenarios.length,
         ),
+        scopeViolationAttemptRate: rate(
+            scopeViolationScenarios.length,
+            results.length,
+        ),
         unexpectedFileChangeRate: rate(
             results.filter((result) => result.unexpectedFileChanges.length > 0)
                 .length,
             results.length,
         ),
-        unexpectedRangeChangeRate: rate(
-            results.filter((result) => result.unexpectedRangeChanges > 0).length,
-            results.length,
+        unexpectedRangeChangeRateOnAcceptedCases: rate(
+            acceptedScenarios.filter(
+                (result) => result.unexpectedRangeChanges > 0,
+            ).length,
+            acceptedScenarios.length,
         ),
-        browserProbeSuccessRate: rate(
-            results.filter((result) => result.browserEvidenceCount > 0).length,
-            results.filter((result) => result.expectedMode === "fast_edit").length,
+        browserProbeCoverageForRequiredCases: rate(
+            requiredBrowserProbeScenarios.filter(
+                (result) => result.browserEvidenceCount > 0,
+            ).length,
+            requiredBrowserProbeScenarios.length,
+        ),
+        browserProbePassRateForExecutedProbes: rate(
+            executedBrowserProbeScenarios.filter((result) => result.actualAccepted)
+                .length,
+            executedBrowserProbeScenarios.length,
+        ),
+        missingRequiredBrowserEvidenceRate: rate(
+            requiredBrowserProbeScenarios.filter(
+                (result) => result.browserEvidenceCount === 0,
+            ).length,
+            requiredBrowserProbeScenarios.length,
         ),
         averageCodingCalls: average(
             results.map((result) => result.codingCalls),
@@ -646,8 +675,9 @@ async function main(): Promise<void> {
             results.map((result) => result.totalDurationMs),
         ),
         npmInstallSkipRate: rate(
-            fastScenarios.filter((result) => result.npmInstallSkipped).length,
-            fastScenarios.length,
+            acceptedFastScenarios.filter((result) => result.npmInstallSkipped)
+                .length,
+            acceptedFastScenarios.length,
         ),
         falseFastEditRate: rate(
             structuralScenarios.filter(

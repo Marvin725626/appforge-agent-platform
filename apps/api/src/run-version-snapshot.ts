@@ -136,6 +136,25 @@ async function removeTemporarySnapshot(
     });
 }
 
+async function bestEffortRemoveTemporarySnapshot(
+    temporarySnapshotRoot: string,
+): Promise<void> {
+    try {
+        await removeTemporarySnapshot(temporarySnapshotRoot);
+    } catch (error) {
+        if (
+            isFileSystemErrorWithCode(
+                error,
+                RETRYABLE_SNAPSHOT_PUBLISH_ERROR_CODES,
+            )
+        ) {
+            return;
+        }
+
+        throw error;
+    }
+}
+
 export async function saveRunVersionSnapshot(input: {
     workspaceRoot: string;
     versionNumber: number;
@@ -166,13 +185,13 @@ export async function saveRunVersionSnapshot(input: {
             snapshotRoot,
         });
     } catch (error) {
-        await removeTemporarySnapshot(temporarySnapshotRoot);
+        await bestEffortRemoveTemporarySnapshot(temporarySnapshotRoot);
         throw error;
     }
 
     // The temporary directory no longer exists after a successful rename,
     // but it still does when another concurrent save published first.
-    await removeTemporarySnapshot(temporarySnapshotRoot);
+    await bestEffortRemoveTemporarySnapshot(temporarySnapshotRoot);
 
     return snapshotRoot;
 }

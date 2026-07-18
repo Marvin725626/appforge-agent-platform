@@ -468,6 +468,18 @@ function listFallbackPagesFromAttempts(
     return [...pages].sort();
 }
 
+function parallelWorkstreamsHitHardDeadline(
+    workstreams: ParallelCodingWorkstreamResult[] | undefined,
+): boolean {
+    return (
+        workstreams?.some((workstream) =>
+            /total generation deadline|exhausted its \d+ms/u.test(
+                workstream.errorMessage ?? "",
+            ),
+        ) ?? false
+    );
+}
+
 function finalizeRunMetrics(input: {
     metrics: RunMetrics;
     attempts: RunReactAppAgentAttempt[];
@@ -5484,7 +5496,11 @@ export async function runReactAppAgent(
                 agent = parallelResult.agent;
                 parallelWorkstreams = parallelResult.workstreams;
 
-                if (!agent.finished && agent.steps.length === 0) {
+                if (
+                    !agent.finished &&
+                    agent.steps.length === 0 &&
+                    !parallelWorkstreamsHitHardDeadline(parallelWorkstreams)
+                ) {
                     const fallbackModel = labelModelProviderStage(
                         provider,
                         "initial Coding Agent fallback model request",

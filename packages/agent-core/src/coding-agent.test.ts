@@ -207,7 +207,13 @@ describe("CodingAgent", () => {
             "Available image modes: search.",
         );
         expect(systemPrompt).toContain(
-            'Use mode "search" only when the query contains an http(s) page URL or direct image URL to fetch from.',
+            'Use mode "search" for official or existing brand assets such as logos, icons, badges, and known product imagery.',
+        );
+        expect(systemPrompt).toContain(
+            'keyword phrase such as "Valorant official logo Riot Games svg png"',
+        );
+        expect(systemPrompt).toContain(
+            "http(s) page/direct image URL",
         );
         expect(systemPrompt).not.toContain(
             'Use mode "generate" when the user asks for a new AI-created image.',
