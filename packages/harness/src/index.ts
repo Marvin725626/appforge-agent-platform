@@ -62,6 +62,17 @@ export type BrowserCheck = {
 export type BrowserEvalResult = {
     passed: boolean;
     checks: BrowserCheck[];
+    evidence?: BrowserEvalEvidence[];
+};
+
+export type BrowserEvalEvidence = {
+    source: "browser" | "computed_style";
+    selector?: string;
+    property?: string;
+    expected?: string;
+    actual?: string;
+    before?: string;
+    after?: string;
 };
 
 export type BrowserRuntimeEvidence = {
@@ -2243,6 +2254,7 @@ export class PlaywrightBrowserEvaluator implements BrowserEvaluator {
             input.signal.throwIfAborted();
         }
         const checks: BrowserCheck[] = [];
+        const evidence: BrowserEvalEvidence[] = [];
         const runtimeErrors = new Set<string>();
         let rootEvidence:
             | Omit<BrowserRuntimeEvidence, "runtimeErrors">
@@ -2333,6 +2345,12 @@ export class PlaywrightBrowserEvaluator implements BrowserEvaluator {
                     input.signal,
                 )),
             );
+            const focusedEvidence = await collectFocusedBrowserEvidence(
+                page,
+                input.goal,
+            );
+            checks.push(...focusedEvidence.checks);
+            evidence.push(...focusedEvidence.evidence);
 
             if (isTaskAppGoal(input.goal)) {
                 const inputLocator = page.locator("input, textarea").first();
@@ -2455,8 +2473,167 @@ export class PlaywrightBrowserEvaluator implements BrowserEvaluator {
         return {
             passed: checks.every((check) => check.passed),
             checks,
+            ...(evidence.length > 0 ? { evidence } : {}),
         };
     }
+}
+
+async function collectFocusedBrowserEvidence(
+    page: Page,
+    goal: string | undefined,
+): Promise<{ checks: BrowserCheck[]; evidence: BrowserEvalEvidence[] }> {
+    const normalizedGoal = goal ?? "";
+    const checks: BrowserCheck[] = [];
+    const evidence: BrowserEvalEvidence[] = [];
+    const pxMatch = normalizedGoal.match(/(\d+(?:\.\d+)?)\s*px/iu);
+    const expectedPx = pxMatch ? Number(pxMatch[1]) : undefined;
+    const wantsSidebar =
+        /\bsidebar\b|left\s+side|left\s+rail|宸︿晶|渚ц竟/iu.test(
+            normalizedGoal,
+        );
+    const wantsHero = /\bhero\b|棣栧睆|澶村浘/iu.test(normalizedGoal);
+    const wantsButton = /\bbutton\b|鎸夐挳/iu.test(normalizedGoal);
+    const wantsColor =
+        /\b(?:color|background|blue|gray|grey|dark)\b|棰滆壊|鑳屾櫙|钃濊壊|鐏拌壊/iu.test(
+            normalizedGoal,
+        );
+    const wantsVisibility =
+        /\b(?:hide|show|visible|visibility)\b|闅愯棌|鏄剧ず|鍙/iu.test(
+            normalizedGoal,
+        );
+    const wantsResponsive =
+        /\b(?:mobile|desktop|responsive|single column|one column)\b|鎵嬫満|妗岄潰|鍗曞垪|鍝嶅簲/iu.test(
+            normalizedGoal,
+        );
+    const selector = wantsSidebar
+        ? "aside, .sidebar, .app-sidebar, [class*='sidebar']"
+        : wantsHero
+          ? ".hero, .page-hero, [class*='hero']"
+          : wantsButton
+            ? "button, .button, [role='button']"
+            : wantsResponsive
+              ? "main, .app, #root > *"
+              : "";
+
+    if (selector.length === 0 && !wantsColor && !wantsVisibility) {
+        return { checks, evidence };
+    }
+
+    const targetSelector = selector || "body";
+    const locator = page.locator(targetSelector).first();
+    const count = await locator.count();
+
+    checks.push({
+        name: `focused evidence target exists: ${targetSelector}`,
+        passed: count > 0,
+        ...(count > 0
+            ? {}
+            : { message: `No element matched ${targetSelector}.` }),
+    });
+
+    if (count === 0) {
+        evidence.push({
+            source: "browser",
+            selector: targetSelector,
+            property: "exists",
+            expected: "true",
+            actual: "false",
+        });
+        return { checks, evidence };
+    }
+
+    const box = await locator.boundingBox();
+    const computed = await locator.evaluate((element) => {
+        const style = window.getComputedStyle(element);
+
+        return {
+            width: style.width,
+            height: style.height,
+            display: style.display,
+            visibility: style.visibility,
+            opacity: style.opacity,
+            backgroundColor: style.backgroundColor,
+            color: style.color,
+            marginLeft: style.marginLeft,
+            transform: style.transform,
+        };
+    });
+    const visible = await locator.isVisible();
+
+    evidence.push({
+        source: "browser",
+        selector: targetSelector,
+        property: "visible",
+        expected: wantsVisibility ? "requested visibility state" : "true",
+        actual: String(visible),
+    });
+
+    if (box) {
+        evidence.push({
+            source: "browser",
+            selector: targetSelector,
+            property: "boundingBox",
+            actual: `x=${Math.round(box.x)}, y=${Math.round(box.y)}, width=${Math.round(box.width)}, height=${Math.round(box.height)}`,
+        });
+    }
+
+    if (expectedPx !== undefined && (wantsSidebar || /width|瀹藉害/iu.test(normalizedGoal))) {
+        const actualWidth = box?.width ?? Number.parseFloat(computed.width);
+        const passed = Number.isFinite(actualWidth)
+            ? Math.abs(actualWidth - expectedPx) <= 2
+            : false;
+
+        checks.push({
+            name: `computed width is ${expectedPx}px`,
+            passed,
+            ...(passed
+                ? {}
+                : {
+                      message: `Expected ${expectedPx}px, got ${Number.isFinite(actualWidth) ? `${actualWidth.toFixed(2)}px` : computed.width}.`,
+                  }),
+        });
+        evidence.push({
+            source: "computed_style",
+            selector: targetSelector,
+            property: "width",
+            expected: `${expectedPx}px`,
+            actual: Number.isFinite(actualWidth)
+                ? `${actualWidth.toFixed(2)}px`
+                : computed.width,
+        });
+    }
+
+    if (wantsColor || wantsHero) {
+        evidence.push({
+            source: "computed_style",
+            selector: targetSelector,
+            property: "background-color",
+            expected: /not\s+blue|不是蓝色|不要蓝色/iu.test(normalizedGoal)
+                ? "not blue"
+                : /dark\s+gray|dark\s+grey|深灰/iu.test(normalizedGoal)
+                  ? "dark gray"
+                  : "requested color",
+            actual: computed.backgroundColor,
+        });
+        evidence.push({
+            source: "computed_style",
+            selector: targetSelector,
+            property: "color",
+            actual: computed.color,
+        });
+    }
+
+    if (wantsResponsive) {
+        const viewport = page.viewportSize();
+        evidence.push({
+            source: "browser",
+            selector: targetSelector,
+            property: "viewport",
+            actual: viewport ? `${viewport.width}x${viewport.height}` : "unknown",
+        });
+    }
+
+    return { checks, evidence };
 }
 
 function isTaskAppGoal(goal: string | undefined): boolean {

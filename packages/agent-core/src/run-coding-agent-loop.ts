@@ -319,6 +319,7 @@ export type RunCodingAgentLoopOptions = {
     imageAssetModes?: ImageAssetMode[];
     mode?: CodingAgentStepMode;
     signal?: AbortSignal;
+    validateAction?: Parameters<typeof runCodingAgentStep>[0]["validateAction"];
 };
 
 export type RunCodingAgentLoopResult = {
@@ -448,6 +449,9 @@ export async function runCodingAgentLoop(
                     ? { imageAssetModes: options.imageAssetModes }
                     : {}),
                 ...(options.signal ? { signal: options.signal } : {}),
+                ...(options.validateAction
+                    ? { validateAction: options.validateAction }
+                    : {}),
             });
         } catch (error) {
             if (options.signal?.aborted) {

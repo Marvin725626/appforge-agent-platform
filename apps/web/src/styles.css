@@ -1599,6 +1599,10 @@ pre {
     border-left-color: #dc2626;
 }
 
+.requirement-row.unverified {
+    border-left-color: #f59e0b;
+}
+
 .requirement-row p,
 .requirement-row small {
     display: block;
@@ -1624,6 +1628,29 @@ pre {
 .requirement-row.failed > span {
     background: #fee2e2;
     color: #991b1b;
+}
+
+.requirement-row.unverified > span {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.requirement-evidence-list {
+    display: grid;
+    gap: 4px;
+    margin: 8px 0 0;
+    padding-left: 18px;
+    color: #475467;
+    font-size: 0.78rem;
+    line-height: 1.45;
+}
+
+.requirement-evidence-list code {
+    border-radius: 4px;
+    background: #e2e8f0;
+    color: #0f172a;
+    padding: 1px 4px;
+    font-size: 0.74rem;
 }
 
 .run-metrics dl {

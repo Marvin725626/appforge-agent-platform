@@ -127,6 +127,42 @@ type ReactAppAgentResult = {
     browserEval?: BrowserEvalResult;
     metrics?: RunMetrics;
     requirements?: RequirementResult[];
+    workspaceDiff?: WorkspaceDiff;
+    focusedEditScope?: FocusedEditScope;
+    executionMode?: "fast_edit" | "structural_edit";
+};
+
+type WorkspaceDiff = {
+    addedFiles: string[];
+    deletedFiles: string[];
+    modifiedFiles: string[];
+    unchangedFiles: string[];
+    changedRanges: Array<{
+        file: string;
+        beforeStartLine: number;
+        beforeEndLine: number;
+        afterStartLine: number;
+        afterEndLine: number;
+    }>;
+};
+
+type FocusedEditScope = {
+    intent:
+        | "text"
+        | "color"
+        | "spacing"
+        | "size"
+        | "position"
+        | "visibility"
+        | "delete"
+        | "responsive"
+        | "asset"
+        | "interaction";
+    allowedFiles: string[];
+    allowedSelectorsOrComponents: string[];
+    protectedFiles: string[];
+    protectedSelectorsOrComponents: string[];
+    confidence: number;
 };
 
 type RunMetrics = {
@@ -153,10 +189,24 @@ type RequirementResult = {
     target?: string;
     targetFiles?: string[];
     verification: string;
-    status: "PASS" | "FAIL";
+    status: "PASS" | "FAIL" | "UNVERIFIED";
     evidence: string;
+    evidences: RequirementEvidence[];
     affectedFiles: string[];
     affectedSelectorsOrComponents: string[];
+};
+
+type RequirementEvidence = {
+    source: "file_diff" | "browser" | "computed_style" | "build" | "manual";
+    file?: string;
+    selector?: string;
+    property?: string;
+    before?: string;
+    after?: string;
+    expected?: string;
+    actual?: string;
+    unexpectedFiles?: string[];
+    unexpectedSelectors?: string[];
 };
 
 type ExecuteResponse = {
@@ -3132,6 +3182,8 @@ export function App() {
     const fallbackPages = getFallbackPages(agentResult);
     const runMetrics = agentResult?.metrics;
     const requirementResults = agentResult?.requirements ?? [];
+    const workspaceDiff = agentResult?.workspaceDiff;
+    const focusedEditScope = agentResult?.focusedEditScope;
 
     return (
         <main className="app-shell workspace-shell">
@@ -3670,7 +3722,10 @@ export function App() {
                                                                 requirement.status ===
                                                                 "PASS"
                                                                     ? "requirement-row passed"
-                                                                    : "requirement-row failed"
+                                                                    : requirement.status ===
+                                                                        "FAIL"
+                                                                      ? "requirement-row failed"
+                                                                      : "requirement-row unverified"
                                                             }
                                                             key={requirement.id}
                                                         >
@@ -3701,6 +3756,46 @@ export function App() {
                                                                             ", ",
                                                                         )}
                                                                     </small>
+                                                                ) : null}
+                                                                {requirement.evidences.length >
+                                                                0 ? (
+                                                                    <ul className="requirement-evidence-list">
+                                                                        {requirement.evidences.map(
+                                                                            (
+                                                                                evidence,
+                                                                                index,
+                                                                            ) => (
+                                                                                <li
+                                                                                    key={`${requirement.id}-evidence-${index}`}
+                                                                                >
+                                                                                    <code>
+                                                                                        {
+                                                                                            evidence.source
+                                                                                        }
+                                                                                    </code>
+                                                                                    {evidence.file
+                                                                                        ? ` ${evidence.file}`
+                                                                                        : ""}
+                                                                                    {evidence.selector
+                                                                                        ? ` ${evidence.selector}`
+                                                                                        : ""}
+                                                                                    {evidence.property
+                                                                                        ? ` ${evidence.property}`
+                                                                                        : ""}
+                                                                                    {evidence.expected
+                                                                                        ? ` expected=${evidence.expected}`
+                                                                                        : ""}
+                                                                                    {evidence.actual
+                                                                                        ? ` actual=${evidence.actual}`
+                                                                                        : ""}
+                                                                                    {evidence.unexpectedFiles
+                                                                                        ?.length
+                                                                                        ? ` unexpected=${evidence.unexpectedFiles.join(", ")}`
+                                                                                        : ""}
+                                                                                </li>
+                                                                            ),
+                                                                        )}
+                                                                    </ul>
                                                                 ) : null}
                                                             </div>
                                                             <span>
@@ -3821,6 +3916,93 @@ export function App() {
                                                         ", ",
                                                     )}
                                                 </p>
+                                            ) : null}
+                                        </div>
+                                    ) : null}
+                                    {focusedEditScope ? (
+                                        <div className="run-metrics">
+                                            <h3>Focused Edit Scope</h3>
+                                            <p className="muted-text">
+                                                Mode:{" "}
+                                                {agentResult?.executionMode ??
+                                                    "unknown"}{" "}
+                                                · Intent:{" "}
+                                                {focusedEditScope.intent} ·
+                                                Confidence:{" "}
+                                                {focusedEditScope.confidence.toFixed(
+                                                    2,
+                                                )}
+                                            </p>
+                                            <p className="muted-text">
+                                                Allowed files:{" "}
+                                                {focusedEditScope.allowedFiles.join(
+                                                    ", ",
+                                                ) || "none"}
+                                            </p>
+                                            <p className="muted-text">
+                                                Allowed selectors/components:{" "}
+                                                {focusedEditScope.allowedSelectorsOrComponents.join(
+                                                    ", ",
+                                                ) || "none"}
+                                            </p>
+                                        </div>
+                                    ) : agentResult?.executionMode ? (
+                                        <div className="run-metrics">
+                                            <h3>Execution Mode</h3>
+                                            <p className="muted-text">
+                                                {agentResult.executionMode}
+                                            </p>
+                                        </div>
+                                    ) : null}
+                                    {workspaceDiff ? (
+                                        <div className="run-metrics">
+                                            <h3>Workspace Diff</h3>
+                                            <p className="muted-text">
+                                                Added:{" "}
+                                                {workspaceDiff.addedFiles.join(
+                                                    ", ",
+                                                ) || "none"}
+                                            </p>
+                                            <p className="muted-text">
+                                                Modified:{" "}
+                                                {workspaceDiff.modifiedFiles.join(
+                                                    ", ",
+                                                ) || "none"}
+                                            </p>
+                                            <p className="muted-text">
+                                                Deleted:{" "}
+                                                {workspaceDiff.deletedFiles.join(
+                                                    ", ",
+                                                ) || "none"}
+                                            </p>
+                                            {workspaceDiff.changedRanges.length >
+                                            0 ? (
+                                                <ul className="requirement-evidence-list">
+                                                    {workspaceDiff.changedRanges.map(
+                                                        (range) => (
+                                                            <li
+                                                                key={`${range.file}-${range.beforeStartLine}-${range.afterStartLine}`}
+                                                            >
+                                                                {range.file}: before{" "}
+                                                                {
+                                                                    range.beforeStartLine
+                                                                }
+                                                                -
+                                                                {
+                                                                    range.beforeEndLine
+                                                                }
+                                                                , after{" "}
+                                                                {
+                                                                    range.afterStartLine
+                                                                }
+                                                                -
+                                                                {
+                                                                    range.afterEndLine
+                                                                }
+                                                            </li>
+                                                        ),
+                                                    )}
+                                                </ul>
                                             ) : null}
                                         </div>
                                     ) : null}

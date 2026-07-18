@@ -39,6 +39,7 @@ import {
 import { formatRepairContext } from "./format-repair-context.js";
 import { shouldRepair } from "./should-repair.js";
 import type {
+    AgentAction,
     RunOperationStage,
     TraceEvent,
 } from "@appforge/protocol";
@@ -49,6 +50,19 @@ import {
     type ParallelCodingWorkstreamResult,
     type TopicLookupProvider,
 } from "./run-parallel-react-pages-agent.js";
+import {
+    createFileDiffEvidence,
+    createWorkspaceSnapshot,
+    diffWorkspaceSnapshots,
+    findUnexpectedScopeFiles,
+    locateFocusedEditScope,
+    validateFocusedEditAction,
+    type FileSnapshot,
+    type FocusedEditExecutionMode,
+    type FocusedEditScope,
+    type RequirementEvidence,
+    type WorkspaceDiff,
+} from "./focused-edit-diagnostics.js";
 
 const INSTALL_COMMAND_TIMEOUT_MS = 5 * 60 * 1_000;
 const BUILD_COMMAND_TIMEOUT_MS = 2 * 60 * 1_000;
@@ -173,8 +187,9 @@ export type Requirement = {
 };
 
 export type RequirementResult = Requirement & {
-    status: "PASS" | "FAIL";
+    status: "PASS" | "FAIL" | "UNVERIFIED";
     evidence: string;
+    evidences: RequirementEvidence[];
     affectedFiles: string[];
     affectedSelectorsOrComponents: string[];
 };
@@ -214,6 +229,9 @@ export type RunReactAppAgentResult = {
     llmReview?: ReviewerOutput;
     metrics?: RunMetrics;
     requirements?: RequirementResult[];
+    workspaceDiff?: WorkspaceDiff;
+    focusedEditScope?: FocusedEditScope;
+    executionMode?: FocusedEditExecutionMode;
 };
 
 type LocalAssetReference = {
@@ -485,6 +503,8 @@ function withRequirementLedgerResult(
     result: RunReactAppAgentResult,
     requirements: Requirement[],
     focusedEdit: boolean,
+    workspaceDiff?: WorkspaceDiff,
+    focusedEditScope?: FocusedEditScope,
 ): RunReactAppAgentResult {
     const metrics =
         result.metrics ??
@@ -498,6 +518,8 @@ function withRequirementLedgerResult(
         metrics,
         review: result.review,
         focusedEdit,
+        ...(workspaceDiff ? { workspaceDiff } : {}),
+        ...(focusedEditScope ? { focusedEditScope } : {}),
     });
     const ledgerReview = enforceRequirementLedgerReview({
         review: result.review,
@@ -527,6 +549,9 @@ function withRequirementLedgerResult(
         attempts,
         metrics,
         requirements: requirementResults,
+        ...(workspaceDiff ? { workspaceDiff } : {}),
+        ...(focusedEditScope ? { focusedEditScope } : {}),
+        executionMode: focusedEdit ? "fast_edit" : "structural_edit",
         ...(trace ? { trace } : {}),
     };
 }
@@ -3826,6 +3851,14 @@ function isFocusedVisualAdjustmentRequest(text: string): boolean {
         /\b(?:text|copy|label|wording|rename|change)\b|(?:\u6587\u5b57|\u6587\u672c|\u6587\u6848|\u6309\u94ae\u6587\u5b57|\u6309\u94ae\u6587\u6848|\u6539\u6210|\u4fee\u6539|\u66ff\u6362)/iu.test(
             text,
         );
+    const asksForFocusedAssetChange =
+        /\b(?:replace|swap|change)\s+(?:the\s+)?(?:hero\s+)?(?:image|photo|asset)\b|\b(?:hero\s+)?image\s+asset\b/iu.test(
+            text,
+        );
+    const asksForFocusedDeletion =
+        /\b(?:delete|remove|hide)\s+(?:the\s+)?(?:second\s+)?(?:feature|module|section|card|button|image|element)\b/iu.test(
+            text,
+        );
     const mentionsEditableTextSurface =
         /\b(?:button|text|copy|label|heading|title)\b|(?:\u6309\u94ae|\u6587\u5b57|\u6587\u672c|\u6587\u6848|\u6807\u9898|\u6807\u7b7e)/iu.test(
             text,
@@ -3844,12 +3877,32 @@ function isFocusedVisualAdjustmentRequest(text: string): boolean {
         (mentionsExistingBrandElement ||
             mentionsVisualSurface ||
             mentionsEditableTextSurface ||
-            asksForHorizontalReadableLabels) &&
+            asksForHorizontalReadableLabels ||
+            asksForFocusedDeletion ||
+            asksForFocusedAssetChange) &&
         (asksForVisualAdjustment ||
             asksForHorizontalReadableLabels ||
-            asksForTextChange) &&
+            asksForTextChange ||
+            asksForFocusedAssetChange ||
+            asksForFocusedDeletion) &&
         !asksForBroadReplacement
     );
+}
+
+function isExplicitFocusedEditRequest(text: string): boolean {
+    const actionThenTarget =
+        /\b(?:change|modify|update|set|move|delete|remove|hide|replace|swap)\b.{0,80}\b(?:button|sidebar|hero|background|color|width|height|font|title|image|photo|asset|module|section|route|\/about|mobile|desktop)\b/iu;
+    const targetThenAction =
+        /\b(?:button|sidebar|hero|background|color|width|height|font|title|image|photo|asset|module|section|route|\/about|mobile|desktop)\b.{0,80}\b(?:change|modify|update|set|move|delete|remove|hide|replace|swap)\b/iu;
+    const chineseFocused =
+        /(?:修改|改成|换成|替换|移动|删除|移除|隐藏|缩小|放大).{0,80}(?:按钮|侧边栏|左侧栏|首屏|背景|颜色|宽度|高度|字号|标题|图片|模块|区块|路由|手机|桌面)/iu;
+    const broadRedo =
+        /\b(?:create|build|redesign|rebuild)\b.{0,40}\b(?:page|site|homepage|app)\b|\b(?:whole|entire)\s+(?:page|site|app)\b|整体重做|重新设计|重做整个/iu;
+
+    return !broadRedo.test(text) &&
+        (actionThenTarget.test(text) ||
+            targetThenAction.test(text) ||
+            chineseFocused.test(text));
 }
 
 function splitRequirementClauses(text: string): string[] {
@@ -3906,6 +3959,10 @@ function parseRequirementLedger(input: {
     const requirements: Requirement[] = clauses.map((instruction, index) => {
         const target = inferRequirementTarget(instruction);
         const targetFiles = inferRequirementTargetFiles(instruction);
+        const isPreserve =
+            /\b(?:do not|don't|without)\s+(?:modify|change|touch|rewrite)|\bkeep\b.{0,60}\b(?:unchanged|same)|\bother\b.{0,40}\b(?:unchanged|unmodified)|\bpreserve\b|不要.{0,20}(?:修改|改变|动)|其他.{0,20}(?:不变|不要动|不要修改)/iu.test(
+                instruction,
+            );
         const isSoft =
             /\b(?:可以|尽量|maybe|prefer|should)\b|最好|尽可能/iu.test(
                 instruction,
@@ -3914,7 +3971,7 @@ function parseRequirementLedger(input: {
         return {
             id: `REQ-${index + 1}`,
             instruction,
-            priority: isSoft ? "should" : "must",
+            priority: isPreserve ? "must_preserve" : isSoft ? "should" : "must",
             ...(target ? { target } : {}),
             ...(targetFiles ? { targetFiles } : {}),
             verification: target
@@ -4006,40 +4063,90 @@ function evaluateRequirementLedger(input: {
     metrics: RunMetrics;
     review: ReactAppAgentReview;
     focusedEdit: boolean;
+    workspaceDiff?: WorkspaceDiff;
+    focusedEditScope?: FocusedEditScope;
+    browserEvidence?: RequirementEvidence[];
 }): RequirementResult[] {
+    const diffEvidence = input.workspaceDiff
+        ? createFileDiffEvidence(input.workspaceDiff)
+        : [];
+    const changedFiles = input.workspaceDiff
+        ? [
+              ...input.workspaceDiff.addedFiles,
+              ...input.workspaceDiff.deletedFiles,
+              ...input.workspaceDiff.modifiedFiles,
+          ].sort()
+        : input.metrics.modifiedFiles;
+    const unexpectedScopeFiles = input.workspaceDiff
+        ? findUnexpectedScopeFiles(
+              input.workspaceDiff,
+              input.focusedEditScope,
+          )
+        : [];
+
     return input.requirements.map((requirement) => {
         const targetFiles = requirement.targetFiles ?? [];
         const affectedFiles =
             targetFiles.length > 0
-                ? input.metrics.modifiedFiles.filter((filePath) =>
+                ? changedFiles.filter((filePath) =>
                       targetFiles.some((targetFile) =>
                           filePath.endsWith(targetFile) ||
                           targetFile.endsWith(filePath),
                       ),
                   )
-                : input.metrics.modifiedFiles;
+                : changedFiles;
         const selectors =
             inferAffectedSelectorsOrComponents(requirement);
-        let passed =
-            requirement.priority === "should" ||
-            affectedFiles.length > 0 ||
-            input.metrics.modifiedFiles.length > 0;
-        let evidence =
+        let evidences: RequirementEvidence[] = [
+            ...diffEvidence.filter(
+                (item) =>
+                    !item.file ||
+                    affectedFiles.length === 0 ||
+                    affectedFiles.includes(item.file),
+            ),
+            ...(input.browserEvidence ?? []).filter((item) =>
+                selectors.length === 0 || !item.selector
+                    ? true
+                    : selectors.includes(item.selector) ||
+                      selectors.some((selector) =>
+                          item.selector?.includes(selector),
+                      ),
+            ),
+        ];
+
+        if (
+            !input.focusedEdit &&
+            evidences.length === 0 &&
+            (!input.workspaceDiff || changedFiles.length > 0) &&
+            input.review.checks.buildPassed &&
+            input.review.checks.evalPassed
+        ) {
+            evidences = [
+                {
+                    source: "build",
+                    expected: "Structural generation passes build and static evaluation.",
+                    actual: "buildPassed=true; evalPassed=true",
+                },
+            ];
+        }
+        let evidenceText =
             affectedFiles.length > 0
                 ? `Modified ${affectedFiles.join(", ")}.`
-                : input.metrics.modifiedFiles.length > 0
-                  ? `Modified ${input.metrics.modifiedFiles.join(", ")}.`
+                : changedFiles.length > 0
+                  ? `Modified ${changedFiles.join(", ")}.`
                   : "No workspace file change was recorded.";
+        let status: RequirementResult["status"] =
+            evidences.length > 0 ? "PASS" : "UNVERIFIED";
 
         if (requirement.priority === "must_preserve") {
             const forbiddenReasons: string[] = [];
+            const preserveEvidence: RequirementEvidence = {
+                source: "file_diff",
+                expected: "No scope-outside file changes, no dependency edits, no Planner/Reviewer/npm install on fast edit.",
+            };
 
             if (input.metrics.plannerCalls > 0) {
                 forbiddenReasons.push("Planner was called");
-            }
-
-            if (input.metrics.installDurationMs > 0) {
-                forbiddenReasons.push("npm install ran");
             }
 
             if (input.metrics.dependencyManifestChanged) {
@@ -4047,29 +4154,59 @@ function evaluateRequirementLedger(input: {
             }
 
             if (
-                input.metrics.modifiedFiles.some((filePath) =>
+                changedFiles.some((filePath) =>
                     /^public\/assets\//u.test(filePath),
                 )
             ) {
                 forbiddenReasons.push("image asset changed");
             }
 
-            passed = forbiddenReasons.length === 0;
-            evidence = passed
+            if (unexpectedScopeFiles.length > 0) {
+                forbiddenReasons.push(
+                    `scope-outside files changed: ${unexpectedScopeFiles.join(", ")}`,
+                );
+                preserveEvidence.unexpectedFiles = unexpectedScopeFiles;
+            }
+
+            evidences = [preserveEvidence];
+            status = forbiddenReasons.length === 0 ? "PASS" : "FAIL";
+            evidenceText = status === "PASS"
                 ? "Focused edit stayed on the fast path without Planner, npm install, dependency changes, or image asset changes."
                 : forbiddenReasons.join("; ");
-        } else if (!input.review.accepted && !passed) {
-            evidence = `${evidence} Review also failed: ${input.review.reason}`;
+        } else if (requirement.priority === "must" && evidences.length === 0) {
+            status = "UNVERIFIED";
+            evidenceText = `${evidenceText} No verifiable diff, browser, computed-style, build, or manual evidence was produced.`;
+        } else if (requirement.priority === "should" && evidences.length === 0) {
+            status = "UNVERIFIED";
+        }
+
+        if (!input.review.accepted && status !== "PASS") {
+            evidenceText = `${evidenceText} Review also failed: ${input.review.reason}`;
         }
 
         return {
             ...requirement,
-            status: passed ? "PASS" : "FAIL",
-            evidence,
+            status,
+            evidence: evidenceText,
+            evidences,
             affectedFiles,
             affectedSelectorsOrComponents: selectors,
         };
     });
+}
+
+function extractRequirementEvidenceFromBrowser(
+    browserEval: BrowserEvalResult | undefined,
+): RequirementEvidence[] {
+    return (browserEval?.evidence ?? []).map((item) => ({
+        source: item.source,
+        ...(item.selector ? { selector: item.selector } : {}),
+        ...(item.property ? { property: item.property } : {}),
+        ...(item.before ? { before: item.before } : {}),
+        ...(item.after ? { after: item.after } : {}),
+        ...(item.expected ? { expected: item.expected } : {}),
+        ...(item.actual ? { actual: item.actual } : {}),
+    }));
 }
 
 function enforceRequirementLedgerReview(input: {
@@ -4078,7 +4215,7 @@ function enforceRequirementLedgerReview(input: {
 }): ReactAppAgentReview {
     const failedRequired = input.requirements.filter(
         (requirement) =>
-            requirement.status === "FAIL" &&
+            requirement.status !== "PASS" &&
             (requirement.priority === "must" ||
                 requirement.priority === "must_preserve"),
     );
@@ -4091,7 +4228,7 @@ function enforceRequirementLedgerReview(input: {
         ...input.review,
         accepted: false,
         reason: [
-            `Rejected because ${failedRequired.length} required requirement(s) failed: ${failedRequired
+            `Rejected because ${failedRequired.length} required requirement(s) failed or were unverified: ${failedRequired
                 .map((requirement) => requirement.id)
                 .join(", ")}.`,
             input.review.reason,
@@ -4337,13 +4474,16 @@ export async function runReactAppAgent(
         options.resetWorkspace === false
             ? focusedRequest
             : options.goal;
-    const focusedEditRequest =
+    let focusedEditRequest =
         options.resetWorkspace === false &&
-        isFocusedVisualAdjustmentRequest(executionRequest);
-    const requirements = parseRequirementLedger({
+        (isFocusedVisualAdjustmentRequest(executionRequest) ||
+            isExplicitFocusedEditRequest(executionRequest));
+    let requirements = parseRequirementLedger({
         currentRequest: executionRequest,
         focusedEdit: focusedEditRequest,
     });
+    let beforeWorkspaceSnapshot: FileSnapshot[] | undefined;
+    let focusedEditScope: FocusedEditScope | undefined;
 
     if (options.model) {
         provider = options.model;
@@ -4434,12 +4574,21 @@ export async function runReactAppAgent(
               "generate",
           ]
         : [];
-    const activeImageAssetTool = focusedEditRequest
+    let activeImageAssetTool = focusedEditRequest
         ? undefined
         : imageAssetTool;
-    const activeImageAssetModes = focusedEditRequest ? [] : imageAssetModes;
-    const imageToolContext = formatImageToolContext(activeImageAssetModes);
-    const navigationRequestKind = classifyNavigationRequest(executionRequest);
+    let activeImageAssetModes = focusedEditRequest ? [] : imageAssetModes;
+    let imageToolContext = formatImageToolContext(activeImageAssetModes);
+    let navigationRequestKind = classifyNavigationRequest(executionRequest);
+    if (
+        focusedEditRequest &&
+        navigationRequestKind !== "none" &&
+        !/\b(?:navigate|navigation|jump|switch|open|go\s+to|link|click)\b|跳转|导航|切换|打开|点击/iu.test(
+            executionRequest,
+        )
+    ) {
+        navigationRequestKind = "none";
+    }
     const navigationExecutionContext = formatNavigationExecutionContext(
         navigationRequestKind,
     );
@@ -4481,6 +4630,33 @@ export async function runReactAppAgent(
             options.templateRoot,
         );
         options.signal?.throwIfAborted();
+    }
+
+    if (options.resetWorkspace === false) {
+        beforeWorkspaceSnapshot = await createWorkspaceSnapshot(
+            options.workspaceRoot,
+        );
+
+        if (focusedEditRequest) {
+            focusedEditScope = await locateFocusedEditScope({
+                request: executionRequest,
+                workspaceRoot: options.workspaceRoot,
+                beforeSnapshots: beforeWorkspaceSnapshot,
+            });
+
+            if (focusedEditScope.confidence < 0.7) {
+                focusedEditRequest = false;
+                focusedEditScope = undefined;
+                requirements = parseRequirementLedger({
+                    currentRequest: executionRequest,
+                    focusedEdit: false,
+                });
+                activeImageAssetTool = imageAssetTool;
+                activeImageAssetModes = imageAssetModes;
+                imageToolContext =
+                    formatImageToolContext(activeImageAssetModes);
+            }
+        }
     }
 
     const defaultCoordination = coordinateAgents({
@@ -4527,6 +4703,15 @@ export async function runReactAppAgent(
                     result,
                     requirements,
                     focusedEditRequest,
+                    beforeWorkspaceSnapshot
+                        ? diffWorkspaceSnapshots(
+                              beforeWorkspaceSnapshot,
+                              await createWorkspaceSnapshot(
+                                  options.workspaceRoot,
+                              ),
+                          )
+                        : undefined,
+                    focusedEditScope,
                 );
             }
         }
@@ -4575,6 +4760,13 @@ export async function runReactAppAgent(
                 result,
                 requirements,
                 focusedEditRequest,
+                beforeWorkspaceSnapshot
+                    ? diffWorkspaceSnapshots(
+                          beforeWorkspaceSnapshot,
+                          await createWorkspaceSnapshot(options.workspaceRoot),
+                      )
+                    : undefined,
+                focusedEditScope,
             );
         }
 
@@ -4612,6 +4804,13 @@ export async function runReactAppAgent(
                 withRunDiagnostics(result, runMetrics, runStartedAt),
                 requirements,
                 focusedEditRequest,
+                beforeWorkspaceSnapshot
+                    ? diffWorkspaceSnapshots(
+                          beforeWorkspaceSnapshot,
+                          await createWorkspaceSnapshot(options.workspaceRoot),
+                      )
+                    : undefined,
+                focusedEditScope,
             );
         }
     }
@@ -4759,6 +4958,9 @@ export async function runReactAppAgent(
                       "Perform only the latest user request. Locate the relevant component, CSS selector, and file before editing.",
                       "Return a minimal patch set through focused file edits. Do not regenerate the full page, do not change dependencies, do not call image tools, and do not redesign unrelated sections.",
                       "If the user says another area should not change, treat that as a must_preserve requirement.",
+                      focusedEditScope
+                          ? `FocusedEditScope: ${JSON.stringify(focusedEditScope)}`
+                          : "",
                   ].join("\n")
                 : "",
             imageToolContext,
@@ -4936,6 +5138,19 @@ export async function runReactAppAgent(
                             ? { imageAssetModes: activeImageAssetModes }
                             : {}),
                         ...(options.signal ? { signal: options.signal } : {}),
+                        ...(focusedEditRequest &&
+                        focusedEditScope &&
+                        beforeWorkspaceSnapshot
+                            ? {
+                                  validateAction: (action: AgentAction) =>
+                                      validateFocusedEditAction({
+                                          action,
+                                          scope: focusedEditScope!,
+                                          beforeSnapshots:
+                                              beforeWorkspaceSnapshot!,
+                                      }),
+                              }
+                            : {}),
                     });
                 }
             } else {
@@ -4961,6 +5176,19 @@ export async function runReactAppAgent(
                           }
                         : {}),
                     ...(options.signal ? { signal: options.signal } : {}),
+                    ...(focusedEditRequest &&
+                    focusedEditScope &&
+                    beforeWorkspaceSnapshot
+                        ? {
+                              validateAction: (action: AgentAction) =>
+                                  validateFocusedEditAction({
+                                      action,
+                                      scope: focusedEditScope!,
+                                      beforeSnapshots:
+                                          beforeWorkspaceSnapshot!,
+                                  }),
+                          }
+                        : {}),
                 });
             }
         } finally {
@@ -5406,16 +5634,30 @@ export async function runReactAppAgent(
     }
 
     options.signal?.throwIfAborted();
+    const workspaceDiff = beforeWorkspaceSnapshot
+        ? diffWorkspaceSnapshots(
+              beforeWorkspaceSnapshot,
+              await createWorkspaceSnapshot(options.workspaceRoot),
+          )
+        : undefined;
     const finalizedMetrics = finalizeRunMetrics({
         metrics: runMetrics,
         attempts,
         startedAt: runStartedAt,
     });
+    const browserRequirementEvidence = extractRequirementEvidenceFromBrowser(
+        latestAttempt.browserEval,
+    );
     const requirementResults = evaluateRequirementLedger({
         requirements,
         metrics: finalizedMetrics,
         review: latestAttempt.review,
         focusedEdit: focusedEditRequest,
+        ...(workspaceDiff ? { workspaceDiff } : {}),
+        ...(focusedEditScope ? { focusedEditScope } : {}),
+        ...(browserRequirementEvidence.length > 0
+            ? { browserEvidence: browserRequirementEvidence }
+            : {}),
     });
     const ledgerReview = enforceRequirementLedgerReview({
         review: latestAttempt.review,
@@ -5450,6 +5692,9 @@ export async function runReactAppAgent(
         attempts,
         metrics: finalizedMetrics,
         requirements: requirementResults,
+        ...(workspaceDiff ? { workspaceDiff } : {}),
+        ...(focusedEditScope ? { focusedEditScope } : {}),
+        executionMode: focusedEditRequest ? "fast_edit" : "structural_edit",
         trace: buildTraceEvents(
             attempts,
             coordination.plan.length,

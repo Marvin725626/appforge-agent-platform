@@ -17,6 +17,9 @@ export type RunCodingAgentStepOptions = {
     imageAssetModes?: ImageAssetMode[];
     mode?: CodingAgentStepMode;
     signal?: AbortSignal;
+    validateAction?: (
+        action: AgentAction,
+    ) => ActionExecutionResult | undefined | Promise<ActionExecutionResult | undefined>;
 };
 
 export type RunCodingAgentStepResult = {
@@ -65,6 +68,15 @@ export async function runCodingAgentStep(
         options.context,
     );
     options.signal?.throwIfAborted();
+    const validationResult = await options.validateAction?.(action);
+
+    if (validationResult) {
+        return {
+            action,
+            execution: validationResult,
+        };
+    }
+
     const execution = await executor.execute(action);
     return{
         action,

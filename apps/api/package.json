@@ -17,6 +17,7 @@
     "smoke:parallel-run": "tsx --env-file=../../.env src/real-parallel-run-smoke.ts",
     "presmoke:multi-agent-image": "node ../../scripts/check-node-version.mjs",
     "smoke:multi-agent-image": "tsx --env-file=../../.env src/real-multi-agent-image-smoke.ts",
+    "benchmark:focused-edit": "tsx src/focused-edit-benchmark.ts",
     "pretest": "node ../../scripts/check-node-version.mjs",
     "start": "node dist/server.js",
     "test": "vitest run",
