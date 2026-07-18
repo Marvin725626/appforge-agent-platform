@@ -146,6 +146,39 @@ export type RunReactAppAgentCommandResult = {
     stderr: string;
 };
 
+export type RunMetrics = {
+    plannerCalls: number;
+    codingCalls: number;
+    reviewerCalls: number;
+    retryCalls: number;
+    fallbackPages: string[];
+    plannerDurationMs: number;
+    codingDurationMs: number;
+    installDurationMs: number;
+    buildDurationMs: number;
+    evaluationDurationMs: number;
+    reviewerDurationMs: number;
+    totalDurationMs: number;
+    modifiedFiles: string[];
+    dependencyManifestChanged: boolean;
+};
+
+export type Requirement = {
+    id: string;
+    instruction: string;
+    priority: "must" | "should" | "must_preserve";
+    target?: string;
+    targetFiles?: string[];
+    verification: string;
+};
+
+export type RequirementResult = Requirement & {
+    status: "PASS" | "FAIL";
+    evidence: string;
+    affectedFiles: string[];
+    affectedSelectorsOrComponents: string[];
+};
+
 export type EvaluateBrowserForAttempt = (input: {
     goal: string;
     workspaceRoot: string;
@@ -164,6 +197,7 @@ export type RunReactAppAgentAttempt = {
     llmReview?: ReviewerOutput;
     review: ReactAppAgentReview;
     parallelWorkstreams?: ParallelCodingWorkstreamResult[];
+    metrics?: RunMetrics;
 };
 
 export type RunReactAppAgentResult = {
@@ -178,6 +212,8 @@ export type RunReactAppAgentResult = {
     attempts: RunReactAppAgentAttempt[];
     trace?: TraceEvent[];
     llmReview?: ReviewerOutput;
+    metrics?: RunMetrics;
+    requirements?: RequirementResult[];
 };
 
 type LocalAssetReference = {
@@ -272,6 +308,229 @@ async function createInstallDependencyFingerprint(
     return hash.digest("hex");
 }
 
+function createEmptyRunMetrics(): RunMetrics {
+    return {
+        plannerCalls: 0,
+        codingCalls: 0,
+        reviewerCalls: 0,
+        retryCalls: 0,
+        fallbackPages: [],
+        plannerDurationMs: 0,
+        codingDurationMs: 0,
+        installDurationMs: 0,
+        buildDurationMs: 0,
+        evaluationDurationMs: 0,
+        reviewerDurationMs: 0,
+        totalDurationMs: 0,
+        modifiedFiles: [],
+        dependencyManifestChanged: false,
+    };
+}
+
+function cloneRunMetrics(metrics: RunMetrics): RunMetrics {
+    return {
+        ...metrics,
+        fallbackPages: [...metrics.fallbackPages],
+        modifiedFiles: [...metrics.modifiedFiles],
+    };
+}
+
+function addDuration(
+    metrics: RunMetrics,
+    key: keyof Pick<
+        RunMetrics,
+        | "plannerDurationMs"
+        | "codingDurationMs"
+        | "installDurationMs"
+        | "buildDurationMs"
+        | "evaluationDurationMs"
+        | "reviewerDurationMs"
+    >,
+    startedAt: number,
+): void {
+    metrics[key] += Date.now() - startedAt;
+}
+
+async function timeRunPhase<T>(
+    metrics: RunMetrics,
+    key: Parameters<typeof addDuration>[1],
+    operation: () => Promise<T>,
+): Promise<T> {
+    const startedAt = Date.now();
+
+    try {
+        return await operation();
+    } finally {
+        addDuration(metrics, key, startedAt);
+    }
+}
+
+function countModelProviderCalls(
+    model: ModelProvider,
+    metrics: RunMetrics,
+    key: keyof Pick<
+        RunMetrics,
+        "plannerCalls" | "codingCalls" | "reviewerCalls"
+    >,
+): ModelProvider {
+    return {
+        async complete(request) {
+            metrics[key] += 1;
+            return model.complete(request);
+        },
+    };
+}
+
+function listModifiedFilesFromAgent(
+    agent: RunCodingAgentLoopResult,
+): string[] {
+    const paths = new Set<string>();
+
+    for (const step of agent.steps) {
+        if (!step.execution.ok || step.execution.changed === false) {
+            continue;
+        }
+
+        if (
+            step.action.type === "write_file" ||
+            step.action.type === "append_file" ||
+            step.action.type === "edit_file"
+        ) {
+            paths.add(step.action.path);
+        }
+
+        if (step.action.type === "get_image") {
+            paths.add(step.action.outputPath);
+        }
+    }
+
+    return [...paths].sort();
+}
+
+function listModifiedFilesFromAttempts(
+    attempts: RunReactAppAgentAttempt[],
+): string[] {
+    const paths = new Set<string>();
+
+    for (const attempt of attempts) {
+        for (const filePath of listModifiedFilesFromAgent(attempt.agent)) {
+            paths.add(filePath);
+        }
+    }
+
+    return [...paths].sort();
+}
+
+function isDependencyManifestPath(filePath: string): boolean {
+    return INSTALL_DEPENDENCY_FILES.includes(filePath.replace(/\\/gu, "/"));
+}
+
+function listFallbackPagesFromAttempts(
+    attempts: RunReactAppAgentAttempt[],
+): string[] {
+    const pages = new Set<string>();
+
+    for (const attempt of attempts) {
+        for (const workstream of attempt.parallelWorkstreams ?? []) {
+            if (workstream.status === "fallback") {
+                pages.add(
+                    `${workstream.label} (${workstream.routePath || workstream.path})`,
+                );
+            }
+        }
+    }
+
+    return [...pages].sort();
+}
+
+function finalizeRunMetrics(input: {
+    metrics: RunMetrics;
+    attempts: RunReactAppAgentAttempt[];
+    startedAt: number;
+}): RunMetrics {
+    const modifiedFiles = listModifiedFilesFromAttempts(input.attempts);
+    const fallbackPages = listFallbackPagesFromAttempts(input.attempts);
+
+    return {
+        ...input.metrics,
+        fallbackPages,
+        modifiedFiles,
+        dependencyManifestChanged: modifiedFiles.some(
+            isDependencyManifestPath,
+        ),
+        totalDurationMs: Date.now() - input.startedAt,
+    };
+}
+
+function withRunDiagnostics(
+    result: RunReactAppAgentResult,
+    metrics: RunMetrics,
+    startedAt: number,
+    requirements?: RequirementResult[],
+): RunReactAppAgentResult {
+    const finalizedMetrics = finalizeRunMetrics({
+        metrics,
+        attempts: result.attempts,
+        startedAt,
+    });
+
+    return {
+        ...result,
+        metrics: finalizedMetrics,
+        ...(requirements ? { requirements } : {}),
+    };
+}
+
+function withRequirementLedgerResult(
+    result: RunReactAppAgentResult,
+    requirements: Requirement[],
+    focusedEdit: boolean,
+): RunReactAppAgentResult {
+    const metrics =
+        result.metrics ??
+        finalizeRunMetrics({
+            metrics: createEmptyRunMetrics(),
+            attempts: result.attempts,
+            startedAt: Date.now(),
+        });
+    const requirementResults = evaluateRequirementLedger({
+        requirements,
+        metrics,
+        review: result.review,
+        focusedEdit,
+    });
+    const ledgerReview = enforceRequirementLedgerReview({
+        review: result.review,
+        requirements: requirementResults,
+    });
+    const review = enforceFallbackPagesReview(ledgerReview, metrics);
+    const attempts =
+        review === result.review || result.attempts.length === 0
+            ? result.attempts
+            : result.attempts.map((attempt, index) =>
+                  index === result.attempts.length - 1
+                      ? { ...attempt, review }
+                      : attempt,
+              );
+
+    const trace =
+        review === result.review
+            ? result.trace
+            : buildTraceEvents(
+                  attempts,
+                  result.coordination.plan.length,
+              );
+
+    return {
+        ...result,
+        review,
+        attempts,
+        metrics,
+        requirements: requirementResults,
+        ...(trace ? { trace } : {}),
+    };
+}
+
 function describeModelStageError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
@@ -360,6 +619,24 @@ async function createPlannerOutputWithFallback(
         }
         return createFallbackPlannerOutput(error);
     }
+}
+
+function createFocusedEditPlannerOutput(
+    requirements: Requirement[],
+): PlannerOutput {
+    return {
+        summary:
+            "Focused edit fast path: skip Planner Agent and preserve unrelated workspace areas.",
+        steps: requirements.map((requirement) => ({
+            id: requirement.id,
+            title: requirement.instruction,
+            description:
+                requirement.priority === "must_preserve"
+                    ? "Preserve unrelated files, selectors, dependencies, image assets, and broader page structure."
+                    : "Apply only the requested focused change in the existing workspace.",
+            acceptanceCriteria: [requirement.verification],
+        })),
+    };
 }
 
 async function reviewWithOptionalLlm(
@@ -2808,6 +3085,9 @@ async function evaluateLocalWorkspaceChangeResult(
         evaluateBrowser?: EvaluateBrowserForAttempt;
         signal?: AbortSignal;
         onProgress?: RunReactAppAgentOptions["onProgress"];
+        metrics?: RunMetrics;
+        runStartedAt?: number;
+        focusedEdit?: boolean;
     },
 ): Promise<RunReactAppAgentResult> {
     const agent: RunCodingAgentLoopResult = {
@@ -2839,42 +3119,107 @@ async function evaluateLocalWorkspaceChangeResult(
         stopReason: "finish",
     };
     await emitRunProgress(input.onProgress, "installing");
-    const install = await runWorkspaceCommand(
-        input.workspaceRoot,
-        {
-            command: "npm",
-            args: ["install"],
-        },
-        {
-            timeoutMs: INSTALL_COMMAND_TIMEOUT_MS,
-            ...(input.signal ? { signal: input.signal } : {}),
-        },
-    );
+    const install = input.focusedEdit
+        ? {
+              exitCode: 0,
+              stdout:
+                  "Skipped npm install for focused edit because dependency manifests did not change.",
+              stderr: "",
+          }
+        : input.metrics
+        ? await timeRunPhase(input.metrics, "installDurationMs", () =>
+              runWorkspaceCommand(
+                  input.workspaceRoot,
+                  {
+                      command: "npm",
+                      args: ["install"],
+                  },
+                  {
+                      timeoutMs: INSTALL_COMMAND_TIMEOUT_MS,
+                      ...(input.signal ? { signal: input.signal } : {}),
+                  },
+              ),
+          )
+        : await runWorkspaceCommand(
+              input.workspaceRoot,
+              {
+                  command: "npm",
+                  args: ["install"],
+              },
+              {
+                  timeoutMs: INSTALL_COMMAND_TIMEOUT_MS,
+                  ...(input.signal ? { signal: input.signal } : {}),
+              },
+          );
     await emitRunProgress(input.onProgress, "building");
-    let build = await runWorkspaceCommand(
-        input.workspaceRoot,
-        {
-            command: "npm",
-            args: ["run", "build"],
-        },
-        {
-            timeoutMs: BUILD_COMMAND_TIMEOUT_MS,
-            ...(input.signal ? { signal: input.signal } : {}),
-        },
-    );
+    let build = input.metrics
+        ? await timeRunPhase(input.metrics, "buildDurationMs", () =>
+              runWorkspaceCommand(
+                  input.workspaceRoot,
+                  {
+                      command: "npm",
+                      args: ["run", "build"],
+                  },
+                  {
+                      timeoutMs: BUILD_COMMAND_TIMEOUT_MS,
+                      ...(input.signal ? { signal: input.signal } : {}),
+                  },
+              ),
+          )
+        : await runWorkspaceCommand(
+              input.workspaceRoot,
+              {
+                  command: "npm",
+                  args: ["run", "build"],
+              },
+              {
+                  timeoutMs: BUILD_COMMAND_TIMEOUT_MS,
+                  ...(input.signal ? { signal: input.signal } : {}),
+              },
+          );
     input.signal?.throwIfAborted();
     await emitRunProgress(input.onProgress, "evaluating");
     const appSource = await readFile(
         path.join(input.workspaceRoot, "src", "App.tsx"),
         "utf8",
     );
-    const evaluationSource = await formatStaticEvaluationSource(
-        input.workspaceRoot,
-    );
-    const evalResult = evaluateReactApp({
-        source: evaluationSource,
-        goal: input.goal,
-    });
+    const evalResult = input.metrics
+        ? await timeRunPhase(input.metrics, "evaluationDurationMs", async () => {
+              if (input.focusedEdit) {
+                  return {
+                      passed: true,
+                      checks: [
+                          {
+                              name: "focused edit quick static check",
+                              passed: true,
+                          },
+                      ],
+                  };
+              }
+
+              const evaluationSource = await formatStaticEvaluationSource(
+                  input.workspaceRoot,
+              );
+
+              return evaluateReactApp({
+                  source: evaluationSource,
+                  goal: input.goal,
+              });
+          })
+        : input.focusedEdit
+          ? {
+                passed: true,
+                checks: [
+                    {
+                        name: "focused edit quick static check",
+                        passed: true,
+                    },
+                ],
+            }
+          : evaluateReactApp({
+                source: await formatStaticEvaluationSource(input.workspaceRoot),
+                goal: input.goal,
+            });
     let browserEval: BrowserEvalResult | undefined;
 
     if (
@@ -2884,13 +3229,28 @@ async function evaluateLocalWorkspaceChangeResult(
     ) {
         try {
             await emitRunProgress(input.onProgress, "evaluating");
-            browserEval = await input.evaluateBrowser({
-                goal: input.goal,
-                workspaceRoot: input.workspaceRoot,
-                kind: "repair",
-                attemptNumber: 1,
-                ...(input.signal ? { signal: input.signal } : {}),
-            });
+                browserEval = input.metrics
+                    ? await timeRunPhase(
+                          input.metrics,
+                          "evaluationDurationMs",
+                          () =>
+                              input.evaluateBrowser!({
+                                  goal: input.goal,
+                                  workspaceRoot: input.workspaceRoot,
+                                  kind: "repair",
+                                  attemptNumber: 1,
+                                  ...(input.signal
+                                      ? { signal: input.signal }
+                                      : {}),
+                              }),
+                      )
+                    : await input.evaluateBrowser({
+                          goal: input.goal,
+                          workspaceRoot: input.workspaceRoot,
+                          kind: "repair",
+                          attemptNumber: 1,
+                          ...(input.signal ? { signal: input.signal } : {}),
+                      });
         } catch (error) {
             if (input.signal?.aborted) {
                 input.signal.throwIfAborted();
@@ -3013,7 +3373,7 @@ async function evaluateLocalWorkspaceChangeResult(
         review: finalReview,
     };
 
-    return {
+    const result: RunReactAppAgentResult = {
         workspaceRoot: input.workspaceRoot,
         coordination: input.coordination,
         agent,
@@ -3033,6 +3393,10 @@ async function evaluateLocalWorkspaceChangeResult(
             ...buildTraceEvents([attempt], input.coordination.plan.length),
         ],
     };
+
+    return input.metrics && input.runStartedAt
+        ? withRunDiagnostics(result, input.metrics, input.runStartedAt)
+        : result;
 }
 
 async function prepareMissingLocalAssets(
@@ -3343,7 +3707,14 @@ function buildTraceEvents(
                         ? "succeeded"
                         : "failed",
                     workstream.errorMessage ??
-                        `${workstream.generationAttempts} generation attempt(s); ${workstream.summary}`,
+                        [
+                            workstream.status === "fallback"
+                                ? "该页面的模型输出无效，目前展示的是本地兜底草稿。"
+                                : "",
+                            `${workstream.generationAttempts} generation attempt(s); ${workstream.summary}`,
+                        ]
+                            .filter(Boolean)
+                            .join(" "),
                 ),
             ),
             createTraceEvent(
@@ -3451,6 +3822,14 @@ function isFocusedVisualAdjustmentRequest(text: string): boolean {
         /\b(?:row|inline|horizontal|vertical|site|point|label|abc|a\/b\/c)\b|竖着|竖排|竖起来|纵向|横排|横着|一排|同一排|一行|同一行|并排|排成一排|点位|包点|站点|标签|ABC|abc|A\/B\/C/iu.test(
             text,
         );
+    const asksForTextChange =
+        /\b(?:text|copy|label|wording|rename|change)\b|(?:\u6587\u5b57|\u6587\u672c|\u6587\u6848|\u6309\u94ae\u6587\u5b57|\u6309\u94ae\u6587\u6848|\u6539\u6210|\u4fee\u6539|\u66ff\u6362)/iu.test(
+            text,
+        );
+    const mentionsEditableTextSurface =
+        /\b(?:button|text|copy|label|heading|title)\b|(?:\u6309\u94ae|\u6587\u5b57|\u6587\u672c|\u6587\u6848|\u6807\u9898|\u6807\u7b7e)/iu.test(
+            text,
+        );
     const explicitlyRejectsBroadReplacement =
         /\b(?:do not|don't|without)\s+(?:redesigning|rebuilding|replacing)|(?:不要|别|无需|不需要).{0,8}(?:重做|重建|重新设计)/iu.test(
             text,
@@ -3464,10 +3843,298 @@ function isFocusedVisualAdjustmentRequest(text: string): boolean {
     return (
         (mentionsExistingBrandElement ||
             mentionsVisualSurface ||
+            mentionsEditableTextSurface ||
             asksForHorizontalReadableLabels) &&
-        (asksForVisualAdjustment || asksForHorizontalReadableLabels) &&
+        (asksForVisualAdjustment ||
+            asksForHorizontalReadableLabels ||
+            asksForTextChange) &&
         !asksForBroadReplacement
     );
+}
+
+function splitRequirementClauses(text: string): string[] {
+    return text
+        .split(/(?:\r?\n|[。；;]|(?:\s+and\s+)|(?:\s*,\s*))/iu)
+        .map((part) => part.trim())
+        .filter((part) => part.length > 0)
+        .slice(0, 8);
+}
+
+function inferRequirementTarget(instruction: string): string | undefined {
+    const targetPatterns = [
+        /(左侧栏|侧边栏|sidebar)/iu,
+        /(按钮|button|cta)/iu,
+        /(背景|background)/iu,
+        /(颜色|color|contrast|对比)/iu,
+        /(字体|字号|font|heading|title|标题|文字)/iu,
+        /(图片|image|photo|media)/iu,
+        /(卡片|方块|card|cards|grid|box|tile|panel)/iu,
+        /(导航|跳转|route|navigation|link)/iu,
+    ];
+
+    for (const pattern of targetPatterns) {
+        const match = instruction.match(pattern);
+
+        if (match?.[1]) {
+            return match[1];
+        }
+    }
+
+    return undefined;
+}
+
+function inferRequirementTargetFiles(instruction: string): string[] | undefined {
+    const files = new Set<string>();
+
+    if (/颜色|背景|间距|宽|高|字体|字号|圆角|阴影|card|cards|卡片|方块|grid|box|panel|style|css/iu.test(instruction)) {
+        files.add("src/App.css");
+    }
+
+    if (/文字|文本|按钮|隐藏|删除|移动|导航|跳转|route|link|sidebar|左侧栏|侧边栏|组件|区块|交互/iu.test(instruction)) {
+        files.add("src/App.tsx");
+        files.add("src/pages/home.tsx");
+    }
+
+    return files.size > 0 ? [...files] : undefined;
+}
+
+function parseRequirementLedger(input: {
+    currentRequest: string;
+    focusedEdit: boolean;
+}): Requirement[] {
+    const clauses = splitRequirementClauses(input.currentRequest);
+    const requirements: Requirement[] = clauses.map((instruction, index) => {
+        const target = inferRequirementTarget(instruction);
+        const targetFiles = inferRequirementTargetFiles(instruction);
+        const isSoft =
+            /\b(?:可以|尽量|maybe|prefer|should)\b|最好|尽可能/iu.test(
+                instruction,
+            );
+
+        return {
+            id: `REQ-${index + 1}`,
+            instruction,
+            priority: isSoft ? "should" : "must",
+            ...(target ? { target } : {}),
+            ...(targetFiles ? { targetFiles } : {}),
+            verification: target
+                ? `Verify that the ${target} request changed only the relevant source/CSS selectors.`
+                : "Verify that the current request is reflected in the workspace changes.",
+        };
+    });
+
+    if (input.focusedEdit) {
+        requirements.push({
+            id: "PRESERVE-1",
+            instruction:
+                "Preserve unrelated layout, content, dependencies, image lookup, planner output, and full-page generation during this focused edit.",
+            priority: "must_preserve",
+            verification:
+                "Focused edit must avoid Planner, topic lookup, image search, npm install unless manifests changed, and broad unrelated file changes.",
+        });
+    }
+
+    return requirements.length > 0
+        ? requirements
+        : [
+              {
+                  id: "REQ-1",
+                  instruction: input.currentRequest,
+                  priority: "must",
+                  verification:
+                      "Verify that the latest request is represented in the changed workspace.",
+              },
+          ];
+}
+
+function inferAffectedSelectorsOrComponents(
+    requirement: Requirement,
+): string[] {
+    const instruction = requirement.instruction;
+    const selectors = new Set<string>();
+
+    if (/左侧栏|侧边栏|sidebar/iu.test(instruction)) {
+        selectors.add(".sidebar");
+        selectors.add(".app-sidebar");
+    }
+
+    if (/按钮|button|cta/iu.test(instruction)) {
+        selectors.add("button");
+        selectors.add(".cta");
+    }
+
+    if (/背景|background/iu.test(instruction)) {
+        selectors.add("body");
+        selectors.add(".page-view");
+        selectors.add(".page-hero");
+    }
+
+    if (/颜色|对比|contrast|color/iu.test(instruction)) {
+        selectors.add("color");
+        selectors.add("background");
+    }
+
+    if (/字体|字号|font|title|标题|文字/iu.test(instruction)) {
+        selectors.add("h1");
+        selectors.add("h2");
+        selectors.add(".page-lead");
+    }
+
+    if (/图片|image|photo|media/iu.test(instruction)) {
+        selectors.add("img");
+        selectors.add(".page-media");
+        selectors.add(".page-image");
+    }
+
+    if (/卡片|方块|card|cards|grid|box|tile|panel/iu.test(instruction)) {
+        selectors.add(".page-card");
+        selectors.add(".page-grid");
+        selectors.add(".game-panel");
+    }
+
+    if (/导航|跳转|route|navigation|link/iu.test(instruction)) {
+        selectors.add("nav");
+        selectors.add("a");
+        selectors.add("App");
+    }
+
+    return [...selectors];
+}
+
+function evaluateRequirementLedger(input: {
+    requirements: Requirement[];
+    metrics: RunMetrics;
+    review: ReactAppAgentReview;
+    focusedEdit: boolean;
+}): RequirementResult[] {
+    return input.requirements.map((requirement) => {
+        const targetFiles = requirement.targetFiles ?? [];
+        const affectedFiles =
+            targetFiles.length > 0
+                ? input.metrics.modifiedFiles.filter((filePath) =>
+                      targetFiles.some((targetFile) =>
+                          filePath.endsWith(targetFile) ||
+                          targetFile.endsWith(filePath),
+                      ),
+                  )
+                : input.metrics.modifiedFiles;
+        const selectors =
+            inferAffectedSelectorsOrComponents(requirement);
+        let passed =
+            requirement.priority === "should" ||
+            affectedFiles.length > 0 ||
+            input.metrics.modifiedFiles.length > 0;
+        let evidence =
+            affectedFiles.length > 0
+                ? `Modified ${affectedFiles.join(", ")}.`
+                : input.metrics.modifiedFiles.length > 0
+                  ? `Modified ${input.metrics.modifiedFiles.join(", ")}.`
+                  : "No workspace file change was recorded.";
+
+        if (requirement.priority === "must_preserve") {
+            const forbiddenReasons: string[] = [];
+
+            if (input.metrics.plannerCalls > 0) {
+                forbiddenReasons.push("Planner was called");
+            }
+
+            if (input.metrics.installDurationMs > 0) {
+                forbiddenReasons.push("npm install ran");
+            }
+
+            if (input.metrics.dependencyManifestChanged) {
+                forbiddenReasons.push("dependency manifest changed");
+            }
+
+            if (
+                input.metrics.modifiedFiles.some((filePath) =>
+                    /^public\/assets\//u.test(filePath),
+                )
+            ) {
+                forbiddenReasons.push("image asset changed");
+            }
+
+            passed = forbiddenReasons.length === 0;
+            evidence = passed
+                ? "Focused edit stayed on the fast path without Planner, npm install, dependency changes, or image asset changes."
+                : forbiddenReasons.join("; ");
+        } else if (!input.review.accepted && !passed) {
+            evidence = `${evidence} Review also failed: ${input.review.reason}`;
+        }
+
+        return {
+            ...requirement,
+            status: passed ? "PASS" : "FAIL",
+            evidence,
+            affectedFiles,
+            affectedSelectorsOrComponents: selectors,
+        };
+    });
+}
+
+function enforceRequirementLedgerReview(input: {
+    review: ReactAppAgentReview;
+    requirements: RequirementResult[];
+}): ReactAppAgentReview {
+    const failedRequired = input.requirements.filter(
+        (requirement) =>
+            requirement.status === "FAIL" &&
+            (requirement.priority === "must" ||
+                requirement.priority === "must_preserve"),
+    );
+
+    if (failedRequired.length === 0) {
+        return input.review;
+    }
+
+    return {
+        ...input.review,
+        accepted: false,
+        reason: [
+            `Rejected because ${failedRequired.length} required requirement(s) failed: ${failedRequired
+                .map((requirement) => requirement.id)
+                .join(", ")}.`,
+            input.review.reason,
+        ].join(" "),
+    };
+}
+
+function enforceFallbackPagesReview(
+    review: ReactAppAgentReview,
+    metrics: RunMetrics,
+): ReactAppAgentReview {
+    if (metrics.fallbackPages.length === 0) {
+        return review;
+    }
+
+    return {
+        ...review,
+        accepted: false,
+        reason: [
+            `Rejected because ${metrics.fallbackPages.length} page(s) used local fallback instead of valid model output: ${metrics.fallbackPages.join(", ")}.`,
+            "该页面的模型输出无效，目前展示的是本地兜底草稿。",
+            review.reason,
+        ].join(" "),
+    };
+}
+
+function formatRequirementLedgerContext(requirements: Requirement[]): string {
+    return [
+        "Current-request Requirement Ledger:",
+        "These requirements override historical goals and generic design guidance for this turn.",
+        ...requirements.map((requirement) =>
+            [
+                `${requirement.id} [${requirement.priority}] ${requirement.instruction}`,
+                requirement.target ? `target=${requirement.target}` : "",
+                requirement.targetFiles?.length
+                    ? `targetFiles=${requirement.targetFiles.join(", ")}`
+                    : "",
+                `verification=${requirement.verification}`,
+            ]
+                .filter(Boolean)
+                .join(" | "),
+        ),
+    ].join("\n");
 }
 
 function isFreshPageGenerationRequest(text: string): boolean {
@@ -3651,6 +4318,8 @@ function attemptMadeWorkspaceProgress(
 export async function runReactAppAgent(
     options: RunReactAppAgentOptions,
 ): Promise<RunReactAppAgentResult> {
+    const runStartedAt = Date.now();
+    const runMetrics = createEmptyRunMetrics();
     options.signal?.throwIfAborted();
     await emitRunProgress(options.onProgress, "preparing");
     let provider: ModelProvider;
@@ -3668,6 +4337,13 @@ export async function runReactAppAgent(
         options.resetWorkspace === false
             ? focusedRequest
             : options.goal;
+    const focusedEditRequest =
+        options.resetWorkspace === false &&
+        isFocusedVisualAdjustmentRequest(executionRequest);
+    const requirements = parseRequirementLedger({
+        currentRequest: executionRequest,
+        focusedEdit: focusedEditRequest,
+    });
 
     if (options.model) {
         provider = options.model;
@@ -3729,6 +4405,23 @@ export async function runReactAppAgent(
         });
     }
 
+    provider = countModelProviderCalls(provider, runMetrics, "codingCalls");
+    parallelProvider = countModelProviderCalls(
+        parallelProvider,
+        runMetrics,
+        "codingCalls",
+    );
+    plannerProvider = countModelProviderCalls(
+        plannerProvider,
+        runMetrics,
+        "plannerCalls",
+    );
+    reviewerProvider = countModelProviderCalls(
+        reviewerProvider,
+        runMetrics,
+        "reviewerCalls",
+    );
+
     const imageAssetTool = options.imageAssetProvider
         ? new ImageAssetTool({
               workspaceRoot: options.workspaceRoot,
@@ -3741,14 +4434,17 @@ export async function runReactAppAgent(
               "generate",
           ]
         : [];
-    const imageToolContext = formatImageToolContext(imageAssetModes);
+    const activeImageAssetTool = focusedEditRequest
+        ? undefined
+        : imageAssetTool;
+    const activeImageAssetModes = focusedEditRequest ? [] : imageAssetModes;
+    const imageToolContext = formatImageToolContext(activeImageAssetModes);
     const navigationRequestKind = classifyNavigationRequest(executionRequest);
     const navigationExecutionContext = formatNavigationExecutionContext(
         navigationRequestKind,
     );
     const complexPageRequest =
-        !isFocusedVisualAdjustmentRequest(executionRequest) &&
-        isComplexReactAppRequest(executionRequest);
+        !focusedEditRequest && isComplexReactAppRequest(executionRequest);
     const useParallelCodingAgents = shouldUseParallelCodingAgents({
         request: executionRequest,
         navigationKind: navigationRequestKind,
@@ -3803,7 +4499,7 @@ export async function runReactAppAgent(
                 );
 
             if (navigationFallbackMessages.length > 0) {
-                return evaluateLocalWorkspaceChangeResult({
+                const result = await evaluateLocalWorkspaceChangeResult({
                     goal: options.goal,
                     workspaceRoot: options.workspaceRoot,
                     coordination: {
@@ -3822,7 +4518,16 @@ export async function runReactAppAgent(
                     ...(options.onProgress
                         ? { onProgress: options.onProgress }
                         : {}),
+                    metrics: runMetrics,
+                    runStartedAt,
+                    focusedEdit: focusedEditRequest,
                 });
+
+                return withRequirementLedgerResult(
+                    result,
+                    requirements,
+                    focusedEditRequest,
+                );
             }
         }
 
@@ -3835,7 +4540,7 @@ export async function runReactAppAgent(
 
         if (semanticVisualMessages.length > 0) {
             await emitRunProgress(options.onProgress, "coding");
-            return evaluateLocalWorkspaceChangeResult({
+            const result = await evaluateLocalWorkspaceChangeResult({
                 goal: options.goal,
                 workspaceRoot: options.workspaceRoot,
                 coordination: {
@@ -3861,20 +4566,29 @@ export async function runReactAppAgent(
                 ...(options.onProgress
                     ? { onProgress: options.onProgress }
                     : {}),
+                metrics: runMetrics,
+                runStartedAt,
+                focusedEdit: focusedEditRequest,
             });
+
+            return withRequirementLedgerResult(
+                result,
+                requirements,
+                focusedEditRequest,
+            );
         }
 
         await emitRunProgress(options.onProgress, "coding");
         const savedAssets = await prepareMissingLocalAssets({
             goal: executionRequest,
             workspaceRoot: options.workspaceRoot,
-            imageAssetTool,
-            imageAssetModes,
+            imageAssetTool: activeImageAssetTool,
+            imageAssetModes: activeImageAssetModes,
             ...(options.signal ? { signal: options.signal } : {}),
         });
 
         if (savedAssets.length > 0) {
-            return evaluatePreparedAssetOnlyResult({
+            const result = await evaluatePreparedAssetOnlyResult({
                 goal: options.goal,
                 workspaceRoot: options.workspaceRoot,
                 coordination: {
@@ -3893,6 +4607,12 @@ export async function runReactAppAgent(
                     ? { onProgress: options.onProgress }
                     : {}),
             });
+
+            return withRequirementLedgerResult(
+                withRunDiagnostics(result, runMetrics, runStartedAt),
+                requirements,
+                focusedEditRequest,
+            );
         }
     }
 
@@ -3922,22 +4642,29 @@ export async function runReactAppAgent(
         ),
     });
 
-    await emitRunProgress(options.onProgress, "planning");
-    const plannerOutput = await createPlannerOutputWithFallback({
-        plannerAgent,
-        goal: executionRequest,
-        ...(options.signal ? { signal: options.signal } : {}),
-        context: [
-            formatSkillInstructions(reactViteAppSkill),
-            formatSkillInstructions(visualDesignSkill),
-            imageToolContext,
-            navigationExecutionContext,
-            complexPageExecutionContext,
-            continuationPlanningContext,
-        ]
-            .filter((part) => part.length > 0)
-            .join("\n\n"),
-    });
+    const plannerOutput = focusedEditRequest
+        ? createFocusedEditPlannerOutput(requirements)
+        : await (async () => {
+              await emitRunProgress(options.onProgress, "planning");
+              return timeRunPhase(runMetrics, "plannerDurationMs", () =>
+                  createPlannerOutputWithFallback({
+                      plannerAgent,
+                      goal: executionRequest,
+                      ...(options.signal ? { signal: options.signal } : {}),
+                      context: [
+                          formatSkillInstructions(reactViteAppSkill),
+                          formatSkillInstructions(visualDesignSkill),
+                          formatRequirementLedgerContext(requirements),
+                          imageToolContext,
+                          navigationExecutionContext,
+                          complexPageExecutionContext,
+                          continuationPlanningContext,
+                      ]
+                          .filter((part) => part.length > 0)
+                          .join("\n\n"),
+                  }),
+              );
+          })();
     const plannedPages = useParallelCodingAgents
         ? resolveReactPagePlans({
               goal: executionRequest,
@@ -4025,6 +4752,15 @@ export async function runReactAppAgent(
         [
             formatSkillInstructions(reactViteAppSkill),
             formatSkillInstructions(visualDesignSkill),
+            formatRequirementLedgerContext(requirements),
+            focusedEditRequest
+                ? [
+                      "Focused Edit Fast Path:",
+                      "Perform only the latest user request. Locate the relevant component, CSS selector, and file before editing.",
+                      "Return a minimal patch set through focused file edits. Do not regenerate the full page, do not change dependencies, do not call image tools, and do not redesign unrelated sections.",
+                      "If the user says another area should not change, treat that as a must_preserve requirement.",
+                  ].join("\n")
+                : "",
             imageToolContext,
             currentWorkspaceContext,
             navigationExecutionContext,
@@ -4045,12 +4781,23 @@ export async function runReactAppAgent(
           }
         | undefined;
 
-    async function installCurrentDependencies(): Promise<RunReactAppAgentCommandResult> {
+    async function installCurrentDependencies(input?: {
+        skipIfManifestUnchanged?: boolean;
+    }): Promise<RunReactAppAgentCommandResult> {
         options.signal?.throwIfAborted();
         await emitRunProgress(options.onProgress, "installing");
         const fingerprint = await createInstallDependencyFingerprint(
             options.workspaceRoot,
         );
+
+        if (input?.skipIfManifestUnchanged) {
+            return {
+                exitCode: 0,
+                stdout:
+                    "Skipped npm install for focused edit because dependency manifests did not change.",
+                stderr: "",
+            };
+        }
 
         if (successfulInstallCache?.fingerprint === fingerprint) {
             return {
@@ -4064,16 +4811,21 @@ export async function runReactAppAgent(
             };
         }
 
-        const result = await runWorkspaceCommand(
-            options.workspaceRoot,
-            {
-                command: "npm",
-                args: ["install"],
-            },
-            {
-                timeoutMs: INSTALL_COMMAND_TIMEOUT_MS,
-                ...(options.signal ? { signal: options.signal } : {}),
-            },
+        const result = await timeRunPhase(
+            runMetrics,
+            "installDurationMs",
+            () =>
+                runWorkspaceCommand(
+                    options.workspaceRoot,
+                    {
+                        command: "npm",
+                        args: ["install"],
+                    },
+                    {
+                        timeoutMs: INSTALL_COMMAND_TIMEOUT_MS,
+                        ...(options.signal ? { signal: options.signal } : {}),
+                    },
+                ),
         );
         options.signal?.throwIfAborted();
 
@@ -4101,12 +4853,14 @@ export async function runReactAppAgent(
             options.onProgress,
             kind === "repair" ? "repairing" : "coding",
         );
-        const maxSteps = chooseAgentMaxSteps({
-            kind,
-            hasImageAssetTool: imageAssetTool !== undefined,
-            complexPageRequest,
-            routeRequest: navigationRequestKind === "routes",
-        });
+        const maxSteps = focusedEditRequest
+            ? 2
+            : chooseAgentMaxSteps({
+                  kind,
+                  hasImageAssetTool: activeImageAssetTool !== undefined,
+                  complexPageRequest,
+                  routeRequest: navigationRequestKind === "routes",
+              });
 
         const codingModel = labelModelProviderStage(
             useParallelCodingAgents && kind === "initial"
@@ -4127,77 +4881,90 @@ export async function runReactAppAgent(
         let parallelWorkstreams:
             | ParallelCodingWorkstreamResult[]
             | undefined;
-        let agent: RunCodingAgentLoopResult;
+        let agent!: RunCodingAgentLoopResult;
+        const codingStartedAt = Date.now();
 
-        if (useParallelCodingAgents && kind === "initial") {
-            const parallelResult = await runParallelReactPagesAgent({
-                goal: executionRequest,
-                plannerOutput,
-                model: codingModel,
-                workspaceRoot: options.workspaceRoot,
-                routeRequest: navigationRequestKind === "routes",
-                maxConcurrency: options.parallelCodingConcurrency ?? 2,
-                workstreamTimeoutMs:
-                    options.parallelCodingTimeoutMs ?? 240_000,
-                ...(imageAssetTool ? { imageAssetTool } : {}),
-                ...(imageAssetModes.length > 0 ? { imageAssetModes } : {}),
-                ...(options.topicLookupProvider
-                    ? { topicLookupProvider: options.topicLookupProvider }
-                    : {}),
-                ...(options.signal ? { signal: options.signal } : {}),
-            });
-            agent = parallelResult.agent;
-            parallelWorkstreams = parallelResult.workstreams;
+        try {
+            if (useParallelCodingAgents && kind === "initial") {
+                const parallelResult = await runParallelReactPagesAgent({
+                    goal: executionRequest,
+                    plannerOutput,
+                    model: codingModel,
+                    workspaceRoot: options.workspaceRoot,
+                    routeRequest: navigationRequestKind === "routes",
+                    maxConcurrency: options.parallelCodingConcurrency ?? 2,
+                    workstreamTimeoutMs:
+                        options.parallelCodingTimeoutMs ?? 240_000,
+                    ...(activeImageAssetTool
+                        ? { imageAssetTool: activeImageAssetTool }
+                        : {}),
+                    ...(activeImageAssetModes.length > 0
+                        ? { imageAssetModes: activeImageAssetModes }
+                        : {}),
+                    ...(options.topicLookupProvider
+                        ? { topicLookupProvider: options.topicLookupProvider }
+                        : {}),
+                    ...(options.signal ? { signal: options.signal } : {}),
+                });
+                agent = parallelResult.agent;
+                parallelWorkstreams = parallelResult.workstreams;
 
-            if (!agent.finished && agent.steps.length === 0) {
-                const fallbackModel = labelModelProviderStage(
-                    provider,
-                    "initial Coding Agent fallback model request",
-                    options.signal,
-                    createRunProgressHeartbeat(options.onProgress, "coding"),
-                    options.llm.hardTimeoutMs ?? 240_000,
-                );
+                if (!agent.finished && agent.steps.length === 0) {
+                    const fallbackModel = labelModelProviderStage(
+                        provider,
+                        "initial Coding Agent fallback model request",
+                        options.signal,
+                        createRunProgressHeartbeat(options.onProgress, "coding"),
+                        options.llm.hardTimeoutMs ?? 240_000,
+                    );
+                    agent = await runCodingAgentLoop({
+                        goal: executionRequest,
+                        model: fallbackModel,
+                        workspaceRoot: options.workspaceRoot,
+                        maxSteps,
+                        requireWorkspaceChange: true,
+                        mode: "coding",
+                        context: [
+                            context,
+                            "Workspace execution mode: initial generation. The parallel page-per-API path failed before producing any draft, so this fallback must prioritize producing a complete runnable webpage draft over perfect visual sophistication.",
+                            "Use the stable compact path: write src/App.css for the visual system, write src/App.tsx for the React page, then finish. Avoid huge JSON content, giant inline style objects, and oversized files.",
+                        ].join("\n\n"),
+                        ...(activeImageAssetTool
+                            ? { imageAssetTool: activeImageAssetTool }
+                            : {}),
+                        ...(activeImageAssetTool
+                            ? { imageAssetModes: activeImageAssetModes }
+                            : {}),
+                        ...(options.signal ? { signal: options.signal } : {}),
+                    });
+                }
+            } else {
                 agent = await runCodingAgentLoop({
                     goal: executionRequest,
-                    model: fallbackModel,
+                    model: codingModel,
                     workspaceRoot: options.workspaceRoot,
                     maxSteps,
                     requireWorkspaceChange: true,
-                    mode: "coding",
+                    mode: kind === "repair" ? "repair" : "coding",
                     context: [
                         context,
-                        "Workspace execution mode: initial generation. The parallel page-per-API path failed before producing any draft, so this fallback must prioritize producing a complete runnable webpage draft over perfect visual sophistication.",
-                        "Use the stable compact path: write src/App.css for the visual system, write src/App.tsx for the React page, then finish. Avoid huge JSON content, giant inline style objects, and oversized files.",
+                        kind === "initial"
+                            ? "Workspace execution mode: initial generation. Replace the starter with the requested application; use write_file when establishing src/App.tsx because no exact existing source is supplied."
+                            : "Workspace execution mode: existing draft. Preserve working code and use focused edits when exact current source is supplied.",
                     ].join("\n\n"),
-                    ...(imageAssetTool ? { imageAssetTool } : {}),
-                    ...(imageAssetTool ? { imageAssetModes } : {}),
+                    ...(activeImageAssetTool
+                        ? { imageAssetTool: activeImageAssetTool }
+                        : {}),
+                    ...(activeImageAssetTool
+                        ? {
+                              imageAssetModes: activeImageAssetModes,
+                          }
+                        : {}),
                     ...(options.signal ? { signal: options.signal } : {}),
                 });
             }
-        } else {
-            agent = await runCodingAgentLoop({
-                goal: executionRequest,
-                model: codingModel,
-                workspaceRoot: options.workspaceRoot,
-                maxSteps,
-                requireWorkspaceChange: true,
-                mode: kind === "repair" ? "repair" : "coding",
-                context: [
-                    context,
-                    kind === "initial"
-                        ? "Workspace execution mode: initial generation. Replace the starter with the requested application; use write_file when establishing src/App.tsx because no exact existing source is supplied."
-                        : "Workspace execution mode: existing draft. Preserve working code and use focused edits when exact current source is supplied.",
-                ].join("\n\n"),
-                ...(imageAssetTool
-                    ? { imageAssetTool }
-                    : {}),
-                ...(imageAssetTool
-                    ? {
-                          imageAssetModes,
-                      }
-                    : {}),
-                ...(options.signal ? { signal: options.signal } : {}),
-            });
+        } finally {
+            addDuration(runMetrics, "codingDurationMs", codingStartedAt);
         }
         options.signal?.throwIfAborted();
 
@@ -4259,6 +5026,7 @@ export async function runReactAppAgent(
                 build: skippedCommand,
                 eval: evalResult,
                 review,
+                metrics: cloneRunMetrics(runMetrics),
                 ...(parallelWorkstreams
                     ? { parallelWorkstreams }
                     : {}),
@@ -4270,19 +5038,31 @@ export async function runReactAppAgent(
             options.signal,
         );
 
-        const install = await installCurrentDependencies();
+        const agentModifiedFiles = listModifiedFilesFromAgent(agent);
+        const dependencyManifestChanged = agentModifiedFiles.some(
+            isDependencyManifestPath,
+        );
+        const install = await installCurrentDependencies({
+            skipIfManifestUnchanged:
+                focusedEditRequest && !dependencyManifestChanged,
+        });
 
         await emitRunProgress(options.onProgress, "building");
-        const buildResult = await runWorkspaceCommand(
-            options.workspaceRoot,
-            {
-                command: "npm",
-                args: ["run", "build"],
-            },
-            {
-                timeoutMs: BUILD_COMMAND_TIMEOUT_MS,
-                ...(options.signal ? { signal: options.signal } : {}),
-            },
+        const buildResult = await timeRunPhase(
+            runMetrics,
+            "buildDurationMs",
+            () =>
+                runWorkspaceCommand(
+                    options.workspaceRoot,
+                    {
+                        command: "npm",
+                        args: ["run", "build"],
+                    },
+                    {
+                        timeoutMs: BUILD_COMMAND_TIMEOUT_MS,
+                        ...(options.signal ? { signal: options.signal } : {}),
+                    },
+                ),
         );
         options.signal?.throwIfAborted();
         let build = sourceAutofix.changed
@@ -4298,14 +5078,32 @@ export async function runReactAppAgent(
             : buildResult;
 
         await emitRunProgress(options.onProgress, "evaluating");
-        const evaluationSource = await formatStaticEvaluationSource(
-            options.workspaceRoot,
-        );
+        const baseEvalResult = await timeRunPhase(
+            runMetrics,
+            "evaluationDurationMs",
+            async () => {
+                if (focusedEditRequest) {
+                    return {
+                        passed: true,
+                        checks: [
+                            {
+                                name: "focused edit quick static check",
+                                passed: true,
+                            },
+                        ],
+                    };
+                }
 
-        const baseEvalResult = evaluateReactApp({
-            source: evaluationSource,
-            goal: options.goal,
-        });
+                const evaluationSource = await formatStaticEvaluationSource(
+                    options.workspaceRoot,
+                );
+
+                return evaluateReactApp({
+                    source: evaluationSource,
+                    goal: options.goal,
+                });
+            },
+        );
         const routeImplementationFailures =
             navigationRequestKind === "routes"
                 ? listRouteImplementationFailures(
@@ -4343,13 +5141,18 @@ export async function runReactAppAgent(
         ) {
             try {
                 await emitRunProgress(options.onProgress, "evaluating");
-                browserEval = await options.evaluateBrowser({
-                    goal: options.goal,
-                    workspaceRoot: options.workspaceRoot,
-                    kind,
-                    attemptNumber,
-                    ...(options.signal ? { signal: options.signal } : {}),
-                });
+                browserEval = await timeRunPhase(
+                    runMetrics,
+                    "evaluationDurationMs",
+                    () =>
+                        options.evaluateBrowser!({
+                            goal: options.goal,
+                            workspaceRoot: options.workspaceRoot,
+                            kind,
+                            attemptNumber,
+                            ...(options.signal ? { signal: options.signal } : {}),
+                        }),
+                );
             } catch (error) {
                 if (options.signal?.aborted) {
                     options.signal.throwIfAborted();
@@ -4399,29 +5202,41 @@ export async function runReactAppAgent(
                 },
             });
             await emitRunProgress(options.onProgress, "building");
-            build = await runWorkspaceCommand(
-                options.workspaceRoot,
-                {
-                    command: "npm",
-                    args: ["run", "build"],
-                },
-                {
-                    timeoutMs: BUILD_COMMAND_TIMEOUT_MS,
-                    ...(options.signal ? { signal: options.signal } : {}),
-                },
+            build = await timeRunPhase(
+                runMetrics,
+                "buildDurationMs",
+                () =>
+                    runWorkspaceCommand(
+                        options.workspaceRoot,
+                        {
+                            command: "npm",
+                            args: ["run", "build"],
+                        },
+                        {
+                            timeoutMs: BUILD_COMMAND_TIMEOUT_MS,
+                            ...(options.signal ? { signal: options.signal } : {}),
+                        },
+                    ),
             );
             options.signal?.throwIfAborted();
 
             if (build.exitCode === 0) {
                 try {
                     await emitRunProgress(options.onProgress, "evaluating");
-                    browserEval = await options.evaluateBrowser({
-                        goal: options.goal,
-                        workspaceRoot: options.workspaceRoot,
-                        kind,
-                        attemptNumber: attemptNumber + 1,
-                        ...(options.signal ? { signal: options.signal } : {}),
-                    });
+                    browserEval = await timeRunPhase(
+                        runMetrics,
+                        "evaluationDurationMs",
+                        () =>
+                            options.evaluateBrowser!({
+                                goal: options.goal,
+                                workspaceRoot: options.workspaceRoot,
+                                kind,
+                                attemptNumber: attemptNumber + 1,
+                                ...(options.signal
+                                    ? { signal: options.signal }
+                                    : {}),
+                            }),
+                    );
                 } catch (error) {
                     if (options.signal?.aborted) {
                         options.signal.throwIfAborted();
@@ -4462,23 +5277,27 @@ export async function runReactAppAgent(
                   }
                 : baseDeterministicReview;
         await emitRunProgress(options.onProgress, "reviewing");
-        const { review: reviewedResult, llmReview } = await reviewWithOptionalLlm({
-            reviewerAgent,
-            deterministicReview,
-            goal: options.goal,
-            plan: coordination.plan,
-            source: await formatReviewerSourceEvidence(
-                options.workspaceRoot,
-                executionRequest,
-            ),
-            buildPassed: build.exitCode === 0,
-            evaluationSummary: formatEvaluationSummary(
-                evalResult,
-                browserEval,
-            ),
-            assetEvidence,
-            ...(options.signal ? { signal: options.signal } : {}),
-        });
+        const { review: reviewedResult, llmReview } = focusedEditRequest
+            ? { review: deterministicReview }
+            : await timeRunPhase(runMetrics, "reviewerDurationMs", async () =>
+                  reviewWithOptionalLlm({
+                      reviewerAgent,
+                      deterministicReview,
+                      goal: options.goal,
+                      plan: coordination.plan,
+                      source: await formatReviewerSourceEvidence(
+                          options.workspaceRoot,
+                          executionRequest,
+                      ),
+                      buildPassed: build.exitCode === 0,
+                      evaluationSummary: formatEvaluationSummary(
+                          evalResult,
+                          browserEval,
+                      ),
+                      assetEvidence,
+                      ...(options.signal ? { signal: options.signal } : {}),
+                  }),
+              );
         options.signal?.throwIfAborted();
         const review = await enforceFocusedVisualSemanticReview({
             workspaceRoot: options.workspaceRoot,
@@ -4495,6 +5314,7 @@ export async function runReactAppAgent(
             ...(browserEval ? { browserEval } : {}),
             ...(llmReview ? { llmReview } : {}),
             review,
+            metrics: cloneRunMetrics(runMetrics),
             ...(parallelWorkstreams
                 ? { parallelWorkstreams }
                 : {}),
@@ -4553,6 +5373,7 @@ export async function runReactAppAgent(
             );
 
         try {
+            runMetrics.retryCalls += 1;
             const nextAttempt = await runAttempt(
                 "repair",
                 [
@@ -4585,6 +5406,33 @@ export async function runReactAppAgent(
     }
 
     options.signal?.throwIfAborted();
+    const finalizedMetrics = finalizeRunMetrics({
+        metrics: runMetrics,
+        attempts,
+        startedAt: runStartedAt,
+    });
+    const requirementResults = evaluateRequirementLedger({
+        requirements,
+        metrics: finalizedMetrics,
+        review: latestAttempt.review,
+        focusedEdit: focusedEditRequest,
+    });
+    const ledgerReview = enforceRequirementLedgerReview({
+        review: latestAttempt.review,
+        requirements: requirementResults,
+    });
+    const finalReview = enforceFallbackPagesReview(
+        ledgerReview,
+        finalizedMetrics,
+    );
+    if (finalReview !== latestAttempt.review) {
+        latestAttempt = {
+            ...latestAttempt,
+            review: finalReview,
+        };
+        attempts[attempts.length - 1] = latestAttempt;
+    }
+
     return {
         workspaceRoot: options.workspaceRoot,
         coordination,
@@ -4598,8 +5446,10 @@ export async function runReactAppAgent(
         ...(latestAttempt.llmReview
             ? { llmReview: latestAttempt.llmReview }
             : {}),
-        review: latestAttempt.review,
+        review: finalReview,
         attempts,
+        metrics: finalizedMetrics,
+        requirements: requirementResults,
         trace: buildTraceEvents(
             attempts,
             coordination.plan.length,

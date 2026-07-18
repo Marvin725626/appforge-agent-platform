@@ -409,7 +409,7 @@ export type PageCodingWorkstreamStatus = {
     path: string;
     routePath: string;
     label: string;
-    status: "pending" | "running" | "succeeded" | "failed";
+    status: "pending" | "running" | "succeeded" | "fallback" | "failed";
     generationAttempts: number;
     summary: string;
     errorMessage?: string;
@@ -2165,10 +2165,11 @@ export async function runParallelReactPagesAgent(
                 failureReason: status.errorMessage,
             });
             artifacts.set(failedPage.id, fallbackArtifact);
-            status.status = "succeeded";
+            status.status = "fallback";
             status.summary = fallbackArtifact.summary;
             status.errorMessage = [
                 status.errorMessage,
+                "该页面的模型输出无效，目前展示的是本地兜底草稿。",
                 "Recovered with local fallback page so the run can still produce a draft.",
             ]
                 .filter(Boolean)
@@ -2176,7 +2177,9 @@ export async function runParallelReactPagesAgent(
         }
 
         const remainingFailures = statuses.filter(
-            (status) => status.status !== "succeeded",
+            (status) =>
+                status.status !== "succeeded" &&
+                status.status !== "fallback",
         );
         if (
             remainingFailures.length > 0 ||

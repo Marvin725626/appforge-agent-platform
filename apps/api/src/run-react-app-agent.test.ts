@@ -184,6 +184,83 @@ describe("runReactAppAgent", () => {
         );
     }, 15_000);
 
+    it("uses the focused edit fast path for a small button text change", async () => {
+        const templateRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-template-"),
+        );
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-workspace-"),
+        );
+
+        temporaryDirectories.push(templateRoot, workspaceRoot);
+
+        await mkdir(path.join(templateRoot, "src"));
+        await mkdir(path.join(workspaceRoot, "src"));
+
+        await writeFile(
+            path.join(workspaceRoot, "package.json"),
+            JSON.stringify({
+                scripts: {
+                    build: "node -e \"console.log('build ok')\"",
+                },
+            }),
+            "utf8",
+        );
+
+        await writeFile(
+            path.join(workspaceRoot, "src", "App.tsx"),
+            "export function App() { return <main><button>Start</button><p>Keep this copy.</p></main>; }",
+            "utf8",
+        );
+
+        const model = new FakeModelProvider([
+            {
+                content: JSON.stringify({
+                    type: "edit_file",
+                    path: "src/App.tsx",
+                    oldText: "<button>Start</button>",
+                    newText: "<button>Submit</button>",
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "Updated the button text only.",
+                }),
+            },
+        ]);
+
+        const result = await runReactAppAgent({
+            goal: "Create a simple button page",
+            currentRequest:
+                "Change the button text to Submit and do not modify other areas",
+            resetWorkspace: false,
+            workspaceRoot,
+            templateRoot,
+            model,
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        expect(result.review.accepted).toBe(true);
+        expect(result.metrics?.plannerCalls).toBe(0);
+        expect(result.metrics?.reviewerCalls).toBe(0);
+        expect(result.metrics?.installDurationMs).toBe(0);
+        expect(result.install.stdout).toContain("Skipped npm install");
+        expect(result.metrics?.modifiedFiles).toEqual(["src/App.tsx"]);
+        expect(
+            result.requirements?.find((item) => item.id === "PRESERVE-1")
+                ?.status,
+        ).toBe("PASS");
+        expect(model.requests).toHaveLength(2);
+        expect(model.requests[0]?.messages[1]?.content).toContain(
+            "Focused Edit Fast Path",
+        );
+    });
+
     it("does not launch another full attempt after the coding model times out", async () => {
         const templateRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-api-template-"),

@@ -598,6 +598,29 @@ describe("runParallelReactPagesAgent", () => {
         ]);
     });
 
+    it("marks invalid page model output as fallback instead of normal success", async () => {
+        const workspaceRoot = await createWorkspace();
+        const provider = new PageModelProvider(() => ({
+            content: "{\"path\":\"src/pages/home.tsx\",\"content\":",
+        }));
+
+        const result = await runParallelReactPagesAgent({
+            goal: "Create a routed city culture site",
+            plannerOutput: PLANNER_OUTPUT,
+            model: provider,
+            workspaceRoot,
+            routeRequest: true,
+            maxConcurrency: 1,
+            workstreamTimeoutMs: 10_000,
+        });
+
+        expect(result.agent.finished).toBe(true);
+        expect(result.workstreams.every((workstream) => workstream.status === "fallback")).toBe(true);
+        expect(result.workstreams[0]?.errorMessage).toContain(
+            "该页面的模型输出无效，目前展示的是本地兜底草稿。",
+        );
+    });
+
     it("uses formal image assets instead of SVG placeholders when the image tool is configured", async () => {
         const workspaceRoot = await createWorkspace();
         const imageProvider = new FakeImageAssetProvider(
@@ -996,7 +1019,7 @@ describe("runParallelReactPagesAgent", () => {
         expect(writtenHome).toContain('href="https://example.com"');
     });
 
-    it("keeps the canonical workspace unchanged when one page remains invalid", async () => {
+    it("uses a clearly marked local fallback when one page remains invalid", async () => {
         const workspaceRoot = await createWorkspace();
         const baseline: Record<string, string> = {
             "src/content.ts": "existing content",
@@ -1027,20 +1050,29 @@ describe("runParallelReactPagesAgent", () => {
         });
 
         expect(result.agent).toMatchObject({
-            steps: [],
-            finished: false,
-            stopReason: "model_error",
+            finished: true,
+            stopReason: "finish",
         });
+        expect(
+            result.workstreams.find((workstream) => workstream.id === "culture")
+                ?.status,
+        ).toBe("fallback");
+        expect(
+            result.workstreams.find((workstream) => workstream.id === "culture")
+                ?.errorMessage,
+        ).toContain("该页面的模型输出无效，目前展示的是本地兜底草稿。");
         expect(provider.count("home")).toBe(1);
         expect(provider.count("culture")).toBe(2);
         expect(provider.count("itinerary")).toBe(1);
-        await Promise.all(
-            Object.entries(baseline).map(async ([filePath, expectedContent]) => {
-                expect(
-                    await readFile(path.join(workspaceRoot, filePath), "utf8"),
-                ).toBe(expectedContent);
-            }),
-        );
+        expect(
+            await readFile(
+                path.join(workspaceRoot, "src", "pages", "culture.tsx"),
+                "utf8",
+            ),
+        ).toContain("data-page-id=\"culture\"");
+        expect(
+            await readFile(path.join(workspaceRoot, "src", "App.tsx"), "utf8"),
+        ).not.toBe(baseline["src/App.tsx"]);
     });
 });
 

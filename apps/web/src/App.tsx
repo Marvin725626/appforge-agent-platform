@@ -91,6 +91,20 @@ type AgentAttempt = {
     eval: ReactAppEvalResult;
     browserEval?: BrowserEvalResult;
     review: AgentReview;
+    parallelWorkstreams?: ParallelCodingWorkstream[];
+    metrics?: RunMetrics;
+};
+
+type ParallelCodingWorkstream = {
+    id: string;
+    role: "page";
+    path: string;
+    routePath: string;
+    label: string;
+    status: "pending" | "running" | "succeeded" | "fallback" | "failed";
+    generationAttempts: number;
+    summary: string;
+    errorMessage?: string;
 };
 
 type TraceEvent = {
@@ -111,6 +125,38 @@ type ReactAppAgentResult = {
     trace?: TraceEvent[];
     coordination?: CoordinationResponse;
     browserEval?: BrowserEvalResult;
+    metrics?: RunMetrics;
+    requirements?: RequirementResult[];
+};
+
+type RunMetrics = {
+    plannerCalls: number;
+    codingCalls: number;
+    reviewerCalls: number;
+    retryCalls: number;
+    fallbackPages: string[];
+    plannerDurationMs: number;
+    codingDurationMs: number;
+    installDurationMs: number;
+    buildDurationMs: number;
+    evaluationDurationMs: number;
+    reviewerDurationMs: number;
+    totalDurationMs: number;
+    modifiedFiles: string[];
+    dependencyManifestChanged: boolean;
+};
+
+type RequirementResult = {
+    id: string;
+    instruction: string;
+    priority: "must" | "should" | "must_preserve";
+    target?: string;
+    targetFiles?: string[];
+    verification: string;
+    status: "PASS" | "FAIL";
+    evidence: string;
+    affectedFiles: string[];
+    affectedSelectorsOrComponents: string[];
 };
 
 type ExecuteResponse = {
@@ -731,6 +777,36 @@ function getTraceEvents(result: ReactAppAgentResult): TraceEvent[] {
     });
 
     return trace;
+}
+
+function formatDurationMs(value: number | undefined): string {
+    const duration = Math.max(0, Math.round(value ?? 0));
+
+    if (duration >= 1000) {
+        return `${(duration / 1000).toFixed(1)}s`;
+    }
+
+    return `${duration}ms`;
+}
+
+function getFallbackPages(result: ReactAppAgentResult | null): string[] {
+    if (!result) {
+        return [];
+    }
+
+    const fallbackPages = new Set(result.metrics?.fallbackPages ?? []);
+
+    for (const attempt of result.attempts ?? []) {
+        for (const workstream of attempt.parallelWorkstreams ?? []) {
+            if (workstream.status === "fallback") {
+                fallbackPages.add(
+                    `${workstream.label} (${workstream.routePath || workstream.path})`,
+                );
+            }
+        }
+    }
+
+    return [...fallbackPages];
 }
 
 function  findAttemptForTraceEvent(
@@ -3053,6 +3129,9 @@ export function App() {
         run.status === "cancelled" ||
         (run.status === "waiting_for_human" &&
             terminalRunHasNoGeneratedOutput);
+    const fallbackPages = getFallbackPages(agentResult);
+    const runMetrics = agentResult?.metrics;
+    const requirementResults = agentResult?.requirements ?? [];
 
     return (
         <main className="app-shell workspace-shell">
@@ -3502,6 +3581,19 @@ export function App() {
                             <p>
                                 <strong>{copy.status}:</strong> {run.status}
                             </p>
+                            {fallbackPages.length > 0 ? (
+                                <div className="fallback-warning">
+                                    <strong>本地兜底草稿</strong>
+                                    <p>
+                                        该页面的模型输出无效，目前展示的是本地兜底草稿。
+                                    </p>
+                                    <ul>
+                                        {fallbackPages.map((page) => (
+                                            <li key={page}>{page}</li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            ) : null}
                             {shouldShowRunFailureReason ? (
                                 <div className="error">
                                     <strong>{copy.failureReason}:</strong>{" "}
@@ -3566,6 +3658,171 @@ export function App() {
                                         <p className="muted-text">
                                             {copy.versionReviewUnavailable}
                                         </p>
+                                    ) : null}
+                                    {requirementResults.length > 0 ? (
+                                        <div className="requirement-ledger">
+                                            <h3>Requirement Ledger</h3>
+                                            <div className="requirement-list">
+                                                {requirementResults.map(
+                                                    (requirement) => (
+                                                        <article
+                                                            className={
+                                                                requirement.status ===
+                                                                "PASS"
+                                                                    ? "requirement-row passed"
+                                                                    : "requirement-row failed"
+                                                            }
+                                                            key={requirement.id}
+                                                        >
+                                                            <div>
+                                                                <strong>
+                                                                    {requirement.id} ·{" "}
+                                                                    {
+                                                                        requirement.priority
+                                                                    }
+                                                                </strong>
+                                                                <p>
+                                                                    {
+                                                                        requirement.instruction
+                                                                    }
+                                                                </p>
+                                                                <small>
+                                                                    {
+                                                                        requirement.evidence
+                                                                    }
+                                                                </small>
+                                                                {requirement
+                                                                    .affectedSelectorsOrComponents
+                                                                    .length >
+                                                                0 ? (
+                                                                    <small>
+                                                                        Selectors/components:{" "}
+                                                                        {requirement.affectedSelectorsOrComponents.join(
+                                                                            ", ",
+                                                                        )}
+                                                                    </small>
+                                                                ) : null}
+                                                            </div>
+                                                            <span>
+                                                                {
+                                                                    requirement.status
+                                                                }
+                                                            </span>
+                                                        </article>
+                                                    ),
+                                                )}
+                                            </div>
+                                        </div>
+                                    ) : null}
+                                    {runMetrics ? (
+                                        <div className="run-metrics">
+                                            <h3>Run Metrics</h3>
+                                            <dl>
+                                                <div>
+                                                    <dt>Planner calls</dt>
+                                                    <dd>
+                                                        {
+                                                            runMetrics.plannerCalls
+                                                        }
+                                                    </dd>
+                                                </div>
+                                                <div>
+                                                    <dt>Coding calls</dt>
+                                                    <dd>
+                                                        {
+                                                            runMetrics.codingCalls
+                                                        }
+                                                    </dd>
+                                                </div>
+                                                <div>
+                                                    <dt>Reviewer calls</dt>
+                                                    <dd>
+                                                        {
+                                                            runMetrics.reviewerCalls
+                                                        }
+                                                    </dd>
+                                                </div>
+                                                <div>
+                                                    <dt>Retry calls</dt>
+                                                    <dd>
+                                                        {
+                                                            runMetrics.retryCalls
+                                                        }
+                                                    </dd>
+                                                </div>
+                                                <div>
+                                                    <dt>Total</dt>
+                                                    <dd>
+                                                        {formatDurationMs(
+                                                            runMetrics.totalDurationMs,
+                                                        )}
+                                                    </dd>
+                                                </div>
+                                                <div>
+                                                    <dt>Planner</dt>
+                                                    <dd>
+                                                        {formatDurationMs(
+                                                            runMetrics.plannerDurationMs,
+                                                        )}
+                                                    </dd>
+                                                </div>
+                                                <div>
+                                                    <dt>Coding</dt>
+                                                    <dd>
+                                                        {formatDurationMs(
+                                                            runMetrics.codingDurationMs,
+                                                        )}
+                                                    </dd>
+                                                </div>
+                                                <div>
+                                                    <dt>Install</dt>
+                                                    <dd>
+                                                        {formatDurationMs(
+                                                            runMetrics.installDurationMs,
+                                                        )}
+                                                    </dd>
+                                                </div>
+                                                <div>
+                                                    <dt>Build</dt>
+                                                    <dd>
+                                                        {formatDurationMs(
+                                                            runMetrics.buildDurationMs,
+                                                        )}
+                                                    </dd>
+                                                </div>
+                                                <div>
+                                                    <dt>Evaluation</dt>
+                                                    <dd>
+                                                        {formatDurationMs(
+                                                            runMetrics.evaluationDurationMs,
+                                                        )}
+                                                    </dd>
+                                                </div>
+                                                <div>
+                                                    <dt>Reviewer</dt>
+                                                    <dd>
+                                                        {formatDurationMs(
+                                                            runMetrics.reviewerDurationMs,
+                                                        )}
+                                                    </dd>
+                                                </div>
+                                            </dl>
+                                            <p className="muted-text">
+                                                Dependency manifest changed:{" "}
+                                                {runMetrics.dependencyManifestChanged
+                                                    ? copy.yes
+                                                    : copy.no}
+                                            </p>
+                                            {runMetrics.modifiedFiles.length >
+                                            0 ? (
+                                                <p className="muted-text">
+                                                    Modified files:{" "}
+                                                    {runMetrics.modifiedFiles.join(
+                                                        ", ",
+                                                    )}
+                                                </p>
+                                            ) : null}
+                                        </div>
                                     ) : null}
                                     {SHOW_DEV_PANELS && displayedCoordination ? (
                                         <div className="multi-agent-summary">
