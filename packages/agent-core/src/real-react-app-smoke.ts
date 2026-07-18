@@ -23,6 +23,7 @@ const provider = new OpenAICompatibleProvider({
     apiKey,
     model,
     timeoutMs: Number(process.env.APPFORGE_LLM_TIMEOUT_MS ?? 300_000),
+    maxTokens: Number(process.env.APPFORGE_LLM_MAX_TOKENS ?? 12_000),
 });
 
 const workspaceRoot = await mkdtemp(

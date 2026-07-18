@@ -97,5 +97,8 @@
 1. 版本 diff 和 rollback。
 2. LLM/RAG Memory 升级。
 3. 更真实的多 Agent 执行。
-4. Browser Harness 增强：截图对比、可访问性、更多目标场景。
-5. Share/export：Run Report、截图、产物导出，用于简历和面试展示。
+4. 图片 Asset Tool 与 MCP 适配层：支持受控图片搜索或生成，校验来源、
+   MIME 类型、文件大小和超时，并将安全资产保存到 workspace 的
+   `public/assets`；内部 Provider 接口与 MCP 解耦。
+5. Browser Harness 增强：截图对比、可访问性、更多目标场景。
+6. Share/export：Run Report、截图、产物导出，用于简历和面试展示。

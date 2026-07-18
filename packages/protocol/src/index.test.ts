@@ -4,6 +4,7 @@ import {
   CreateRunInputSchema,
   PROTOCOL_VERSION,
   RunSchema,
+  RunOperationStageSchema,
   RunStatusSchema,
 } from "./index.js";
 
@@ -52,6 +53,23 @@ describe("RunSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts bounded live operation progress metadata", () => {
+    const result = RunSchema.safeParse({
+      id: "run-live",
+      goal: "Create a routed application",
+      status: "running",
+      operation: "initial_generation",
+      operationId: "operation-1",
+      operationStage: "building",
+      operationStartedAt: "2026-07-16T04:00:00.000Z",
+      operationUpdatedAt: "2026-07-16T04:01:00.000Z",
+      createdAt: "2026-07-16T03:59:00.000Z",
+    });
+
+    expect(result.success).toBe(true);
+    expect(RunOperationStageSchema.safeParse("thinking").success).toBe(false);
+  });
+
   it("returns errors for an invalid run", () => {
     const result = RunSchema.safeParse({
       id: "",
@@ -93,6 +111,67 @@ describe("AgentActionSchema", () => {
     expect(action.type).toBe("write_file");
   });
 
+  it("rejects an oversized write_file action", () => {
+    const result = AgentActionSchema.safeParse({
+      type: "write_file",
+      path: "src/App.tsx",
+      content: "x".repeat(6001),
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts an edit_file action", () => {
+    const action = AgentActionSchema.parse({
+      type: "edit_file",
+      path: "src/App.tsx",
+      oldText: 'href="#"',
+      newText: 'href="#about"',
+    });
+
+    expect(action).toEqual({
+      type: "edit_file",
+      path: "src/App.tsx",
+      oldText: 'href="#"',
+      newText: 'href="#about"',
+    });
+  });
+
+  it("rejects an edit_file action without oldText", () => {
+    const result = AgentActionSchema.safeParse({
+      type: "edit_file",
+      path: "src/App.tsx",
+      oldText: "",
+      newText: "replacement",
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts an append_file action", () => {
+    const action = AgentActionSchema.parse({
+      type: "append_file",
+      path: "src/content.ts",
+      content: "export const extraSections = [];",
+    });
+
+    expect(action).toEqual({
+      type: "append_file",
+      path: "src/content.ts",
+      content: "export const extraSections = [];",
+    });
+  });
+
+  it("rejects an oversized append_file action", () => {
+    const result = AgentActionSchema.safeParse({
+      type: "append_file",
+      path: "src/content.ts",
+      content: "x".repeat(4001),
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it("accepts a run_command action", () => {
     const action = AgentActionSchema.parse({
       type: "run_command",
@@ -106,6 +185,38 @@ describe("AgentActionSchema", () => {
   it("rejects an unknown action", () => {
     const result = AgentActionSchema.safeParse({
       type: "delete_workspace",
+    });
+
+    expect(result.success).toBe(false);
+  });
+  it("accepts a get_image action", () => {
+    const action = AgentActionSchema.parse({
+      type: "get_image",
+      query: "温州江心屿日落",
+      mode: "search",
+      altText: "夕阳下的温州江心屿",
+      outputPath:
+          "public/assets/jiangxinyu.jpg",
+    });
+
+    expect(action).toEqual({
+      type: "get_image",
+      query: "温州江心屿日落",
+      mode: "search",
+      altText: "夕阳下的温州江心屿",
+      outputPath:
+          "public/assets/jiangxinyu.jpg",
+    });
+  });
+
+  it("rejects a get_image action with an empty query", () => {
+    const result = AgentActionSchema.safeParse({
+      type: "get_image",
+      query: "   ",
+      mode: "search",
+      altText: "温州风景",
+      outputPath:
+          "public/assets/wenzhou.jpg",
     });
 
     expect(result.success).toBe(false);

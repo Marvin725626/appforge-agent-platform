@@ -13,6 +13,7 @@ export type FormatRepairContextInput = {
     eval: ReactAppEvalResult;
     browserEval?: BrowserEvalResult;
     review: ReactAppAgentReview;
+    sourceExcerpt?: string;
 };
 
 export function formatRepairContext(
@@ -21,6 +22,8 @@ export function formatRepairContext(
     return [
         "Repair request:",
         "Reviewer rejected the result.",
+        "You must revise the current workspace to satisfy every reviewer issue below.",
+        "Do not replace the app with an unrelated starter. Keep existing working features and make the smallest coherent fix.",
         `Build exit code: ${input.build.exitCode}`,
         `Eval passed: ${input.eval.passed ? "yes" : "no"}`,
         "Eval checks:",
@@ -35,7 +38,11 @@ export function formatRepairContext(
                 check.message ? ` (${check.message})` : "",
             ].join(""),
         ) ?? []),
-        `Reason: ${input.review.reason}`,
+        "Reviewer issues to fix:",
+        `- ${input.review.reason}`,
+        input.sourceExcerpt && input.sourceExcerpt.length > 0
+            ? `Relevant source near build error:\n${input.sourceExcerpt}`
+            : "",
         input.build.stderr.length > 0
             ? `Build stderr:\n${input.build.stderr}`
             : "",

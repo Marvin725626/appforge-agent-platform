@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
 
@@ -42,6 +43,8 @@ function emptyMemoryStore(): MemoryStore {
 }
 
 export class FileMemoryRepository implements MemoryRepositoryLike {
+    private writeQueue: Promise<void> = Promise.resolve();
+
     constructor(private readonly storePath: string) {}
 
     async list(): Promise<MemoryEntry[]> {
@@ -50,9 +53,11 @@ export class FileMemoryRepository implements MemoryRepositoryLike {
     }
 
     async save(entry: MemoryEntry): Promise<void> {
-        const store = await this.readStore();
-        store.memories.push(entry);
-        await this.writeStore(store);
+        await this.withWriteLock(async () => {
+            const store = await this.readStore();
+            store.memories.push(entry);
+            await this.writeStore(store);
+        });
     }
 
     async listSummaries(): Promise<MemorySummary[]> {
@@ -61,9 +66,11 @@ export class FileMemoryRepository implements MemoryRepositoryLike {
     }
 
     async saveSummary(summary: MemorySummary): Promise<void> {
-        const store = await this.readStore();
-        store.summaries.push(summary);
-        await this.writeStore(store);
+        await this.withWriteLock(async () => {
+            const store = await this.readStore();
+            store.summaries.push(summary);
+            await this.writeStore(store);
+        });
     }
 
     private async readStore(): Promise<MemoryStore> {
@@ -93,10 +100,29 @@ export class FileMemoryRepository implements MemoryRepositoryLike {
             recursive: true,
         });
 
+        const temporaryStorePath = `${this.storePath}.${randomUUID()}.tmp`;
+
         await writeFile(
-            this.storePath,
+            temporaryStorePath,
             `${JSON.stringify(store, null, 2)}\n`,
             "utf8",
         );
+        await rename(temporaryStorePath, this.storePath);
+    }
+
+    private async withWriteLock<T>(operation: () => Promise<T>): Promise<T> {
+        const previousWrite = this.writeQueue;
+        let releaseWrite: () => void = () => undefined;
+        this.writeQueue = new Promise<void>((resolve) => {
+            releaseWrite = resolve;
+        });
+
+        await previousWrite;
+
+        try {
+            return await operation();
+        } finally {
+            releaseWrite();
+        }
     }
 }

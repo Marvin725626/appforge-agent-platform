@@ -1,14 +1,22 @@
 import {
     OpenAICompatibleProvider,
+    PlannerAgent,
     type OpenAICompatibleProviderOptions,
     runCodingAgentLoop,
     type RunCodingAgentLoopResult,
     type ModelProvider,
     coordinateAgents,
-    formatCoordinationContext,
     formatSkillInstructions,
     reactViteAppSkill,
+    visualDesignSkill,
     type CoordinateAgentsResult,
+    ReviewerAgent,
+    type ReviewerOutput,
+    ImageAssetTool,
+    type ImageAssetProvider,
+    type ImageAssetMode,
+    type SavedImageAsset,
+    type PlannerOutput,
 } from "@appforge/agent-core";
 import {
     copyWorkspaceTemplate,
@@ -16,10 +24,12 @@ import {
 } from "@appforge/workspace";
 
 import {
+    combineReactAppAgentReviews,
     reviewReactAppAgentResult,
     type ReactAppAgentReview,
 } from "./review-react-app-agent.js";
-import { readFile } from "node:fs/promises";
+import { access, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import {
     evaluateReactApp,
@@ -28,10 +38,26 @@ import {
 } from "@appforge/harness";
 import { formatRepairContext } from "./format-repair-context.js";
 import { shouldRepair } from "./should-repair.js";
-import type { TraceEvent } from "@appforge/protocol";
+import type {
+    RunOperationStage,
+    TraceEvent,
+} from "@appforge/protocol";
+import { autofixReactSource } from "./react-source-autofix.js";
+import {
+    resolveReactPagePlans,
+    runParallelReactPagesAgent,
+    type ParallelCodingWorkstreamResult,
+    type TopicLookupProvider,
+} from "./run-parallel-react-pages-agent.js";
+
+const INSTALL_COMMAND_TIMEOUT_MS = 5 * 60 * 1_000;
+const BUILD_COMMAND_TIMEOUT_MS = 2 * 60 * 1_000;
 
 export type RunReactAppAgentOptions = {
     goal: string;
+    /** The newest focused iteration request. The full `goal` remains the
+     * acceptance contract used by deterministic/browser/LLM review. */
+    currentRequest?: string;
     workspaceRoot: string;
     templateRoot: string;
     llm: {
@@ -39,12 +65,80 @@ export type RunReactAppAgentOptions = {
         apiKey: string;
         model: string;
         timeoutMs?: number;
+        maxRetries?: number;
+        stream?: boolean;
+        serviceTier?: "auto" | "default";
+        plannerTimeoutMs?: number;
+        reviewerTimeoutMs?: number;
+        /** Absolute per-model-call deadline. Unlike timeoutMs, streamed
+         * activity does not extend this budget. */
+        hardTimeoutMs?: number;
+        parallelMaxTokens?: number;
+        parallelThinking?: "enabled" | "disabled" | "auto";
+        maxTokens?: number;
     };
     model?: ModelProvider;
+    /** Enable page-scoped Coding Agents for fresh generation. Every planned
+     * webpage receives one initial Coding API call; existing-draft iterations
+     * remain on the focused single-agent path. */
+    parallelCoding?: boolean;
+    /** Maximum simultaneous page Coding API requests. */
+    parallelCodingConcurrency?: number;
+    /** Absolute budget for one page, including its failed-page retry. */
+    parallelCodingTimeoutMs?: number;
     maxRepairAttempts?: number;
     memoryContext?:string;
     evaluateBrowser?: EvaluateBrowserForAttempt;
+    imageAssetProvider?: ImageAssetProvider;
+    imageAssetModes?: ImageAssetMode[];
+    topicLookupProvider?: TopicLookupProvider;
+    resetWorkspace?: boolean;
+    signal?: AbortSignal;
+    onProgress?: (
+        stage: RunOperationStage,
+    ) => void | Promise<void>;
 };
+
+async function emitRunProgress(
+    onProgress: RunReactAppAgentOptions["onProgress"],
+    stage: RunOperationStage,
+): Promise<void> {
+    if (!onProgress) {
+        return;
+    }
+
+    try {
+        await onProgress(stage);
+    } catch {
+        // Progress persistence is observability only. A temporary repository
+        // write failure must not discard an otherwise valid generated app.
+    }
+}
+
+function createRunProgressHeartbeat(
+    onProgress: RunReactAppAgentOptions["onProgress"],
+    stage: RunOperationStage,
+    intervalMs = 10_000,
+): () => void {
+    let lastEmissionAt = Date.now();
+    let emissionPending = false;
+
+    return () => {
+        if (
+            !onProgress ||
+            emissionPending ||
+            Date.now() - lastEmissionAt < intervalMs
+        ) {
+            return;
+        }
+
+        lastEmissionAt = Date.now();
+        emissionPending = true;
+        void emitRunProgress(onProgress, stage).finally(() => {
+            emissionPending = false;
+        });
+    };
+}
 
 export type RunReactAppAgentCommandResult = {
     exitCode: number;
@@ -57,6 +151,7 @@ export type EvaluateBrowserForAttempt = (input: {
     workspaceRoot: string;
     kind: "initial" | "repair";
     attemptNumber: number;
+    signal?: AbortSignal;
 }) => Promise<BrowserEvalResult>;
 
 export type RunReactAppAgentAttempt = {
@@ -66,7 +161,9 @@ export type RunReactAppAgentAttempt = {
     build: RunReactAppAgentCommandResult;
     eval: ReactAppEvalResult;
     browserEval?: BrowserEvalResult;
+    llmReview?: ReviewerOutput;
     review: ReactAppAgentReview;
+    parallelWorkstreams?: ParallelCodingWorkstreamResult[];
 };
 
 export type RunReactAppAgentResult = {
@@ -80,7 +177,954 @@ export type RunReactAppAgentResult = {
     review: ReactAppAgentReview;
     attempts: RunReactAppAgentAttempt[];
     trace?: TraceEvent[];
+    llmReview?: ReviewerOutput;
 };
+
+type LocalAssetReference = {
+    urlPath: string;
+    publicPath: string;
+    exists: boolean;
+};
+
+const CONTINUATION_CORE_SOURCE_FILES = [
+    "src/App.tsx",
+    "src/content.ts",
+    "src/App.css",
+    "src/main.tsx",
+    "package.json",
+    "index.html",
+];
+const MAX_CONTINUATION_SOURCE_CHARACTERS = 12_000;
+const MAX_CONTINUATION_FILE_CHARACTERS = 4_000;
+const MAX_CONTINUATION_SOURCE_FILES = 12;
+const REVIEW_CORE_SOURCE_FILES = [
+    "src/App.tsx",
+    "src/content.ts",
+    "src/App.css",
+    "src/main.tsx",
+];
+const MAX_REVIEW_SOURCE_CHARACTERS = 5_000;
+const MAX_REVIEW_SOURCE_FILES = 8;
+const MAX_STATIC_EVALUATION_CHARACTERS = 24_000;
+const MAX_STATIC_EVALUATION_SOURCE_FILES = 12;
+const MAX_DISCOVERED_SOURCE_FILES = 200;
+const MAX_VISITED_SOURCE_DIRECTORIES = 400;
+const MAX_ASSET_SCAN_CHARACTERS = 500_000;
+const MAX_ASSET_SCAN_FILE_CHARACTERS = 100_000;
+const DISCOVERABLE_SOURCE_EXTENSION = /\.(?:tsx?|jsx?|css|scss)$/iu;
+const EXCLUDED_SOURCE_FILE =
+    /(?:\.d\.ts$|(?:^|[._-])(?:test|spec|stories)(?:[._-]|$))/iu;
+const EXCLUDED_SOURCE_DIRECTORIES = new Set([
+    "node_modules",
+    "dist",
+    "build",
+    "coverage",
+    "out",
+    "cache",
+    ".cache",
+    ".vite",
+    ".next",
+    ".turbo",
+    "__tests__",
+    "__snapshots__",
+    "tests",
+    "specs",
+    "stories",
+]);
+const STRUCTURAL_SOURCE_DIRECTORIES = new Set([
+    "components",
+    "pages",
+    "routes",
+    "layouts",
+]);
+const INSTALL_DEPENDENCY_FILES = [
+    "package.json",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+];
+
+async function createInstallDependencyFingerprint(
+    workspaceRoot: string,
+): Promise<string> {
+    const hash = createHash("sha256");
+
+    for (const filePath of INSTALL_DEPENDENCY_FILES) {
+        hash.update(`\0${filePath}\0`);
+
+        try {
+            hash.update(
+                await readFile(path.join(workspaceRoot, filePath), "utf8"),
+            );
+        } catch (error) {
+            if (
+                error instanceof Error &&
+                "code" in error &&
+                error.code === "ENOENT"
+            ) {
+                hash.update("<missing>");
+                continue;
+            }
+
+            throw error;
+        }
+    }
+
+    return hash.digest("hex");
+}
+
+function describeModelStageError(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
+function markReviewWithRepairFailure(
+    review: ReactAppAgentReview,
+    error: unknown,
+): ReactAppAgentReview {
+    return {
+        ...review,
+        accepted: false,
+        reason: [
+            "Automatic repair failed before a new attempt completed.",
+            `Repair error: ${describeModelStageError(error)}`,
+            "The latest generated draft was preserved for human review.",
+        ].join(" "),
+    };
+}
+
+function markReviewWithReviewerFailure(
+    review: ReactAppAgentReview,
+    error: unknown,
+): ReactAppAgentReview {
+    if (!review.accepted) {
+        return review;
+    }
+
+    return {
+        ...review,
+        accepted: true,
+        reason: [
+            review.reason,
+            "LLM reviewer was unavailable, so AppForge accepted the result based on deterministic install/build/eval checks.",
+            `Reviewer error: ${describeModelStageError(error)}`,
+        ].join(" "),
+    };
+}
+
+function createFallbackPlannerOutput(error: unknown): PlannerOutput {
+    return {
+        summary: [
+            "Planner Agent was unavailable, so AppForge used a local fallback plan.",
+            `Planner error: ${describeModelStageError(error)}`,
+        ].join(" "),
+        steps: [
+            {
+                id: "fallback-step-1",
+                title: "Implement the requested app",
+                description:
+                    "Build or update the React/Vite application to satisfy the user's core goal.",
+                acceptanceCriteria: [
+                    "The generated app visibly addresses the user goal",
+                    "Existing work is preserved when this is a continuation request",
+                ],
+            },
+            {
+                id: "fallback-step-2",
+                title: "Keep the implementation buildable",
+                description:
+                    "Use compact files, split complex pages into content/CSS/component files when needed, and keep local assets valid.",
+                acceptanceCriteria: [
+                    "npm install and npm run build complete successfully",
+                    "Referenced local assets exist under public/assets",
+                ],
+            },
+        ],
+    };
+}
+
+async function createPlannerOutputWithFallback(
+    input: {
+        plannerAgent: PlannerAgent;
+        goal: string;
+        context: string;
+        signal?: AbortSignal;
+    },
+): Promise<PlannerOutput> {
+    try {
+        return await input.plannerAgent.createPlan(
+            input.goal,
+            input.context,
+        );
+    } catch (error) {
+        if (input.signal?.aborted) {
+            input.signal.throwIfAborted();
+        }
+        return createFallbackPlannerOutput(error);
+    }
+}
+
+async function reviewWithOptionalLlm(
+    input: {
+        reviewerAgent: ReviewerAgent;
+        deterministicReview: ReactAppAgentReview;
+        goal: string;
+        plan: string[];
+        source: string;
+        buildPassed: boolean;
+        evaluationSummary: string;
+        assetEvidence: string;
+        signal?: AbortSignal;
+    },
+): Promise<{
+    review: ReactAppAgentReview;
+    llmReview?: ReviewerOutput;
+}> {
+    if (!input.deterministicReview.accepted) {
+        return {
+            review: input.deterministicReview,
+        };
+    }
+
+    try {
+        const llmReview = await input.reviewerAgent.review({
+            goal: input.goal,
+            plan: input.plan,
+            source: input.source,
+            buildPassed: input.buildPassed,
+            evaluationSummary: input.evaluationSummary,
+            assetEvidence: input.assetEvidence,
+        });
+
+        return {
+            llmReview,
+            review: combineReactAppAgentReviews(
+                input.deterministicReview,
+                llmReview,
+            ),
+        };
+    } catch (error) {
+        if (input.signal?.aborted) {
+            input.signal.throwIfAborted();
+        }
+        return {
+            review: markReviewWithReviewerFailure(
+                input.deterministicReview,
+                error,
+            ),
+        };
+    }
+}
+
+function labelModelProviderStage(
+    model: ModelProvider,
+    stage: string,
+    signal?: AbortSignal,
+    onActivity?: () => void,
+    hardTimeoutMs?: number,
+): ModelProvider {
+    return {
+        async complete(request) {
+            try {
+                signal?.throwIfAborted();
+                const normalizedHardTimeoutMs =
+                    hardTimeoutMs !== undefined &&
+                    Number.isFinite(hardTimeoutMs)
+                        ? Math.min(
+                              600_000,
+                              Math.max(100, Math.floor(hardTimeoutMs)),
+                          )
+                        : undefined;
+                const hardDeadlineSignal = normalizedHardTimeoutMs
+                    ? AbortSignal.timeout(normalizedHardTimeoutMs)
+                    : undefined;
+                const signals = [
+                    signal,
+                    request.signal,
+                    hardDeadlineSignal,
+                ].filter(
+                    (candidate): candidate is AbortSignal =>
+                        candidate !== undefined,
+                );
+                const effectiveSignal =
+                    signals.length > 1
+                        ? AbortSignal.any(signals)
+                        : signals[0];
+                const reportActivity =
+                    request.onActivity || onActivity
+                        ? () => {
+                              request.onActivity?.();
+                              onActivity?.();
+                          }
+                        : undefined;
+                const response = await model.complete({
+                    ...request,
+                    ...(effectiveSignal
+                        ? { signal: effectiveSignal }
+                        : {}),
+                    ...(reportActivity ? { onActivity: reportActivity } : {}),
+                });
+                effectiveSignal?.throwIfAborted();
+
+                return response;
+            } catch (error) {
+                if (signal?.aborted) {
+                    signal.throwIfAborted();
+                }
+                throw new Error(
+                    `${stage} failed: ${describeModelStageError(error)}`,
+                    {
+                        cause: error,
+                    },
+                );
+            }
+        },
+    };
+}
+
+function limitContextText(text: string | undefined, maxCharacters: number): string {
+    if (!text) {
+        return "";
+    }
+
+    return text.length > maxCharacters
+        ? `${text.slice(0, maxCharacters)}\n... omitted ${text.length - maxCharacters} context characters ...`
+        : text;
+}
+
+function formatCompactCoordinationContext(
+    coordination: CoordinateAgentsResult,
+): string {
+    return [
+        "Agent plan:",
+        ...coordination.plan.slice(0, 4).map(
+            (step, index) =>
+                // Acceptance criteria are appended at the end of each
+                // coordinated step. Preserve both implementation intent and
+                // the complete normal-sized criteria while bounding unusual
+                // model output by trimming only the middle.
+                `${index + 1}. ${sliceWithHeadAndTail(step, 650)}`,
+        ),
+        "",
+        "Agent assignments:",
+        "- planner: produced the plan",
+        "- coder: implement the app",
+        "- reviewer: verify the result",
+    ].join("\n");
+}
+
+function sliceWithHeadAndTail(
+    content: string,
+    maxCharacters: number,
+): string {
+    if (content.length <= maxCharacters) {
+        return content;
+    }
+
+    const headCharacters = Math.floor(maxCharacters / 2);
+    const tailCharacters = maxCharacters - headCharacters;
+
+    return [
+        content.slice(0, headCharacters),
+        `\n\n... omitted ${content.length - maxCharacters} characters from the middle of this file ...\n\n`,
+        content.slice(content.length - tailCharacters),
+    ].join("");
+}
+
+type WorkspaceSourceSnapshot = {
+    path: string;
+    content: string;
+};
+
+function toWorkspacePath(filePath: string): string {
+    return filePath.replace(/\\/gu, "/");
+}
+
+function isDiscoverableSourceFile(fileName: string): boolean {
+    return (
+        DISCOVERABLE_SOURCE_EXTENSION.test(fileName) &&
+        !EXCLUDED_SOURCE_FILE.test(fileName)
+    );
+}
+
+async function discoverWorkspaceSourceFiles(
+    workspaceRoot: string,
+): Promise<string[]> {
+    const sourceRoot = path.join(workspaceRoot, "src");
+    const discovered: string[] = [];
+    let visitedDirectories = 0;
+
+    async function visit(directory: string): Promise<void> {
+        if (
+            discovered.length >= MAX_DISCOVERED_SOURCE_FILES ||
+            visitedDirectories >= MAX_VISITED_SOURCE_DIRECTORIES
+        ) {
+            return;
+        }
+        visitedDirectories += 1;
+        let entries;
+
+        try {
+            entries = await readdir(directory, { withFileTypes: true });
+        } catch (error) {
+            if (
+                error instanceof Error &&
+                "code" in error &&
+                error.code === "ENOENT"
+            ) {
+                return;
+            }
+
+            throw error;
+        }
+
+        for (const entry of entries.sort((left, right) =>
+            left.name.localeCompare(right.name),
+        )) {
+            if (discovered.length >= MAX_DISCOVERED_SOURCE_FILES) {
+                break;
+            }
+            const entryPath = path.join(directory, entry.name);
+
+            if (entry.isDirectory()) {
+                if (!EXCLUDED_SOURCE_DIRECTORIES.has(entry.name.toLowerCase())) {
+                    await visit(entryPath);
+                }
+                continue;
+            }
+
+            if (entry.isFile() && isDiscoverableSourceFile(entry.name)) {
+                discovered.push(
+                    toWorkspacePath(path.relative(workspaceRoot, entryPath)),
+                );
+            }
+        }
+    }
+
+    await visit(sourceRoot);
+
+    return discovered;
+}
+
+function requestMentionsSourceFile(
+    filePath: string,
+    currentRequest: string,
+): boolean {
+    if (!currentRequest.trim()) {
+        return false;
+    }
+
+    const baseName = path.basename(
+        filePath,
+        path.extname(filePath),
+    );
+    const words = baseName
+        .replace(/([a-z\d])([A-Z])/gu, "$1 $2")
+        .split(/[^\p{L}\p{N}]+/gu)
+        .map((word) => word.toLocaleLowerCase())
+        .filter((word) => word.length >= 3);
+    const normalizedRequest = currentRequest.toLocaleLowerCase();
+
+    return words.some((word) => normalizedRequest.includes(word));
+}
+
+function isStructuralSourceFile(filePath: string): boolean {
+    return toWorkspacePath(filePath)
+        .toLocaleLowerCase()
+        .split("/")
+        .some((segment) => STRUCTURAL_SOURCE_DIRECTORIES.has(segment));
+}
+
+async function readPrioritizedWorkspaceFiles(input: {
+    workspaceRoot: string;
+    currentRequest: string;
+    coreFiles: string[];
+    maxFiles: number;
+}): Promise<WorkspaceSourceSnapshot[]> {
+    const discovered = await discoverWorkspaceSourceFiles(input.workspaceRoot);
+    const coreFiles = [...new Set(input.coreFiles.map(toWorkspacePath))];
+    const coreSet = new Set(coreFiles);
+    const additionalFiles = discovered.filter((filePath) => !coreSet.has(filePath));
+    const filenameMatches = additionalFiles.filter((filePath) =>
+        requestMentionsSourceFile(filePath, input.currentRequest),
+    );
+    const matchedSet = new Set(filenameMatches);
+    const structuralFiles = additionalFiles.filter(
+        (filePath) =>
+            !matchedSet.has(filePath) && isStructuralSourceFile(filePath),
+    );
+    const structuralSet = new Set(structuralFiles);
+    const remainingFiles = additionalFiles.filter(
+        (filePath) =>
+            !matchedSet.has(filePath) && !structuralSet.has(filePath),
+    );
+    const candidates = [
+        ...filenameMatches,
+        ...coreFiles,
+        ...structuralFiles,
+        ...remainingFiles,
+    ];
+    const snapshots: WorkspaceSourceSnapshot[] = [];
+
+    for (const filePath of candidates) {
+        if (snapshots.length >= input.maxFiles) {
+            break;
+        }
+
+        try {
+            snapshots.push({
+                path: filePath,
+                content: await readFile(
+                    path.join(input.workspaceRoot, filePath),
+                    "utf8",
+                ),
+            });
+        } catch (error) {
+            if (
+                error instanceof Error &&
+                "code" in error &&
+                error.code === "ENOENT"
+            ) {
+                continue;
+            }
+
+            throw error;
+        }
+    }
+
+    return snapshots;
+}
+
+export async function formatStaticEvaluationSource(
+    workspaceRoot: string,
+): Promise<string> {
+    const sourceFiles = await readPrioritizedWorkspaceFiles({
+        workspaceRoot,
+        currentRequest: "",
+        coreFiles: REVIEW_CORE_SOURCE_FILES,
+        maxFiles: MAX_STATIC_EVALUATION_SOURCE_FILES,
+    });
+    const perFileBudget =
+        sourceFiles.length > 0
+            ? Math.floor(
+                  MAX_STATIC_EVALUATION_CHARACTERS / sourceFiles.length,
+              )
+            : MAX_STATIC_EVALUATION_CHARACTERS;
+
+    return sourceFiles
+        .map(
+            (file) =>
+                `--- ${file.path} ---\n${sliceWithHeadAndTail(file.content, perFileBudget)}`,
+        )
+        .join("\n\n");
+}
+
+async function readAllWorkspaceSourceFiles(
+    workspaceRoot: string,
+): Promise<WorkspaceSourceSnapshot[]> {
+    const filePaths = await discoverWorkspaceSourceFiles(workspaceRoot);
+    const sourceFiles: WorkspaceSourceSnapshot[] = [];
+    let scannedCharacters = 0;
+
+    for (const filePath of filePaths) {
+        if (scannedCharacters >= MAX_ASSET_SCAN_CHARACTERS) {
+            break;
+        }
+
+        const absolutePath = path.join(workspaceRoot, filePath);
+        const fileStats = await stat(absolutePath);
+        const remainingCharacters =
+            MAX_ASSET_SCAN_CHARACTERS - scannedCharacters;
+
+        if (
+            fileStats.size > MAX_ASSET_SCAN_FILE_CHARACTERS ||
+            fileStats.size > remainingCharacters
+        ) {
+            continue;
+        }
+
+        const content = await readFile(absolutePath, "utf8");
+
+        if (content.length > remainingCharacters) {
+            continue;
+        }
+
+        sourceFiles.push({ path: filePath, content });
+        scannedCharacters += content.length;
+    }
+
+    return sourceFiles;
+}
+
+async function formatReviewerSourceEvidence(
+    workspaceRoot: string,
+    currentRequest = "",
+): Promise<string> {
+    const parts = [
+        "Generated source evidence for review:",
+        "This is a size-limited snapshot of the key generated files, not the full workspace.",
+    ];
+    const existingFiles = await readPrioritizedWorkspaceFiles({
+        workspaceRoot,
+        currentRequest,
+        coreFiles: REVIEW_CORE_SOURCE_FILES,
+        maxFiles: MAX_REVIEW_SOURCE_FILES,
+    });
+
+    const perFileBudget =
+        existingFiles.length > 0
+            ? Math.floor(MAX_REVIEW_SOURCE_CHARACTERS / existingFiles.length)
+            : MAX_REVIEW_SOURCE_CHARACTERS;
+
+    for (const file of existingFiles) {
+        const includedContent = sliceWithHeadAndTail(
+            file.content,
+            Math.min(perFileBudget, 2_500),
+        );
+
+        parts.push(`--- ${file.path} ---\n${includedContent}`);
+    }
+
+    return parts.join("\n\n");
+}
+
+function extractWorkspaceSourceLocation(
+    workspaceRoot: string,
+    stderr: string,
+): { relativePath: string; lineNumber: number } | undefined {
+    const sourceLocationPattern =
+        /(src[\\/][^:\r\n]+?\.(?:tsx?|jsx?|css|scss)):(\d+):\d+/giu;
+
+    for (const match of stderr.matchAll(sourceLocationPattern)) {
+        const candidate = match[1];
+        const lineNumber = match[2] ? Number(match[2]) : undefined;
+
+        if (!candidate || !lineNumber || !Number.isInteger(lineNumber)) {
+            continue;
+        }
+
+        const absolutePath = path.resolve(workspaceRoot, candidate);
+        const relativePath = path.relative(workspaceRoot, absolutePath);
+
+        if (
+            relativePath.startsWith("..") ||
+            path.isAbsolute(relativePath) ||
+            !toWorkspacePath(relativePath).startsWith("src/")
+        ) {
+            continue;
+        }
+
+        return {
+            relativePath: toWorkspacePath(relativePath),
+            lineNumber,
+        };
+    }
+
+    return undefined;
+}
+
+export async function formatBuildErrorSourceExcerpt(
+    workspaceRoot: string,
+    stderr: string,
+): Promise<string> {
+    const location = extractWorkspaceSourceLocation(workspaceRoot, stderr);
+
+    if (!location) {
+        return "";
+    }
+
+    try {
+        const source = await readFile(
+            path.join(workspaceRoot, location.relativePath),
+            "utf8",
+        );
+        const lines = source.split(/\r?\n/u);
+        const startLine = Math.max(1, location.lineNumber - 10);
+        const endLine = Math.min(lines.length, location.lineNumber + 10);
+
+        return [
+            `Source: ${location.relativePath}`,
+            ...lines
+                .slice(startLine - 1, endLine)
+                .map((line, index) => {
+                    const currentLine = startLine + index;
+                    const marker =
+                        currentLine === location.lineNumber ? ">" : " ";
+
+                    return `${marker} ${String(currentLine).padStart(4, " ")} | ${line}`;
+                }),
+        ].join("\n");
+    } catch {
+        return "";
+    }
+}
+
+export async function formatContinuationWorkspaceContext(
+    workspaceRoot: string,
+    currentRequest = "",
+): Promise<string> {
+    const parts = [
+        "Continuation mode:",
+        "Modify the existing application below. Preserve its working features and visual identity unless the request explicitly changes them.",
+        "Prefer focused edits. Do not rewrite the whole application unless the requested change requires it.",
+        formatChangeLocatorContext(currentRequest),
+        "Current workspace source:",
+    ].filter((part) => part.length > 0);
+    const requestsStyleContext = isStyleLocatorRequest(currentRequest) ||
+        /\b(?:css|style|logo|icon|brand|background|colou?r|contrast|spacing|layout|responsive)\b|样式|颜色|背景|对比|看不清|不可见|大小|尺寸|间距|布局|响应式|校徽|徽标|标志/iu.test(
+            currentRequest,
+        );
+    const requestsContentContext =
+        /\b(?:copy|content|text|news|article|character|legend|data|list)\b|文案|内容|文字|资讯|新闻|文章|角色|数据|列表/iu.test(
+            currentRequest,
+        );
+    const orderedSourceFiles = requestsStyleContext
+        ? [
+              "src/App.css",
+              "src/App.tsx",
+              "src/content.ts",
+              ...CONTINUATION_CORE_SOURCE_FILES,
+          ]
+        : requestsContentContext
+          ? [
+                "src/content.ts",
+                "src/App.tsx",
+                "src/App.css",
+                ...CONTINUATION_CORE_SOURCE_FILES,
+            ]
+          : CONTINUATION_CORE_SOURCE_FILES;
+    const uniqueSourceFiles = [...new Set(orderedSourceFiles)];
+    const existingFiles = await readPrioritizedWorkspaceFiles({
+        workspaceRoot,
+        currentRequest,
+        coreFiles: uniqueSourceFiles,
+        maxFiles: MAX_CONTINUATION_SOURCE_FILES,
+    });
+    const perFileBudget =
+        existingFiles.length > 0
+            ? Math.floor(
+                  MAX_CONTINUATION_SOURCE_CHARACTERS / existingFiles.length,
+              )
+            : MAX_CONTINUATION_SOURCE_CHARACTERS;
+
+    for (const file of existingFiles) {
+        const includedContent = sliceWithHeadAndTail(
+            file.content,
+            Math.min(perFileBudget, MAX_CONTINUATION_FILE_CHARACTERS),
+        );
+
+        parts.push(`--- ${file.path} ---\n${includedContent}`);
+    }
+
+    const sourceEvidence = formatLocatedSourceEvidence(
+        currentRequest,
+        existingFiles,
+    );
+    if (sourceEvidence.length > 0) {
+        parts.push(sourceEvidence);
+    }
+
+    return parts.length > 3 ? parts.join("\n\n") : "";
+}
+
+function isStyleLocatorRequest(text: string): boolean {
+    return (
+        isColorChangeRequest(text) ||
+        /颜色|背景|蓝色|蓝|青色|字体|字号|太大|过大|看不清|看不见|对比|卡片|方块|方格|格子|排版|布局|留白|图片|圆角/iu.test(
+            text,
+        )
+    );
+}
+
+function isColorChangeRequest(text: string): boolean {
+    return (
+        isRejectingBlueBackgroundRequest(text) ||
+        /(?:颜色|配色|色调|背景|主题色|主色|强调色|元素|东西).{0,20}(?:换|换成|换掉|改|改成|替换|调整|不好看|不喜欢|还在|出现)|(?:红色|红|橙色|橙|黄色|黄|绿色|绿|紫色|紫|粉色|粉|黑色|黑|白色|白|灰色|灰|金色|金|蓝色|蓝|青色).{0,20}(?:换|换掉|改掉|替换|不要|别|不喜欢|不好看|还在|出现|太多)|(?:换个|换成|改成|替换成).{0,16}(?:颜色|配色|色调|主题色|好看的颜色|高级颜色|别的颜色)|\b(?:color|palette|theme color|accent|background).{0,24}\b(?:change|replace|adjust|different|better|still|appears|too much)\b|\b(?:change|replace|adjust).{0,24}\b(?:color|palette|theme color|accent|background)\b/iu.test(
+            text,
+        )
+    );
+}
+
+function isRejectingBlueBackgroundRequest(text: string): boolean {
+    return /(?:不要|别|不是|不想|去掉|换掉|取消|不要再|不能|不该|不希望).{0,16}(?:蓝色|蓝|青色|蓝色背景|蓝背景|蓝色东西|蓝色元素)|(?:背景|主背景|颜色|配色|色调|元素|东西).{0,16}(?:不要|不是|别用|换掉|去掉|取消|改掉|替换).{0,16}(?:蓝色|蓝|青色)|(?:还有|仍然|还是|依旧|又有|出现).{0,12}(?:蓝色|蓝|青色|蓝色东西|蓝色元素)|(?:蓝色|蓝|青色).{0,16}(?:还在|出现|太多|不好看|换个|换掉|改掉|替换|别出现)|(?:蓝色|蓝|青色).{0,24}(?:好看的颜色|好看点|高级|正常)|(?:换个|换成|改成|替换成).{0,12}(?:好看的颜色|更好看的颜色|高级颜色|别的颜色)|\b(?:not|no|don't|dont|without|avoid|remove|change|replace).{0,24}\b(?:blue|cyan)\b|\b(?:background|main background|color|palette|accent).{0,24}\b(?:not|no|avoid|remove|change|replace).{0,24}\b(?:blue|cyan)\b|\b(?:blue|cyan).{0,24}\b(?:still|appears|showing|too much|replace|change|remove)\b/iu.test(
+        text,
+    );
+}
+
+function formatChangeLocatorContext(request: string): string {
+    const findings: string[] = [];
+
+    if (isRejectingBlueBackgroundRequest(request)) {
+        findings.push(
+            [
+                "Intent: improve blue/cyan usage that looks bad, excessive, or out of place.",
+                "Target files first: src/App.css, then src/App.tsx or src/pages/*.tsx only if inline styles define background.",
+                "Required code change: change the ugly or excessive blue/cyan page, hero, game-stage, game-map, panel, HUD, pill, chip, site-letter, border, glow, and gradient tokens. Prefer a subject-appropriate palette; for Valorant use red/black/charcoal/amber as the main palette and keep blue only as a small intentional highlight if it looks good.",
+                "Acceptance: generated CSS must contain changed background/accent rules for the offending blue/cyan areas; do not finish after changing only copy or unrelated text.",
+            ].join("\n"),
+        );
+    } else if (isColorChangeRequest(request)) {
+        findings.push(
+            [
+                "Intent: change the current color palette or visible color system.",
+                "Target files first: src/App.css, then src/App.tsx or src/pages/*.tsx only if inline styles define colors.",
+                "Required code change: locate current color tokens/gradients/backgrounds/borders/glows/pills/chips and replace the relevant palette with the requested target color. If the user does not name a target color, choose a subject-appropriate attractive palette and apply it consistently.",
+                "Acceptance: generated CSS must contain changed token/background/accent rules. Do not finish after changing only copy or unrelated layout.",
+            ].join("\n"),
+        );
+    }
+
+    if (/卡片|方块|方格|格子|盒子|card|cards|grid|blocky|boxed/iu.test(request)) {
+        findings.push(
+            [
+                "Intent: reduce card/block template feeling.",
+                "Target files first: src/App.css and page JSX classes.",
+                "Required code change: reduce dominant page-card/page-grid/card-like repeated surfaces; use type-specific layout such as game-stage/HUD/map, editorial-flow/timeline/map-panel, dashboard shell, product screen, or commerce stage.",
+                "Acceptance: do not merely rename cards or change colors; the dominant layout structure must change.",
+            ].join("\n"),
+        );
+    }
+
+    if (/字体|字号|太大|过大|巨大|超级大|font|typography|huge|massive/iu.test(request)) {
+        findings.push(
+            [
+                "Intent: reduce oversized typography.",
+                "Target files first: src/App.css.",
+                "Required code change: lower actual font-size/clamp rules for h1, h2, metrics, table labels, and HUD labels. Avoid 5rem+ headings and one-character-per-line labels.",
+            ].join("\n"),
+        );
+    }
+
+    if (isHorizontalPointLabelRequest(request)) {
+        findings.push(
+            [
+                "Intent: make tactical A/B/C point labels horizontal and readable.",
+                "Target files: affected JSX page plus src/App.css.",
+                "Required code change: change markup to game-sites/game-site/site-letter chips and CSS flex row wrap. Do not leave raw A / B / C in narrow table cells.",
+            ].join("\n"),
+        );
+    }
+
+    if (findings.length === 0) {
+        return "";
+    }
+
+    return [
+        "Change locator output:",
+        "Treat the following located edits as hard requirements before calling finish.",
+        ...findings.map((finding, index) => `Locator ${index + 1}:\n${finding}`),
+    ].join("\n");
+}
+
+function formatLocatedSourceEvidence(
+    request: string,
+    files: Array<{ path: string; content: string }>,
+): string {
+    if (!isColorChangeRequest(request)) {
+        return "";
+    }
+
+    const evidence: string[] = [];
+    const colorPattern =
+        /#[0-9a-f]{3,8}\b|rgb[a]?\([^)]*\)|hsl[a]?\([^)]*\)|oklch\([^)]*\)|\b(?:blue|cyan|sky|red|orange|amber|yellow|green|emerald|purple|violet|pink|rose|black|white|gray|grey|slate|zinc)\b/iu;
+    const colorRulePattern =
+        /color|background|border|shadow|glow|gradient|--[^:\n]*(?:accent|primary|color|bg|background|page|hero|panel)|game-stage|game-map|page-hero|hud-pill|site-letter|game-site/iu;
+
+    for (const file of files) {
+        if (!/\.(?:css|tsx|ts)$/iu.test(file.path)) {
+            continue;
+        }
+
+        const lines = file.content.split(/\r?\n/u);
+        for (const [index, line] of lines.entries()) {
+            if (!colorPattern.test(line) || !colorRulePattern.test(line)) {
+                continue;
+            }
+
+            const start = Math.max(0, index - 2);
+            const end = Math.min(lines.length, index + 3);
+            evidence.push(
+                [
+                    `Source evidence: ${file.path}:${index + 1}`,
+                    ...lines
+                        .slice(start, end)
+                        .map((sourceLine, offset) => {
+                            const lineNumber = start + offset + 1;
+                            const marker = lineNumber === index + 1 ? ">" : " ";
+                            return `${marker} ${String(lineNumber).padStart(4, " ")} | ${sourceLine}`;
+                        }),
+                ].join("\n"),
+            );
+
+            if (evidence.length >= 8) {
+                break;
+            }
+        }
+
+        if (evidence.length >= 8) {
+            break;
+        }
+    }
+
+    if (evidence.length === 0) {
+        return "";
+    }
+
+    return [
+        "Located source evidence for the color-change request:",
+        "The following existing lines are likely responsible for the current color palette, backgrounds, accents, or visible colored elements. Modify the relevant dominant rules directly.",
+        ...evidence,
+    ].join("\n\n");
+}
+
+async function formatFailedActionRepairContext(
+    workspaceRoot: string,
+    agent: RunCodingAgentLoopResult,
+): Promise<string> {
+    const failedStep = [...agent.steps]
+        .reverse()
+        .find((step) => !step.execution.ok);
+
+    if (!failedStep) {
+        return "";
+    }
+
+    const parts = [
+        "Previous failed implementation action:",
+        `Action: ${limitContextText(JSON.stringify(failedStep.action), 1_500)}`,
+        `Execution result: ${limitContextText(failedStep.execution.message, 1_000)}`,
+        "Do not repeat this action unchanged. Re-read the latest target source and choose oldText that exists exactly, or make a smaller coherent action.",
+    ];
+
+    if (failedStep.action.type !== "edit_file") {
+        return parts.join("\n");
+    }
+
+    const targetPath = path.resolve(
+        workspaceRoot,
+        failedStep.action.path,
+    );
+    const relativeTargetPath = path.relative(workspaceRoot, targetPath);
+
+    if (
+        relativeTargetPath.startsWith("..") ||
+        path.isAbsolute(relativeTargetPath)
+    ) {
+        return parts.join("\n");
+    }
+
+    try {
+        const latestTargetSource = await readFile(targetPath, "utf8");
+        parts.push(
+            `Latest target file source (${failedStep.action.path}):`,
+            sliceWithHeadAndTail(latestTargetSource, 2_800),
+        );
+    } catch (error) {
+        parts.push(
+            `Latest target file source could not be read: ${describeModelStageError(error)}`,
+        );
+    }
+
+    return parts.join("\n\n");
+}
 
 function createTraceEvent(
     id:string,
@@ -96,8 +1140,2174 @@ function createTraceEvent(
         createdAt:new Date().toISOString(),
     };
 }
+
+function formatEvaluationSummary(
+    evalResult: ReactAppEvalResult,
+    browserEval?: BrowserEvalResult,
+): string {
+    return [
+        `Deterministic evaluation: ${evalResult.passed ? "passed" : "failed"}`,
+        ...evalResult.checks.map(
+            (check) => `- ${check.name}: ${check.passed ? "passed" : "failed"}`,
+        ),
+        ...(browserEval
+            ? [
+                  `Browser evaluation: ${browserEval.passed ? "passed" : "warning only; non-blocking"}`,
+                  ...browserEval.checks.map(
+                      (check) =>
+                          [
+                              `- ${check.name}: ${check.passed ? "passed" : "warning"}`,
+                              check.message ? ` (${check.message})` : "",
+                          ].join(""),
+                  ),
+              ]
+            : []),
+    ].join("\n");
+}
+
+function formatAssetEvidence(
+    agent: RunCodingAgentLoopResult,
+): string {
+    const assetLines = agent.steps
+        .filter(
+            (step) =>
+                step.action.type === "get_image" &&
+                step.execution.ok,
+        )
+        .map((step) => {
+            if (step.action.type !== "get_image") {
+                return "";
+            }
+
+            return [
+                `- ${step.action.outputPath}`,
+                `  mode: ${step.action.mode}`,
+                `  altText: ${step.action.altText}`,
+                `  query: ${step.action.query}`,
+                `  result: ${step.execution.message}`,
+            ].join("\n");
+        })
+        .filter((line) => line.length > 0);
+
+    return assetLines.length > 0
+        ? ["Generated local assets:", ...assetLines].join("\n")
+        : "";
+}
+
+function extractLocalAssetReferences(source: string): string[] {
+    const references = new Set<string>();
+    const assetReferencePattern =
+        /["'`](\/assets\/[^"'`)\s?#]+(?:\?[^"'`)\s#]*)?(?:#[^"'`)\s]*)?)["'`]/gu;
+
+    for (const match of source.matchAll(assetReferencePattern)) {
+        const reference = match[1]?.split(/[?#]/u)[0];
+
+        if (reference) {
+            references.add(reference);
+        }
+    }
+
+    return [...references].sort();
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+    try {
+        await access(filePath);
+
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function formatLocalAssetReferenceEvidence(
+    workspaceRoot: string,
+): Promise<string> {
+    const references = await listWorkspaceLocalAssetReferences(workspaceRoot);
+
+    if (references.length === 0) {
+        return "";
+    }
+
+    const lines = references.map((reference) =>
+        `- ${reference.urlPath}: ${reference.exists ? "found" : "missing"} at ${reference.publicPath}`,
+    );
+
+    return ["Local asset references:", ...lines].join("\n");
+}
+
+async function listLocalAssetReferences(
+    workspaceRoot: string,
+    source: string,
+): Promise<LocalAssetReference[]> {
+    const references = extractLocalAssetReferences(source);
+
+    return Promise.all(
+        references.map(async (urlPath) => {
+            const publicPath = `public${urlPath}`;
+            const exists = await pathExists(
+                path.join(workspaceRoot, publicPath),
+            );
+
+            return {
+                urlPath,
+                publicPath,
+                exists,
+            };
+        }),
+    );
+}
+
+async function listWorkspaceLocalAssetReferences(
+    workspaceRoot: string,
+): Promise<LocalAssetReference[]> {
+    const sourceFiles = await readAllWorkspaceSourceFiles(workspaceRoot);
+
+    return listLocalAssetReferences(
+        workspaceRoot,
+        sourceFiles.map((file) => file.content).join("\n"),
+    );
+}
+
+function isAssetOnlyRepairGoal(goal: string): boolean {
+    return /logo|icon|badge|image|picture|asset|banner|hero|校徽|徽标|标志|图标|图片|图像|素材|横幅|首图/u.test(
+        goal.toLowerCase(),
+    );
+}
+
+function publicPathToUrlPath(publicPath: string): string {
+    return `/${publicPath.replace(/^public[\\/]/u, "").replace(/\\/gu, "/")}`;
+}
+
+function inferAssetAltText(goal: string, reference: LocalAssetReference): string {
+    const fileName = path.basename(reference.publicPath, path.extname(reference.publicPath));
+
+    if (/清华|tsinghua/u.test(goal) || /tsinghua/u.test(fileName)) {
+        return "清华大学校徽";
+    }
+
+    if (/logo|校徽|徽标|标志/u.test(goal)) {
+        return "页面 logo";
+    }
+
+    return fileName.replace(/[-_]+/gu, " ");
+}
+
+function escapeRegExp(text: string): string {
+    return text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function createNavigationTargetId(label: string, index: number): string {
+    const normalized = label
+        .trim()
+        .toLowerCase()
+        .replace(/&[a-z]+;/giu, "")
+        .replace(/[^a-z0-9\u4e00-\u9fff]+/gu, "-")
+        .replace(/^-+|-+$/gu, "");
+
+    if (/^(home|首页|主页)$/iu.test(normalized)) {
+        return "home";
+    }
+
+    return normalized.length > 0 ? normalized : `section-${index + 1}`;
+}
+
+export type NavigationRequestKind = "none" | "in-page" | "routes";
+
+export function classifyNavigationRequest(
+    goal: string,
+): NavigationRequestKind {
+    const asksForExplicitUtf8ChineseRoutes =
+        /(?:URL|地址栏).{0,12}(?:跳转|导航|切换)|路由|多页面|多个页面|独立页面|不同页面|子页面|详情页|新页面|浏览器(?:前进|后退)|前进后退|历史记录|[二三四五六七八九十\d]+个页面/iu.test(
+            goal,
+        );
+
+    if (asksForExplicitUtf8ChineseRoutes) {
+        return "routes";
+    }
+
+    const asksForExplicitRoutes =
+        /\b(?:routes?|routing|router|react[- ]?router|url paths?|url navigation|pathname|browser history|back and forward|multi[- ]?page|multiple pages|separate pages|distinct (?:pages|views)|subpages?|detail pages?)\b|(?:URL|地址栏).{0,12}(?:跳转|导航|切换)|路由|多页面|多个页面|独立页面|不同页面|子页面|详情页|新页面|地址栏|浏览器(?:前进|后退)|前进后退|历史记录|[二三四五六七八九十\d]+个页面/iu.test(
+            goal,
+        );
+
+    if (asksForExplicitRoutes) {
+        return "routes";
+    }
+
+    const asksForSamePageNavigation =
+        /\b(?:same[- ]page|same document|in[- ]page|(?:scroll|jump) to (?:the )?(?:matching )?(?:[\w-]+\s+){0,3}(?:sections?|anchors?|blocks?)|anchor links?|hash anchors?)\b|页面内|页内|当前页|同一页|本页|滚动到|锚点|跳转到.{0,12}(?:板块|区块|栏目|章节|位置)/iu.test(
+            goal,
+        );
+
+    if (asksForSamePageNavigation) {
+        return "in-page";
+    }
+
+    const asksForGenericUtf8ChineseCrossPageNavigation =
+        /(?:可以|可|能|能够|支持|实现|进行|并且|而且).{0,8}(?:跳转|切换|导航)|(?:跳转|切换|导航).{0,8}(?:功能|效果|入口)/iu.test(
+            goal,
+        ) &&
+        /页面|界面|网页|网站|主页|首页|介绍|展示|应用/iu.test(goal);
+
+    if (asksForGenericUtf8ChineseCrossPageNavigation) {
+        return "routes";
+    }
+
+    const asksForCrossPageNavigation =
+        /\bpage (?:navigation|switching)\b|\b(?:navigat(?:e|ion)|switch(?:ing)?)\s+between\s+(?:the\s+)?(?:pages|views)\b|\b(?:open|show|visit|go to|navigate to|switch to)\s+(?:the\s+)?[\w -]{0,40}\b(?:page|view)\b|\b(?:links?|buttons?|nav(?:igation)? items?|menu items?)\b.{0,50}\b(?:open|show|visit|go to|navigate to|switch to)\b.{0,40}\b(?:pages?|views?)\b|(?:页面|界面).{0,30}(?:跳转|导航|切换)|(?:跳转|导航|切换).{0,30}(?:页面|界面)|(?:链接|按钮|导航|栏目|菜单).{0,20}(?:对应|进入|打开|切换|跳转).{0,12}(?:页面|界面)|(?:进入|打开|切换|跳转).{0,12}(?:对应)?(?:页面|界面)/iu.test(
+            goal,
+        );
+
+    return asksForCrossPageNavigation ? "routes" : "none";
+}
+
+function isNavigationFallbackGoal(goal: string): boolean {
+    return classifyNavigationRequest(goal) === "in-page";
+}
+
+function formatNavigationExecutionContext(
+    requestKind: NavigationRequestKind,
+): string {
+    if (requestKind === "routes") {
+        return [
+            "Independent page routing requirement:",
+            "Route-shell-first execution order: the first implementation action must establish src/App.tsx with a URL-aware route skeleton, real navigation targets, and the matching popstate or hashchange listener. Use write_file for initial generation and edit_file only when exact existing source is supplied. Do this before adding route copy, images, or CSS polish.",
+            "Preserve the existing application and keep its current primary page as the home route unless the user explicitly asks to replace it.",
+            "Implement substantive, distinct views for every requested page instead of scrolling to sections in one document.",
+            "Navigation must update a route-specific URL and browser Back/Forward must restore the matching view. Use an already-installed router, a dependency-free History API router with popstate handling, or a URL-aware hash router with hashchange handling.",
+            'Use real path targets such as "/about" or route hashes such as "#/about". A route hash must begin with "#/" and render a distinct view; ordinary #section scrolling is not routing. Never use href="#", empty links, hidden sections, tabs, or text-only placeholders as substitutes for routes.',
+            "Each route must have verifiable unique content and a navigation control that reaches it.",
+            "After the route shell is connected, add complete, substantive route-specific content and polished responsive styling in small focused edits without rewriting already-working files.",
+        ].join("\n");
+    }
+
+    if (requestKind === "in-page") {
+        return [
+            "Same-page navigation requirement:",
+            "The request explicitly asks to move within the current document, so matching #section anchors or scrollIntoView targets are appropriate.",
+            "Keep every target id non-empty and ensure it exists on visible content.",
+        ].join("\n");
+    }
+
+    return "";
+}
+
+function addIdToFirstContainer(source: string, id: string): string {
+    if (new RegExp(`\\bid=["']${escapeRegExp(id)}["']`, "u").test(source)) {
+        return source;
+    }
+
+    return source.replace(
+        /<(main|section|div)(\s[^>]*)?>/u,
+        (match, tag: string, attributes = "") => {
+            if (/\bid=/u.test(attributes)) {
+                return match;
+            }
+
+            return `<${tag}${attributes} id="${id}">`;
+        },
+    );
+}
+
+function addIdNearVisibleLabel(
+    source: string,
+    label: string,
+    id: string,
+): string {
+    if (new RegExp(`\\bid=["']${escapeRegExp(id)}["']`, "u").test(source)) {
+        return source;
+    }
+
+    const escapedLabel = escapeRegExp(label.trim());
+    const headingPattern = new RegExp(
+        `<(h[1-6]|section|article|div)([^>]*)>([^<]{0,80}${escapedLabel}[^<]{0,80})`,
+        "u",
+    );
+
+    return source.replace(
+        headingPattern,
+        (match, tag: string, attributes: string, contentStart: string) => {
+            if (/\bid=/u.test(attributes)) {
+                return match;
+            }
+
+            return `<${tag}${attributes} id="${id}">${contentStart}`;
+        },
+    );
+}
+
+function listHashNavigationTargetFailures(source: string): string[] {
+    const ids = new Set(
+        [...source.matchAll(/\bid=(["'])([^"']+)\1/gu)].map(
+            (match) => match[2] ?? "",
+        ),
+    );
+    const targets = [
+        ...new Set(
+            [...source.matchAll(/\bhref=(["'])#([^"']+)\1/gu)]
+                .map((match) => match[2]?.trim() ?? "")
+                .filter((target) => target.length > 0),
+        ),
+    ];
+    const buttonTargets = [
+        ...new Set(
+            [
+                ...source.matchAll(
+                    /document\.getElementById\((["'])([^"']+)\1\)/gu,
+                ),
+            ]
+                .map((match) => match[2]?.trim() ?? "")
+                .filter((target) => target.length > 0),
+        ),
+    ];
+    const allTargets = [...new Set([...targets, ...buttonTargets])];
+
+    if (allTargets.length === 0) {
+        return ["No non-empty navigation targets were created."];
+    }
+
+    return allTargets
+        .filter((target) => !ids.has(target))
+        .map((target) => `Missing matching id for #${target}.`);
+}
+
+async function readRouteImplementationSource(
+    workspaceRoot: string,
+): Promise<string> {
+    const sourceRoot = path.join(workspaceRoot, "src");
+    const files: string[] = [];
+
+    async function collectSourceFiles(directory: string): Promise<void> {
+        let entries;
+
+        try {
+            entries = await readdir(directory, { withFileTypes: true });
+        } catch (error) {
+            if (
+                error instanceof Error &&
+                "code" in error &&
+                error.code === "ENOENT"
+            ) {
+                return;
+            }
+
+            throw error;
+        }
+
+        for (const entry of entries) {
+            const entryPath = path.join(directory, entry.name);
+
+            if (entry.isDirectory()) {
+                await collectSourceFiles(entryPath);
+                continue;
+            }
+
+            if (
+                entry.isFile() &&
+                /\.(?:[cm]?[jt]sx?)$/iu.test(entry.name) &&
+                !/\.test\.[cm]?[jt]sx?$/iu.test(entry.name)
+            ) {
+                files.push(entryPath);
+            }
+        }
+    }
+
+    await collectSourceFiles(sourceRoot);
+
+    const sourceParts = await Promise.all(
+        files.sort().map(async (filePath) => {
+            const relativePath = path.relative(workspaceRoot, filePath);
+
+            return `--- ${relativePath} ---\n${await readFile(filePath, "utf8")}`;
+        }),
+    );
+
+    return sourceParts.join("\n\n");
+}
+
+function normalizeRoutePath(candidate: string): string | undefined {
+    const pathWithoutQuery = candidate.trim().split(/[?#]/u, 1)[0] ?? "";
+
+    if (
+        !pathWithoutQuery.startsWith("/") ||
+        pathWithoutQuery.startsWith("//") ||
+        pathWithoutQuery === "/*" ||
+        pathWithoutQuery === "*"
+    ) {
+        return undefined;
+    }
+
+    return pathWithoutQuery.replace(/\/+$/u, "") || "/";
+}
+
+function extractHashRoutePaths(source: string): string[] {
+    return [
+        ...source.matchAll(/["']#(\/[^"']*)["']/giu),
+    ]
+        .map((match) => normalizeRoutePath(match[1] ?? ""))
+        .filter((routePath): routePath is string => routePath !== undefined);
+}
+
+function extractDefinedRoutePaths(source: string): string[] {
+    const candidates = [
+        ...source.matchAll(
+            /<Route\b[^>]*\bpath\s*=\s*(?:\{\s*)?["']([^"']+)["']/giu,
+        ),
+        ...source.matchAll(/\bpath\s*:\s*["']([^"']+)["']/giu),
+        ...source.matchAll(
+            /(?:window\.)?(?:location\.)?pathname\s*={2,3}\s*["']([^"']+)["']/giu,
+        ),
+        ...source.matchAll(
+            /["'](\/[^"']*)["']\s*:\s*(?:[A-Za-z_$][\w$]*|\([^)]*\)\s*=>|<)/giu,
+        ),
+    ]
+        .map((match) => normalizeRoutePath(match[1] ?? ""))
+        .filter((routePath): routePath is string => routePath !== undefined);
+
+    if (/<Route\b[^>]*\bindex(?:\s*=\s*\{?true\}?)?/iu.test(source)) {
+        candidates.push("/");
+    }
+
+    candidates.push(...extractHashRoutePaths(source));
+
+    return [...new Set(candidates)];
+}
+
+function listRouteImplementationFailures(source: string): string[] {
+    const failures: string[] = [];
+    const routePaths = extractDefinedRoutePaths(source);
+    const hasRouterRuntime =
+        /\b(?:BrowserRouter|HashRouter|createBrowserRouter|RouterProvider|useRoutes)\b|<Routes\b/iu.test(
+            source,
+        );
+    const usesHistoryApi =
+        /\bhistory\.(?:pushState|replaceState)\s*\(/u.test(source) &&
+        /(?:addEventListener\s*\(\s*["']popstate["']|onpopstate\s*=)/u.test(
+            source,
+        ) &&
+        /(?:window\.)?location\.pathname/u.test(source);
+    const hashRoutePaths = [...new Set(extractHashRoutePaths(source))];
+    const usesHashRouting =
+        /(?:window\.)?location\.hash/u.test(source) &&
+        /(?:addEventListener\s*\(\s*["']hashchange["']|onhashchange\s*=)/u.test(
+            source,
+        ) &&
+        (hashRoutePaths.length >= 2 || routePaths.length >= 2);
+    const hasLiteralRouteNavigation =
+        /<(?:Link|NavLink)\b[^>]*\bto\s*=|\bnavigate\s*\(\s*["']\/|\bhistory\.pushState\s*\(|<a\b[^>]*\bhref\s*=\s*["'](?:\/[^/]|#\/)/iu.test(
+            source,
+        );
+    const dataDrivenAnchorProperties = [
+        ...source.matchAll(
+            /<a\b[^>]*\bhref\s*=\s*\{\s*(?:[A-Za-z_$][\w$]*\s*\.\s*)?([A-Za-z_$][\w$]*)\s*\}/giu,
+        ),
+    ]
+        .map((match) => match[1])
+        .filter((property): property is string => property !== undefined);
+    const hasDataDrivenAnchorNavigation =
+        routePaths.length >= 2 &&
+        dataDrivenAnchorProperties.some((property) =>
+            new RegExp(
+                `\\b${escapeRegExp(property)}\\s*:\\s*["'](?:\\/[^/]|#\\/)[^"']*["']`,
+                "iu",
+            ).test(source),
+        );
+    const hasComputedHashAnchorNavigation =
+        routePaths.length >= 2 &&
+        (/<a\b[^>]*\bhref\s*=\s*\{\s*["']#["']\s*\+\s*(?:[A-Za-z_$][\w$]*\s*\.\s*)?path\s*\}/iu.test(
+            source,
+        ) ||
+            /<a\b[^>]*\bhref\s*=\s*\{\s*`#\$\{\s*(?:[A-Za-z_$][\w$]*\s*\.\s*)?path\s*\}`\s*\}/iu.test(
+                source,
+            ));
+    const hasRouteNavigation =
+        hasLiteralRouteNavigation ||
+        hasDataDrivenAnchorNavigation ||
+        hasComputedHashAnchorNavigation;
+    const placeholderNavigation = [
+        ...source.matchAll(
+            /\b(?:href|to)\s*=\s*(?:["'](?:#|javascript:void\(0\)|)["']|\{\s*["'](?:#|javascript:void\(0\)|)["']\s*\})(?=\s|\/?>)/giu,
+        ),
+    ];
+    const placeholderViews = [
+        ...source.matchAll(
+            /(?:>|["'])\s*(?:(?:content\s+)?coming soon|todo|placeholder|under construction|(?:内容|页面|功能|资料)?\s*(?:建设中|待完善|待补充)|敬请期待|稍后开放)[\s.。…!！?？-]*(?:<|["'])/giu,
+        ),
+    ];
+
+    if (placeholderNavigation.length > 0) {
+        failures.push('Placeholder navigation such as href="#" is not allowed.');
+    }
+
+    if (placeholderViews.length > 0) {
+        failures.push("Route views still contain placeholder-only content.");
+    }
+
+    if (!hasRouterRuntime && !usesHistoryApi && !usesHashRouting) {
+        failures.push(
+            "No URL-aware router, History API implementation with popstate handling, or hash router with hashchange handling was found.",
+        );
+    }
+
+    if (routePaths.length < 2) {
+        failures.push(
+            "Fewer than two distinct renderable route paths were defined.",
+        );
+    }
+
+    if (!hasRouteNavigation) {
+        failures.push("No navigation control points to a real URL path.");
+    }
+
+    return failures;
+}
+
+async function applyHashNavigationFallback(
+    workspaceRoot: string,
+    goal: string,
+    signal?: AbortSignal,
+): Promise<string[]> {
+    signal?.throwIfAborted();
+    if (!isNavigationFallbackGoal(goal)) {
+        return [];
+    }
+
+    const appPath = path.join(workspaceRoot, "src", "App.tsx");
+    let source: string;
+
+    try {
+        source = await readFile(appPath, "utf8");
+    } catch (error) {
+        if (signal?.aborted) {
+            signal.throwIfAborted();
+        }
+        return [];
+    }
+
+    const linkPattern =
+        /<a\b([^>]*?)href=(["'])#\2([^>]*?)>([^<]{1,40})<\/a>/gu;
+    const replacements: Array<{
+        original: string;
+        replacement: string;
+        label: string;
+        id: string;
+        kind: "link" | "button";
+    }> = [];
+
+    for (const match of source.matchAll(linkPattern)) {
+        const original = match[0];
+        const label = match[4]?.trim();
+
+        if (!label || /[{}]/u.test(label)) {
+            continue;
+        }
+
+        const id = createNavigationTargetId(label, replacements.length);
+        const replacement = original.replace(
+            /href=(["'])#\1/u,
+            `href="#${id}"`,
+        );
+
+        replacements.push({
+            original,
+            replacement,
+            label,
+            id,
+            kind: "link",
+        });
+    }
+
+    const buttonPattern =
+        /<button\b([^>]*)>([^<>{}]{1,40})<\/button>/gu;
+
+    for (const match of source.matchAll(buttonPattern)) {
+        const original = match[0];
+        const attributes = match[1] ?? "";
+        const label = match[2]?.trim();
+
+        if (
+            !label ||
+            /\bonClick\s*=/u.test(attributes) ||
+            /type=(["'])submit\1/u.test(attributes)
+        ) {
+            continue;
+        }
+
+        const id = createNavigationTargetId(label, replacements.length);
+        const nextAttributes = /\btype\s*=/u.test(attributes)
+            ? attributes
+            : `${attributes} type="button"`;
+        const replacement = `<button${nextAttributes} onClick={() => document.getElementById("${id}")?.scrollIntoView({ behavior: "smooth" })}>${label}</button>`;
+
+        replacements.push({
+            original,
+            replacement,
+            label,
+            id,
+            kind: "button",
+        });
+    }
+
+    if (replacements.length === 0) {
+        return [];
+    }
+
+    let nextSource = source;
+
+    for (const replacement of replacements) {
+        nextSource = nextSource.replace(
+            replacement.original,
+            replacement.replacement,
+        );
+
+        nextSource =
+            replacement.id === "home"
+                ? addIdToFirstContainer(nextSource, replacement.id)
+                : addIdNearVisibleLabel(
+                      nextSource,
+                      replacement.label,
+                      replacement.id,
+                  );
+    }
+
+    if (nextSource === source) {
+        return [];
+    }
+
+    const navigationFailures = listHashNavigationTargetFailures(nextSource);
+
+    if (navigationFailures.length > 0) {
+        return [];
+    }
+
+    signal?.throwIfAborted();
+    await writeFile(appPath, nextSource, "utf8");
+
+    return replacements.map(
+        (replacement) =>
+            replacement.kind === "button"
+                ? `Connected button "${replacement.label}" to #${replacement.id}`
+                : `Linked "${replacement.label}" to #${replacement.id}`,
+    );
+}
+
+function isVisualLayoutStabilizationRequest(goal: string): boolean {
+    if (
+        /\b(?:row|inline|horizontal|vertical|site|point|label|abc|a\/b\/c)\b|竖着|竖排|竖起来|纵向|横排|横着|一排|同一排|一行|同一行|并排|排成一排|点位|包点|站点|标签|ABC|abc|A\/B\/C/iu.test(
+            goal,
+        )
+    ) {
+        return true;
+    }
+
+    return /\b(?:contrast|readable|visibility|visible|font|typography|layout|spacing|blank|empty|oversized|too large|too tall|too prominent|overpowering|dominant|cramped|wraps?|line[- ]break|image|photo|fit|contain|crop|cropped|card|cards|card-like|grid|box|boxed|tile|tiles|panel|rounded|radius|huge|massive)\b|看不清|看不见|不可见|不清楚|读不清|字看不见|文字看不见|字体|字号|很大|太大|过大|太夸张|太抢眼|太突兀|抢眼|突兀|压住|压过|占太多|撑开|挤在|拥挤|断行|换行|一行一字|太小|缩小|小一点|小点|收一点|别那么大|不要那么大|景点名|地点名|路线名|路线节点|排版|布局|空白|留白|图片太高|图片超过|图.*超过|图片.*放|图.*放在|放在里面|裁切|裁掉|截断|重新搞|卡片|方格|格子|盒子|卡片感|像卡片|还是卡片|超级大|巨大|太巨大|面板太大|圆角|大圆角|不像游戏|游戏感/iu.test(
+        goal,
+    );
+}
+
+function formatVisualLayoutStabilizationCss(): string {
+    return `/* appforge visual-iteration-stabilizer start */
+:root {
+    --appforge-readable-ink: #191713;
+    --appforge-readable-muted: #5f554a;
+    --appforge-readable-surface: rgba(255, 252, 246, .96);
+}
+
+.site-header,
+.site-nav,
+.brand-link {
+    min-width: 0;
+}
+
+.brand-link strong,
+.nav-link,
+.page-kicker,
+.eyebrow {
+    overflow-wrap: anywhere;
+    text-wrap: balance;
+}
+
+.page-hero h1,
+.page-title,
+h1 {
+    font-size: clamp(2rem, 5vw, 4.2rem);
+    line-height: 1.04;
+    overflow-wrap: anywhere;
+    text-wrap: balance;
+}
+
+.page-card h2,
+.timeline-item h2,
+.callout h2,
+h2 {
+    font-size: clamp(1.18rem, 1.8vw, 1.65rem);
+    line-height: 1.22;
+    overflow-wrap: anywhere;
+    text-wrap: balance;
+}
+
+.page-card,
+.metric,
+.stat,
+.timeline-item,
+.callout,
+.quote,
+.media-panel {
+    min-width: 0;
+    overflow: hidden;
+}
+
+.page-card p,
+.page-card li,
+.page-card small,
+.timeline-item p,
+.timeline-item li,
+.quote,
+.quote p,
+.media-panel,
+.media-panel p {
+    color: var(--appforge-readable-muted);
+}
+
+.page-card h3,
+.page-card li strong,
+.page-card li b,
+.timeline-item strong,
+.timeline-item b,
+.timeline-item h3,
+.feature-list strong,
+.feature-list b,
+.feature-list li,
+.tag-list strong,
+.tag-list b,
+.tag,
+.step strong,
+.step b,
+.step h3,
+.route-stop,
+.place-name,
+.spot-name,
+.itinerary-stop,
+.route-node,
+[class*="route"] strong,
+[class*="route"] b,
+[class*="place"] strong,
+[class*="place"] b,
+[class*="spot"] strong,
+[class*="spot"] b,
+dt,
+dd strong,
+.metric h2,
+.metric h3,
+.stat h2,
+.stat h3,
+.feature-card h2,
+.feature-card h3,
+.info-card h2,
+.info-card h3,
+.culture-card h2,
+.culture-card h3,
+[class*="card"] h2,
+[class*="card"] h3 {
+    font-size: clamp(1rem, 1.45vw, 1.32rem);
+    line-height: 1.26;
+    letter-spacing: 0;
+    overflow-wrap: anywhere;
+    text-wrap: balance;
+    word-break: keep-all;
+}
+
+.metric strong,
+.stat strong,
+.metric-value,
+.stat-value,
+.number,
+[class*="metric"] strong,
+[class*="stat"] strong,
+[class*="value"] {
+    display: inline-block;
+    max-width: 100%;
+    font-size: clamp(1.8rem, 4vw, 3rem);
+    line-height: 1.04;
+    letter-spacing: -0.035em;
+    white-space: nowrap;
+    overflow-wrap: normal;
+    word-break: keep-all;
+}
+
+.metric p,
+.stat p,
+[class*="metric"] p,
+[class*="stat"] p {
+    font-size: clamp(.95rem, 1.2vw, 1.08rem);
+    line-height: 1.65;
+}
+
+.page-card--accent,
+.callout {
+    color: #fff7ea;
+}
+
+.page-card--accent p,
+.page-card--accent li,
+.callout p,
+.callout li {
+    color: #f8e9d1;
+}
+
+.page-card img,
+.page-card .page-image,
+.page-card picture,
+.page-card figure,
+.media-panel img,
+.media-panel .page-image {
+    display: block;
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    max-height: clamp(9rem, 20vw, 15rem);
+    aspect-ratio: 4 / 3;
+    object-fit: contain;
+    object-position: center;
+    background: linear-gradient(135deg, rgba(255, 249, 239, .96), rgba(232, 213, 184, .58));
+    border-radius: 1rem;
+}
+
+.page-card--wide img,
+.page-card--wide .page-image {
+    max-height: clamp(11rem, 24vw, 18rem);
+    aspect-ratio: 16 / 9;
+}
+
+.page-genre-game .game-stage {
+    border-radius: clamp(.65rem, 1.5vw, 1.1rem);
+    color: #f7fbff;
+    background: linear-gradient(135deg, rgba(7, 10, 18, .96), rgba(22, 18, 36, .94));
+}
+
+.page-genre-game .game-stage :is(p, li, td, th, span, small, strong),
+.page-genre-game :is(.hud-pill, .game-slab, .game-site, .game-lane, .game-agent, .game-round) {
+    text-shadow: 0 1px 10px rgba(0, 0, 0, .42);
+}
+
+.page-genre-game .game-stage :is(td, th),
+.page-genre-game .game-stage table {
+    color: #f7fbff;
+    background: rgba(7, 13, 24, .72);
+}
+
+.page-genre-game .game-stage > .game-hud,
+.page-genre-game .game-stage > .game-callout,
+.page-genre-game .game-stage > .metric-grid,
+.page-genre-game .game-stage > .timeline,
+.page-genre-game .game-stage > .game-sites {
+    grid-column: 1 / -1;
+}
+
+.page-genre-game,
+.page-genre-game * {
+    writing-mode: horizontal-tb;
+}
+
+.page-genre-game .game-sites {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: .65rem;
+    min-width: 0;
+}
+
+.page-genre-game .game-site {
+    flex: 1 1 8rem;
+    min-width: min(8rem, 100%);
+    display: inline-flex;
+    align-items: center;
+    gap: .55rem;
+    padding: .6rem .75rem;
+    color: #f7fbff;
+    background: linear-gradient(90deg, rgba(255, 70, 85, .18), rgba(124, 247, 255, .08));
+    border-left: 2px solid #ff4655;
+    clip-path: polygon(0 0, calc(100% - .55rem) 0, 100% .55rem, 100% 100%, 0 100%);
+}
+
+.page-genre-game .site-letter {
+    flex: 0 0 auto;
+    min-width: 2.1rem;
+    min-height: 2.1rem;
+    display: inline-grid;
+    place-items: center;
+    color: #071018;
+    background: #7cf7ff;
+    font-size: clamp(.95rem, 1.4vw, 1.15rem);
+    font-weight: 950;
+    line-height: 1;
+    white-space: nowrap;
+    word-break: keep-all;
+    overflow-wrap: normal;
+}
+
+.page-genre-game .hud-pill,
+.page-genre-game .game-slab {
+    min-height: 40px;
+    padding: .55rem .8rem;
+    border-radius: .4rem;
+    font-size: clamp(.72rem, .95vw, .9rem);
+    clip-path: polygon(.45rem 0, 100% 0, calc(100% - .45rem) 100%, 0 100%);
+}
+
+.page-genre-game .game-panel,
+.page-genre-game .game-callout,
+.page-genre-game [class*="card"],
+.page-genre-game [class*="panel"] {
+    max-width: 100%;
+    min-width: 0;
+    padding: clamp(.85rem, 1.9vw, 1.35rem);
+    color: #f7fbff;
+    border: 0;
+    border-left: 2px solid var(--page-warm, #7cf7ff);
+    border-radius: .35rem;
+    background: linear-gradient(110deg, rgba(7, 13, 24, .92), rgba(22, 30, 48, .82));
+    box-shadow: inset 0 0 0 1px rgba(124, 247, 255, .16), 0 18px 42px rgba(0, 0, 0, .18);
+    clip-path: polygon(0 0, calc(100% - .75rem) 0, 100% .75rem, 100% 100%, .75rem 100%, 0 calc(100% - .75rem));
+}
+
+.page-genre-game .game-panel h2,
+.page-genre-game .game-callout h2,
+.page-genre-game [class*="card"] h2,
+.page-genre-game [class*="panel"] h2,
+.page-genre-game [class*="card"] h3,
+.page-genre-game [class*="panel"] h3 {
+    color: #ffffff;
+    font-size: clamp(1.05rem, 1.55vw, 1.55rem);
+    line-height: 1.12;
+    letter-spacing: -0.015em;
+    text-shadow: 0 1px 12px rgba(0, 0, 0, .42);
+}
+
+.page-genre-game .game-panel p,
+.page-genre-game .game-panel li,
+.page-genre-game .game-callout p,
+.page-genre-game .game-callout li,
+.page-genre-game [class*="card"] p,
+.page-genre-game [class*="panel"] p,
+.page-genre-game [class*="card"] li,
+.page-genre-game [class*="panel"] li {
+    color: rgba(238, 248, 255, .86);
+    font-size: clamp(.88rem, 1vw, .98rem);
+    line-height: 1.55;
+}
+
+.page-genre-game .game-rail {
+    max-width: none;
+}
+
+.page-genre-game .metric-grid {
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+}
+
+.page-genre-game .metric {
+    color: #edf8ff;
+    background: rgba(7, 13, 24, .72);
+    border: 0;
+    border-top: 2px solid rgba(124, 247, 255, .55);
+    border-radius: .25rem;
+    box-shadow: inset 0 0 0 1px rgba(124, 247, 255, .16);
+}
+
+.page-genre-game .metric strong {
+    color: #fff;
+    font-size: clamp(1.1rem, 2.1vw, 1.8rem);
+    line-height: 1.08;
+    letter-spacing: -0.025em;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.page-media,
+.media-panel,
+figure,
+picture {
+    min-width: 0;
+}
+
+@media (min-width: 801px) and (max-width: 1120px) {
+    .route-main {
+        width: min(100% - 1.5rem, 920px);
+    }
+
+    .page-hero {
+        grid-template-columns: 1fr;
+    }
+
+    .page-grid {
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+    }
+
+    .page-card,
+    .page-card--wide {
+        grid-column: span 6;
+    }
+}
+
+@media (max-width: 800px) {
+    .route-main {
+        width: min(100% - 1rem, 720px);
+    }
+
+    .page-hero {
+        padding: clamp(1.4rem, 5vw, 2.4rem);
+    }
+}
+/* appforge visual-iteration-stabilizer end */
+`;
+}
+
+async function applyVisualLayoutStabilizationFallback(
+    workspaceRoot: string,
+    goal: string,
+    signal?: AbortSignal,
+): Promise<string[]> {
+    signal?.throwIfAborted();
+    if (!isVisualLayoutStabilizationRequest(goal)) {
+        return [];
+    }
+
+    const cssPath = path.join(workspaceRoot, "src", "App.css");
+    let source: string;
+
+    try {
+        source = await readFile(cssPath, "utf8");
+    } catch (error) {
+        if (signal?.aborted) {
+            signal.throwIfAborted();
+        }
+        return [];
+    }
+
+    const stabilizerCss = formatVisualLayoutStabilizationCss();
+    const withoutPrevious = source.replace(
+        /\n?\/\* appforge visual-iteration-stabilizer start \*\/[\s\S]*?\/\* appforge visual-iteration-stabilizer end \*\/\n?/u,
+        "\n",
+    );
+    const nextSource = `${withoutPrevious.trimEnd()}\n\n${stabilizerCss}`;
+
+    if (nextSource === source) {
+        return [];
+    }
+
+    signal?.throwIfAborted();
+    await writeFile(cssPath, nextSource, "utf8");
+
+    return [
+        "Applied readable-text, smaller-heading, card-image, and responsive layout CSS stabilization.",
+    ];
+}
+
+function formatPointSiteLabels(labels: string[]): string {
+    return `<div className="game-sites game-sites--compact">${labels
+        .map(
+            (label) =>
+                `<span className="game-site"><strong className="site-letter">${label}</strong></span>`,
+        )
+        .join("")}</div>`;
+}
+
+function applyTacticalPointMarkupFix(source: string): string {
+    return source
+        .replace(/\s\/\/\s/gu, " · ")
+        .replace(
+            /<td>\s*A\s*\/\s*B\s*\/\s*C\s*<\/td>/giu,
+            `<td>${formatPointSiteLabels(["A", "B", "C"])}</td>`,
+        )
+        .replace(
+            /<td>\s*A\s*\/\s*B\s*<\/td>/giu,
+            `<td>${formatPointSiteLabels(["A", "B"])}</td>`,
+        )
+        .replace(
+            /<td>\s*B\s*\/\s*C\s*<\/td>/giu,
+            `<td>${formatPointSiteLabels(["B", "C"])}</td>`,
+        );
+}
+
+function formatTacticalPointMarkupCss(): string {
+    return `/* appforge semantic-visual-fix start */
+.page-genre-game .data-table {
+    table-layout: fixed;
+    color: #f7fbff;
+    background: rgba(7, 13, 24, .84);
+    border: 1px solid rgba(124, 247, 255, .18);
+}
+
+.page-genre-game .data-table :is(th, td) {
+    color: #f7fbff;
+    vertical-align: top;
+    background: rgba(7, 13, 24, .42);
+    border-bottom-color: rgba(124, 247, 255, .18);
+    overflow-wrap: break-word;
+}
+
+.page-genre-game .data-table .game-sites--compact {
+    display: flex;
+    flex-flow: row wrap;
+    align-items: center;
+    gap: .35rem;
+    min-width: 5.5rem;
+}
+
+.page-genre-game .data-table .game-site {
+    flex: 0 0 auto;
+    min-width: 0;
+    padding: .2rem;
+    color: #071018;
+    background: transparent;
+    border-left: 0;
+    clip-path: none;
+}
+
+.page-genre-game .data-table .site-letter {
+    min-width: 1.75rem;
+    min-height: 1.75rem;
+    padding: .2rem .45rem;
+    display: inline-grid;
+    place-items: center;
+    color: #071018;
+    background: #7cf7ff;
+    font-size: .9rem;
+    font-weight: 950;
+    line-height: 1;
+    white-space: nowrap;
+    word-break: keep-all;
+    border-radius: .18rem;
+    text-shadow: none;
+}
+
+.page-genre-game :is(.eyebrow, .page-kicker, .hud-pill) {
+    text-shadow: 0 1px 12px rgba(0, 0, 0, .48);
+}
+/* appforge semantic-visual-fix end */
+`;
+}
+
+function unwrapSemanticVisualFixCss(css: string): string {
+    return css
+        .replace(/\/\* appforge semantic-visual-fix start \*\/\n?/u, "")
+        .replace(/\n?\/\* appforge semantic-visual-fix end \*\//u, "")
+        .trim();
+}
+
+function wrapSemanticVisualFixCss(css: string): string {
+    return `/* appforge semantic-visual-fix start */\n${css.trim()}\n/* appforge semantic-visual-fix end */\n`;
+}
+
+function formatAvoidBlueBackgroundCss(): string {
+    return `
+:root {
+    --appforge-valorant-bg: #080808;
+    --appforge-valorant-panel: #17100f;
+    --appforge-valorant-panel-2: #251312;
+    --appforge-valorant-red: #ff4655;
+    --appforge-valorant-amber: #f6b35b;
+}
+
+body:has(.page-genre-game),
+.site-genre-game,
+.page-genre-game {
+    background:
+        radial-gradient(circle at 18% 12%, rgba(255, 70, 85, .24), transparent 18rem),
+        radial-gradient(circle at 84% 18%, rgba(246, 179, 91, .16), transparent 16rem),
+        linear-gradient(135deg, #080808 0%, #17100f 52%, #251312 100%) !important;
+}
+
+.page-genre-game .page-hero,
+.page-genre-game .game-stage,
+.page-genre-game .game-map,
+.page-genre-game .game-hud,
+.page-genre-game .data-table,
+.page-genre-game :is(.game-panel, .game-callout, .media-panel, .quote, [class*="panel" i]) {
+    color: #fff8f2 !important;
+    background:
+        radial-gradient(circle at 20% 20%, rgba(255, 70, 85, .18), transparent 14rem),
+        linear-gradient(135deg, var(--appforge-valorant-panel), var(--appforge-valorant-panel-2)) !important;
+    border-color: rgba(255, 70, 85, .34) !important;
+}
+
+.page-genre-game .game-map::after {
+    background: linear-gradient(90deg, transparent, var(--appforge-valorant-amber), var(--appforge-valorant-red), transparent) !important;
+    box-shadow: 0 0 22px rgba(255, 70, 85, .42) !important;
+}
+
+.page-genre-game :is(.hud-pill, .game-slab, .site-letter, .tag, [class*="chip" i], [class*="pill" i]),
+.page-genre-game .data-table :is(th, .site-letter) {
+    color: #12090a !important;
+    background: linear-gradient(135deg, var(--appforge-valorant-red), var(--appforge-valorant-amber)) !important;
+    border-color: rgba(255, 70, 85, .45) !important;
+}
+
+.page-genre-game .game-site,
+.page-genre-game .game-lane,
+.page-genre-game .game-agent,
+.page-genre-game .game-round {
+    background: linear-gradient(90deg, rgba(255, 70, 85, .22), rgba(246, 179, 91, .08)) !important;
+    border-left-color: var(--appforge-valorant-red) !important;
+}
+
+body:has(.page-genre-game) :is([class*="hud" i], [class*="brief" i], [class*="status" i], [class*="ticker" i], [class*="meta" i], [class*="phase" i], [class*="carrier" i], [class*="econ" i], [class*="match" i], [class*="site" i], [class*="letter" i], [class*="map" i], [class*="stage" i], [class*="strip" i], [class*="bar" i], [style*="7cf7ff" i], [style*="38bdf8" i], [style*="cyan" i], [style*="blue" i], [style*="124, 247, 255" i], [style*="56, 189, 248" i]) {
+    color: #fff8f2 !important;
+    background-color: rgba(23, 16, 15, .94) !important;
+    background-image: linear-gradient(135deg, rgba(23, 16, 15, .96), rgba(37, 19, 18, .92)) !important;
+    border-color: rgba(255, 70, 85, .42) !important;
+    box-shadow: none !important;
+}
+
+body:has(.page-genre-game) :is([class*="pill" i], [class*="chip" i], [class*="tag" i], [class*="badge" i], [class*="letter" i], [class*="site-letter" i], [style*="7cf7ff" i], [style*="38bdf8" i], [style*="cyan" i], [style*="blue" i]) :is(span, strong, small, b, em),
+body:has(.page-genre-game) :is([class*="pill" i], [class*="chip" i], [class*="tag" i], [class*="badge" i], [class*="letter" i], [class*="site-letter" i]):not(:has(*)) {
+    color: #16090a !important;
+    background: linear-gradient(135deg, var(--appforge-valorant-red), var(--appforge-valorant-amber)) !important;
+    text-shadow: none !important;
+}
+
+body:has(.page-genre-game) :is([class*="hud" i], [class*="brief" i], [class*="status" i], [class*="ticker" i], [class*="meta" i], [class*="map" i], [class*="stage" i], [class*="strip" i], [class*="bar" i])::before,
+body:has(.page-genre-game) :is([class*="hud" i], [class*="brief" i], [class*="status" i], [class*="ticker" i], [class*="meta" i], [class*="map" i], [class*="stage" i], [class*="strip" i], [class*="bar" i])::after {
+    background: linear-gradient(90deg, var(--appforge-valorant-red), var(--appforge-valorant-amber)) !important;
+    border-color: rgba(255, 70, 85, .42) !important;
+    box-shadow: none !important;
+}
+`.trim();
+}
+
+function isLowContrastBrowserFailure(
+    browserEval: BrowserEvalResult | undefined,
+): boolean {
+    return (
+        browserEval?.passed === false &&
+        browserEval.checks.some(
+            (check) =>
+                !check.passed &&
+                (check.name === "visible text has sufficient contrast" ||
+                    /low-contrast|contrast|对比|看不清|看不见|不可见/iu.test(
+                        check.message ?? "",
+                    )),
+        )
+    );
+}
+
+function isBrowserContrastFailureForFallback(
+    browserEval: BrowserEvalResult | undefined,
+): boolean {
+    return (
+        browserEval?.passed === false &&
+        browserEval.checks.some((check) => {
+            if (check.passed) {
+                return false;
+            }
+
+            const detail = `${check.name} ${check.message ?? ""}`;
+            return (
+                check.name === "visible text has sufficient contrast" ||
+                /low[-\s]?contrast|contrast|visible text|needs\s+(?:4\.5|3)(?::1)?|wcag|对比|看不清|看不见|不可见/iu.test(
+                    detail,
+                )
+            );
+        })
+    );
+}
+
+function formatBrowserContrastHardeningCss(goal: string): string {
+    const gameTone = isLikelyTacticalGameRequest(goal)
+        ? `
+.site-genre-game .site-header,
+.page-genre-game .page-hero,
+.page-genre-game .game-stage,
+.page-genre-game :is(.game-panel, .game-callout, .page-card, .media-panel, .quote, .data-table, table, [class*="panel" i], [class*="card" i]) {
+    color: #f8fbff !important;
+    background: #071018 !important;
+    border-color: rgba(124, 247, 255, .35) !important;
+    text-shadow: none !important;
+}
+
+.site-genre-game .site-header :is(.brand-link, .nav-link) {
+    color: #f8fbff !important;
+    background: transparent !important;
+    text-shadow: none !important;
+}
+
+.site-genre-game .site-header :is(.brand-link strong, .brand-link small, .nav-link:not(.nav-link--active)) {
+    color: #f8fbff !important;
+    background: transparent !important;
+    text-shadow: 0 2px 14px rgba(0, 0, 0, .65) !important;
+}
+
+.site-genre-game .site-header :is(.nav-link--active, [aria-current="page"]) {
+    color: #071018 !important;
+    background: #7cf7ff !important;
+    text-shadow: none !important;
+}
+
+.page-genre-game :is(.game-panel, .game-callout, .page-card, .media-panel, .quote, .data-table, table, [class*="panel" i], [class*="card" i]) :is(h1, h2, h3, h4, p, li, span, strong, small, th, td) {
+    color: #f8fbff !important;
+    background: transparent !important;
+    text-shadow: none !important;
+}
+
+.page-genre-game :is(.data-table, table) :is(thead, tbody, tr, th, td) {
+    color: #f8fbff !important;
+    background: #071018 !important;
+    border-color: rgba(124, 247, 255, .28) !important;
+    text-shadow: none !important;
+}
+
+.page-genre-game :is(.data-table, table) th {
+    color: #071018 !important;
+    background: #7cf7ff !important;
+    font-weight: 900 !important;
+}
+
+.page-genre-game :is(.hud-pill, .game-slab, [class*="hud" i]) {
+    color: #071018 !important;
+    background: #7cf7ff !important;
+    border-color: rgba(5, 10, 18, .35) !important;
+    text-shadow: none !important;
+}
+
+.page-genre-game :is([class*="bomb" i], [class*="defus" i], [class*="clutch" i], [class*="status" i], [class*="alert" i], [class*="ready" i], [class*="timer" i], [class*="ticker" i], [class*="label" i], [class*="meta" i], [class*="tag" i], [class*="chip" i], [class*="badge" i], [class*="pill" i]) {
+    color: #071018 !important;
+    background: #7cf7ff !important;
+    border-color: rgba(5, 10, 18, .35) !important;
+    text-shadow: none !important;
+}
+
+.page-genre-game :is([class*="bomb" i], [class*="defus" i], [class*="clutch" i], [class*="status" i], [class*="alert" i], [class*="ready" i], [class*="timer" i], [class*="ticker" i], [class*="label" i], [class*="meta" i], [class*="tag" i], [class*="chip" i], [class*="badge" i], [class*="pill" i]) :is(h1, h2, h3, h4, p, span, strong, small, b, em) {
+    color: #071018 !important;
+    background: transparent !important;
+    text-shadow: none !important;
+}
+
+.page-genre-game :is(.hud-pill, .game-slab, [class*="hud" i], [class*="bomb" i], [class*="defus" i], [class*="clutch" i], [class*="status" i], [class*="alert" i], [class*="ready" i], [class*="timer" i], [class*="ticker" i], [class*="label" i], [class*="meta" i], [class*="tag" i], [class*="chip" i], [class*="badge" i], [class*="pill" i]):not(:has(*)) {
+    color: #071018 !important;
+    background: #7cf7ff !important;
+    text-shadow: none !important;
+}
+
+.page-genre-game :is(.metric, [class*="metric" i], [class*="stat" i]) {
+    color: #f8fbff !important;
+    background: #071018 !important;
+    border-color: rgba(124, 247, 255, .35) !important;
+    text-shadow: none !important;
+}
+
+.page-genre-game :is(.metric, [class*="metric" i], [class*="stat" i]) :is(strong, span, small, p) {
+    color: #f8fbff !important;
+    background: transparent !important;
+    text-shadow: none !important;
+}
+`
+        : "";
+
+    return `/* appforge browser-contrast-hardening start */
+:root {
+    --appforge-readable-ink: #f8fbff;
+    --appforge-readable-muted: #d7e2f3;
+    --appforge-readable-dark: #061018;
+    --appforge-readable-panel: rgba(5, 10, 18, .94);
+    --appforge-readable-panel-soft: rgba(9, 16, 28, .88);
+    --appforge-readable-accent: #7cf7ff;
+    --appforge-readable-warm: #ffd166;
+}
+
+body {
+    color: #111827;
+}
+
+body :is(header, nav, .header, .navbar, .topbar, .site-header, .app-header, [class*="header" i], [class*="navbar" i], [class*="topbar" i]) {
+    color: var(--appforge-readable-ink) !important;
+    background: linear-gradient(90deg, rgba(5, 8, 14, .98), rgba(18, 22, 30, .96)) !important;
+    border-color: rgba(124, 247, 255, .22) !important;
+}
+
+body :is(header, nav, .header, .navbar, .topbar, .site-header, .app-header, [class*="header" i], [class*="navbar" i], [class*="topbar" i]) :is(h1, h2, h3, p, span, strong, small, a, button) {
+    color: var(--appforge-readable-ink) !important;
+    text-shadow: 0 1px 10px rgba(0, 0, 0, .45);
+}
+
+body :is(header, nav, .header, .navbar, .topbar, .site-header, .app-header, [class*="header" i], [class*="navbar" i], [class*="topbar" i]) :is(.active, .current, [aria-current="page"], button[aria-current="page"], a[aria-current="page"]) {
+    color: var(--appforge-readable-dark) !important;
+    background: var(--appforge-readable-warm) !important;
+    text-shadow: none !important;
+}
+
+body :is(.hero, .page-hero, .game-hero, .banner, .intro, .masthead, [class*="hero" i], [class*="banner" i], [class*="masthead" i]) {
+    color: var(--appforge-readable-ink) !important;
+    background-color: var(--appforge-readable-panel) !important;
+}
+
+body :is(.hero, .page-hero, .game-hero, .banner, .intro, .masthead, [class*="hero" i], [class*="banner" i], [class*="masthead" i]) :is(h1, h2, h3, p, span, strong, small, a) {
+    color: var(--appforge-readable-ink) !important;
+    text-shadow: 0 2px 14px rgba(0, 0, 0, .58);
+}
+
+body :is(.eyebrow, .kicker, .badge, .pill, .tag, .chip, .hud-pill, [class*="badge" i], [class*="pill" i], [class*="tag" i], [class*="chip" i], [class*="hud" i], [class*="status" i], [class*="alert" i], [class*="ready" i], [class*="timer" i], [class*="ticker" i], [class*="bomb" i], [class*="defus" i], [class*="clutch" i]) {
+    color: var(--appforge-readable-dark) !important;
+    background: linear-gradient(135deg, var(--appforge-readable-accent), var(--appforge-readable-warm)) !important;
+    border-color: rgba(5, 10, 18, .28) !important;
+    text-shadow: none !important;
+}
+
+body :is(.page-kicker, .eyebrow, [class*="eyebrow" i], [class*="kicker" i]) {
+    display: inline-flex;
+    width: fit-content;
+    max-width: 100%;
+    color: var(--appforge-readable-dark) !important;
+    background: #ffd166 !important;
+    border: 1px solid rgba(5, 10, 18, .24) !important;
+    border-radius: .45rem !important;
+    padding: .25rem .55rem !important;
+    line-height: 1.25 !important;
+    text-shadow: none !important;
+}
+
+.site-genre-game :is(.brand-link strong, .brand-link small, .site-title, .site-subtitle, [class*="brand" i], [class*="logo" i]) {
+    color: var(--appforge-readable-ink) !important;
+    text-shadow: 0 2px 16px rgba(0, 0, 0, .72) !important;
+}
+
+.site-genre-game :is(.hud-pill, .metric, .metric strong, .metric span, [class*="hud" i], [class*="metric" i], [class*="stat" i]) {
+    color: var(--appforge-readable-dark) !important;
+    background: linear-gradient(135deg, var(--appforge-readable-accent), var(--appforge-readable-warm)) !important;
+    border-color: rgba(5, 10, 18, .35) !important;
+    text-shadow: none !important;
+}
+
+body :is(main, section, article, aside, .route-main, .page-view) :is(a:not(.brand-link):not(.nav-link), button, [role="button"], .button, .btn, .cta, .link, [class*="button" i], [class*="btn" i], [class*="cta" i], [class*="link" i]) {
+    color: var(--appforge-readable-dark) !important;
+    background-color: var(--appforge-readable-warm) !important;
+    border-color: rgba(5, 10, 18, .25) !important;
+    text-shadow: none !important;
+}
+
+body :is(.subject, .major, .discipline, .program, .faculty, .school, .label, .name, .item, [class*="subject" i], [class*="major" i], [class*="discipline" i], [class*="program" i], [class*="faculty" i], [class*="school" i], [class*="label" i], [class*="name" i]) {
+    color: var(--appforge-readable-dark) !important;
+    background-color: rgba(255, 255, 255, .94) !important;
+    text-shadow: none !important;
+}
+
+body :is(.card, .panel, .tile, .stat, .data-table, table, [class*="card" i], [class*="panel" i], [class*="tile" i]) {
+    color: #111827 !important;
+    background-color: rgba(255, 255, 255, .94);
+}
+
+body :is(.card, .panel, .tile, .stat, .data-table, table, [class*="card" i], [class*="panel" i], [class*="tile" i]) :is(h1, h2, h3, h4, p, li, td, th, span, strong, small) {
+    color: inherit !important;
+    text-shadow: none !important;
+}
+
+body :is(section, article, aside, main) :is(h1, h2, h3, h4, p, li, td, th, span, strong, small):not(header *):not(nav *):not(.hero *):not(.page-hero *):not(.game-hero *):not(.banner *):not(.masthead *) {
+    text-shadow: none;
+}
+
+.game-sites,
+.game-sites--compact {
+    display: flex !important;
+    flex-flow: row wrap !important;
+    align-items: center !important;
+    gap: .35rem !important;
+    writing-mode: horizontal-tb !important;
+}
+
+.game-site,
+.site-letter {
+    writing-mode: horizontal-tb !important;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
+}
+
+.site-letter {
+    color: var(--appforge-readable-dark) !important;
+    background: var(--appforge-readable-accent) !important;
+    text-shadow: none !important;
+}
+${gameTone}
+/* appforge browser-contrast-hardening end */
+`;
+}
+
+async function applyBrowserContrastHardeningFallback(
+    workspaceRoot: string,
+    goal: string,
+    browserEval: BrowserEvalResult | undefined,
+    signal?: AbortSignal,
+): Promise<string[]> {
+    signal?.throwIfAborted();
+
+    if (process.env.APPFORGE_AUTO_CONTRAST_HARDENING !== "1") {
+        return [];
+    }
+
+    if (!isBrowserContrastFailureForFallback(browserEval)) {
+        return [];
+    }
+
+    const cssPath = path.join(workspaceRoot, "src", "App.css");
+    let cssSource: string;
+
+    try {
+        cssSource = await readFile(cssPath, "utf8");
+    } catch (error) {
+        if (signal?.aborted) {
+            signal.throwIfAborted();
+        }
+        return [];
+    }
+
+    const contrastCss = formatBrowserContrastHardeningCss(goal);
+    const withoutPrevious = cssSource.replace(
+        /\n?\/\* appforge browser-contrast-hardening start \*\/[\s\S]*?\/\* appforge browser-contrast-hardening end \*\/\n?/u,
+        "\n",
+    );
+    const nextCss = `${withoutPrevious.trimEnd()}\n\n${contrastCss}`;
+
+    if (nextCss === cssSource) {
+        return [];
+    }
+
+    signal?.throwIfAborted();
+    await writeFile(cssPath, nextCss, "utf8");
+
+    return [
+        "Applied browser-driven WCAG contrast hardening while preserving the current visual/semantic request.",
+    ];
+}
+
+async function applyFocusedSemanticVisualFallback(
+    workspaceRoot: string,
+    goal: string,
+    signal?: AbortSignal,
+): Promise<string[]> {
+    signal?.throwIfAborted();
+
+    const needsPointFix =
+        isHorizontalPointLabelRequest(goal) || isLikelyTacticalGameRequest(goal);
+    const needsAvoidBlueBackground = isRejectingBlueBackgroundRequest(goal);
+
+    if (
+        !needsPointFix &&
+        !needsAvoidBlueBackground
+    ) {
+        return [];
+    }
+
+    const sourceTargets = [
+        path.join("src", "pages", "home.tsx"),
+        path.join("src", "App.tsx"),
+    ];
+    const messages: string[] = [];
+
+    for (const relativePath of sourceTargets) {
+        const filePath = path.join(workspaceRoot, relativePath);
+        let source: string;
+
+        try {
+            source = await readFile(filePath, "utf8");
+        } catch (error) {
+            if (signal?.aborted) {
+                signal.throwIfAborted();
+            }
+            continue;
+        }
+
+        const nextSource = needsPointFix
+            ? applyTacticalPointMarkupFix(source)
+            : source;
+
+        if (nextSource === source) {
+            continue;
+        }
+
+        signal?.throwIfAborted();
+        await writeFile(filePath, nextSource, "utf8");
+        messages.push(
+            `Rewrote tactical point labels and visible separator punctuation in ${toWorkspacePath(relativePath)}.`,
+        );
+    }
+
+    if (messages.length === 0 && !needsAvoidBlueBackground) {
+        return [];
+    }
+
+    const cssPath = path.join(workspaceRoot, "src", "App.css");
+    try {
+        const cssSource = await readFile(cssPath, "utf8");
+        const semanticCss = wrapSemanticVisualFixCss(
+            [
+                messages.length > 0
+                    ? unwrapSemanticVisualFixCss(formatTacticalPointMarkupCss())
+                    : "",
+                needsAvoidBlueBackground ? formatAvoidBlueBackgroundCss() : "",
+            ]
+                .filter((part) => part.length > 0)
+                .join("\n\n"),
+        );
+        const withoutPrevious = cssSource.replace(
+            /\n?\/\* appforge semantic-visual-fix start \*\/[\s\S]*?\/\* appforge semantic-visual-fix end \*\/\n?/u,
+            "\n",
+        );
+        const nextCss = `${withoutPrevious.trimEnd()}\n\n${semanticCss}`;
+
+        if (nextCss !== cssSource) {
+            signal?.throwIfAborted();
+            await writeFile(cssPath, nextCss, "utf8");
+            messages.push(
+                needsAvoidBlueBackground
+                    ? "Applied requested non-blue Valorant/game background palette override."
+                    : "Added high-contrast horizontal point-label CSS for tactical tables.",
+            );
+        }
+    } catch (error) {
+        if (signal?.aborted) {
+            signal.throwIfAborted();
+        }
+    }
+
+    return messages;
+}
+
+function formatPreparedAssetEvidence(
+    savedAssets: SavedImageAsset[],
+): string {
+    if (savedAssets.length === 0) {
+        return "";
+    }
+
+    return [
+        "Tool-prepared local assets:",
+        ...savedAssets.map((asset) =>
+            [
+                `- ${asset.path}`,
+                `  mediaType: ${asset.mediaType}`,
+                `  source: ${asset.source}`,
+                `  bytes: ${asset.byteLength}`,
+            ].join("\n"),
+        ),
+    ].join("\n");
+}
+
+async function evaluateLocalWorkspaceChangeResult(
+    input: {
+        goal: string;
+        workspaceRoot: string;
+        coordination: CoordinateAgentsResult;
+        messages: string[];
+        action?: {
+            path: string;
+            oldText: string;
+            newText: string;
+        };
+        traceName?: string;
+        traceTitle?: string;
+        evaluateBrowser?: EvaluateBrowserForAttempt;
+        signal?: AbortSignal;
+        onProgress?: RunReactAppAgentOptions["onProgress"];
+    },
+): Promise<RunReactAppAgentResult> {
+    const agent: RunCodingAgentLoopResult = {
+        steps: [
+            {
+                action: {
+                    type: "edit_file",
+                    path: input.action?.path ?? "src/App.tsx",
+                    oldText: input.action?.oldText ?? "local navigation placeholders",
+                    newText: input.action?.newText ?? "hash navigation links",
+                },
+                execution: {
+                    ok: true,
+                    message: input.messages.join("\n"),
+                },
+            },
+            {
+                action: {
+                    type: "finish",
+                    summary: "Applied a local deterministic workspace change.",
+                },
+                execution: {
+                    ok: true,
+                    message: "Applied a local deterministic workspace change.",
+                },
+            },
+        ],
+        finished: true,
+        stopReason: "finish",
+    };
+    await emitRunProgress(input.onProgress, "installing");
+    const install = await runWorkspaceCommand(
+        input.workspaceRoot,
+        {
+            command: "npm",
+            args: ["install"],
+        },
+        {
+            timeoutMs: INSTALL_COMMAND_TIMEOUT_MS,
+            ...(input.signal ? { signal: input.signal } : {}),
+        },
+    );
+    await emitRunProgress(input.onProgress, "building");
+    let build = await runWorkspaceCommand(
+        input.workspaceRoot,
+        {
+            command: "npm",
+            args: ["run", "build"],
+        },
+        {
+            timeoutMs: BUILD_COMMAND_TIMEOUT_MS,
+            ...(input.signal ? { signal: input.signal } : {}),
+        },
+    );
+    input.signal?.throwIfAborted();
+    await emitRunProgress(input.onProgress, "evaluating");
+    const appSource = await readFile(
+        path.join(input.workspaceRoot, "src", "App.tsx"),
+        "utf8",
+    );
+    const evaluationSource = await formatStaticEvaluationSource(
+        input.workspaceRoot,
+    );
+    const evalResult = evaluateReactApp({
+        source: evaluationSource,
+        goal: input.goal,
+    });
+    let browserEval: BrowserEvalResult | undefined;
+
+    if (
+        input.evaluateBrowser &&
+        install.exitCode === 0 &&
+        build.exitCode === 0
+    ) {
+        try {
+            await emitRunProgress(input.onProgress, "evaluating");
+            browserEval = await input.evaluateBrowser({
+                goal: input.goal,
+                workspaceRoot: input.workspaceRoot,
+                kind: "repair",
+                attemptNumber: 1,
+                ...(input.signal ? { signal: input.signal } : {}),
+            });
+        } catch (error) {
+            if (input.signal?.aborted) {
+                input.signal.throwIfAborted();
+            }
+            browserEval = {
+                passed: false,
+                checks: [
+                    {
+                        name: "browser preview starts",
+                        passed: false,
+                        message:
+                            error instanceof Error
+                                ? error.message
+                                : "Browser preview could not start",
+                    },
+                ],
+            };
+        }
+    }
+
+    const contrastHardeningMessages =
+        await applyBrowserContrastHardeningFallback(
+            input.workspaceRoot,
+            input.goal,
+            browserEval,
+            input.signal,
+        );
+
+    if (
+        contrastHardeningMessages.length > 0 &&
+        input.evaluateBrowser &&
+        install.exitCode === 0
+    ) {
+        agent.steps.splice(agent.steps.length - 1, 0, {
+            action: {
+                type: "edit_file",
+                path: "src/App.css",
+                oldText: "low-contrast browser-visible text",
+                newText: "WCAG-readable header, hero, navigation, tag, chip, and tactical label contrast rules",
+            },
+            execution: {
+                ok: true,
+                message: contrastHardeningMessages.join("\n"),
+                changed: true,
+            },
+        });
+        await emitRunProgress(input.onProgress, "building");
+        build = await runWorkspaceCommand(
+            input.workspaceRoot,
+            {
+                command: "npm",
+                args: ["run", "build"],
+            },
+            {
+                timeoutMs: BUILD_COMMAND_TIMEOUT_MS,
+                ...(input.signal ? { signal: input.signal } : {}),
+            },
+        );
+        input.signal?.throwIfAborted();
+
+        if (build.exitCode === 0) {
+            try {
+                await emitRunProgress(input.onProgress, "evaluating");
+                browserEval = await input.evaluateBrowser({
+                    goal: input.goal,
+                    workspaceRoot: input.workspaceRoot,
+                    kind: "repair",
+                    attemptNumber: 2,
+                    ...(input.signal ? { signal: input.signal } : {}),
+                });
+            } catch (error) {
+                if (input.signal?.aborted) {
+                    input.signal.throwIfAborted();
+                }
+                browserEval = {
+                    passed: false,
+                    checks: [
+                        {
+                            name: "browser preview starts",
+                            passed: false,
+                            message:
+                                error instanceof Error
+                                    ? error.message
+                                    : "Browser preview could not start",
+                        },
+                    ],
+                };
+            }
+        }
+    }
+
+    await emitRunProgress(input.onProgress, "reviewing");
+    const review = reviewReactAppAgentResult({
+        agent,
+        install,
+        build,
+        eval: evalResult,
+        ...(browserEval ? { browserEval } : {}),
+    });
+    const navigationFailures = listHashNavigationTargetFailures(appSource);
+    const finalReview =
+        isNavigationFallbackGoal(input.goal) &&
+        review.accepted &&
+        navigationFailures.length > 0
+            ? {
+                  ...review,
+                  accepted: false,
+                  reason: `Rejected because local navigation fallback produced invalid links: ${navigationFailures.join(
+                      " ",
+                  )}`,
+              }
+            : review;
+    const attempt: RunReactAppAgentAttempt = {
+        kind: "repair",
+        agent,
+        install,
+        build,
+        eval: evalResult,
+        ...(browserEval ? { browserEval } : {}),
+        review: finalReview,
+    };
+
+    return {
+        workspaceRoot: input.workspaceRoot,
+        coordination: input.coordination,
+        agent,
+        install,
+        build,
+        eval: evalResult,
+        ...(browserEval ? { browserEval } : {}),
+        review: finalReview,
+        attempts: [attempt],
+        trace: [
+            createTraceEvent(
+                input.traceName ?? "local-navigation-fallback",
+                input.traceTitle ?? "Apply local navigation fallback",
+                "succeeded",
+                input.messages.join("\n"),
+            ),
+            ...buildTraceEvents([attempt], input.coordination.plan.length),
+        ],
+    };
+}
+
+async function prepareMissingLocalAssets(
+    input: {
+        goal: string;
+        workspaceRoot: string;
+        imageAssetTool: ImageAssetTool | undefined;
+        imageAssetModes: ImageAssetMode[];
+        signal?: AbortSignal;
+    },
+): Promise<SavedImageAsset[]> {
+    if (
+        !input.imageAssetTool ||
+        !input.imageAssetModes.includes("generate") ||
+        !isAssetOnlyRepairGoal(input.goal)
+    ) {
+        return [];
+    }
+
+    const sourceFiles = await readAllWorkspaceSourceFiles(input.workspaceRoot);
+    const missingReferences = (
+        await listLocalAssetReferences(
+            input.workspaceRoot,
+            sourceFiles.map((file) => file.content).join("\n"),
+        )
+    ).filter((reference) => !reference.exists);
+
+    const savedAssets: SavedImageAsset[] = [];
+
+    for (const reference of missingReferences) {
+        input.signal?.throwIfAborted();
+        const saved = await input.imageAssetTool.save({
+            request: {
+                query: [
+                    input.goal,
+                    `Create a clean local visual asset for ${reference.urlPath}.`,
+                    `Alt text: ${inferAssetAltText(input.goal, reference)}.`,
+                ].join(" "),
+                mode: "generate",
+                altText: inferAssetAltText(input.goal, reference),
+            },
+            outputPath: reference.publicPath,
+            ...(input.signal ? { signal: input.signal } : {}),
+        });
+
+        savedAssets.push(saved);
+
+        const savedUrlPath = publicPathToUrlPath(saved.path);
+
+        if (savedUrlPath !== reference.urlPath) {
+            for (const sourceFile of sourceFiles) {
+                sourceFile.content = sourceFile.content
+                    .split(reference.urlPath)
+                    .join(savedUrlPath);
+            }
+        }
+    }
+
+    if (savedAssets.length > 0) {
+        input.signal?.throwIfAborted();
+        await Promise.all(
+            sourceFiles.map(async (sourceFile) => {
+                const absolutePath = path.join(
+                    input.workspaceRoot,
+                    sourceFile.path,
+                );
+                const currentContent = await readFile(absolutePath, "utf8");
+
+                if (currentContent !== sourceFile.content) {
+                    await writeFile(absolutePath, sourceFile.content, "utf8");
+                }
+            }),
+        );
+    }
+
+    return savedAssets;
+}
+
+async function evaluatePreparedAssetOnlyResult(
+    input: {
+        goal: string;
+        workspaceRoot: string;
+        coordination: CoordinateAgentsResult;
+        savedAssets: SavedImageAsset[];
+        evaluateBrowser?: EvaluateBrowserForAttempt;
+        signal?: AbortSignal;
+        onProgress?: RunReactAppAgentOptions["onProgress"];
+    },
+): Promise<RunReactAppAgentResult> {
+    const agent: RunCodingAgentLoopResult = {
+        steps: [
+            ...input.savedAssets.map((asset) => ({
+                action: {
+                    type: "get_image" as const,
+                    query: input.goal,
+                    mode: "generate" as const,
+                    altText: path.basename(
+                        asset.path,
+                        path.extname(asset.path),
+                    ),
+                    outputPath: asset.path,
+                },
+                execution: {
+                    ok: true,
+                    message: [
+                        `Saved image: ${asset.path}`,
+                        `Media type: ${asset.mediaType}`,
+                        `Source: ${asset.source}`,
+                        `Bytes: ${asset.byteLength}`,
+                    ].join("\n"),
+                },
+            })),
+            {
+                action: {
+                    type: "finish" as const,
+                    summary:
+                        "Prepared missing local image assets and updated references.",
+                },
+                execution: {
+                    ok: true,
+                    message:
+                        "Prepared missing local image assets and updated references.",
+                },
+            },
+        ],
+        finished: true,
+        stopReason: "finish",
+    };
+    await emitRunProgress(input.onProgress, "installing");
+    const install = await runWorkspaceCommand(
+        input.workspaceRoot,
+        {
+            command: "npm",
+            args: ["install"],
+        },
+        {
+            timeoutMs: INSTALL_COMMAND_TIMEOUT_MS,
+            ...(input.signal ? { signal: input.signal } : {}),
+        },
+    );
+    await emitRunProgress(input.onProgress, "building");
+    const build = await runWorkspaceCommand(
+        input.workspaceRoot,
+        {
+            command: "npm",
+            args: ["run", "build"],
+        },
+        {
+            timeoutMs: BUILD_COMMAND_TIMEOUT_MS,
+            ...(input.signal ? { signal: input.signal } : {}),
+        },
+    );
+    input.signal?.throwIfAborted();
+    await emitRunProgress(input.onProgress, "evaluating");
+    const evaluationSource = await formatStaticEvaluationSource(
+        input.workspaceRoot,
+    );
+    const evalResult = evaluateReactApp({
+        source: evaluationSource,
+        goal: input.goal,
+    });
+    let browserEval: BrowserEvalResult | undefined;
+
+    if (
+        input.evaluateBrowser &&
+        install.exitCode === 0 &&
+        build.exitCode === 0
+    ) {
+        try {
+            await emitRunProgress(input.onProgress, "evaluating");
+            browserEval = await input.evaluateBrowser({
+                goal: input.goal,
+                workspaceRoot: input.workspaceRoot,
+                kind: "repair",
+                attemptNumber: 1,
+                ...(input.signal ? { signal: input.signal } : {}),
+            });
+        } catch (error) {
+            if (input.signal?.aborted) {
+                input.signal.throwIfAborted();
+            }
+            browserEval = {
+                passed: false,
+                checks: [
+                    {
+                        name: "browser preview starts",
+                        passed: false,
+                        message:
+                            error instanceof Error
+                                ? error.message
+                                : "Browser preview could not start",
+                    },
+                ],
+            };
+        }
+    }
+
+    const localAssetReferences =
+        await listWorkspaceLocalAssetReferences(input.workspaceRoot);
+    const missingReferences = localAssetReferences.filter(
+        (reference) => !reference.exists,
+    );
+    await emitRunProgress(input.onProgress, "reviewing");
+    const deterministicReview = reviewReactAppAgentResult({
+        agent,
+        install,
+        build,
+        eval: evalResult,
+        ...(browserEval ? { browserEval } : {}),
+    });
+    const review: ReactAppAgentReview =
+        deterministicReview.accepted && missingReferences.length > 0
+            ? {
+                  ...deterministicReview,
+                  accepted: false,
+                  reason: `Rejected because local asset references are still missing: ${missingReferences
+                      .map((reference) => reference.urlPath)
+                      .join(", ")}.`,
+              }
+            : deterministicReview;
+    const attempt: RunReactAppAgentAttempt = {
+        kind: "repair",
+        agent,
+        install,
+        build,
+        eval: evalResult,
+        ...(browserEval ? { browserEval } : {}),
+        review,
+    };
+
+    return {
+        workspaceRoot: input.workspaceRoot,
+        coordination: input.coordination,
+        agent,
+        install,
+        build,
+        eval: evalResult,
+        ...(browserEval ? { browserEval } : {}),
+        review,
+        attempts: [attempt],
+        trace: [
+            createTraceEvent(
+                "prepare-missing-assets",
+                "Prepare missing local image assets",
+                input.savedAssets.length > 0 ? "succeeded" : "failed",
+                formatPreparedAssetEvidence(input.savedAssets),
+            ),
+            ...buildTraceEvents([attempt], input.coordination.plan.length),
+        ],
+    };
+}
+
+function formatImageToolContext(
+    modes: ImageAssetMode[],
+): string {
+    if (modes.length === 0) {
+        return "";
+    }
+
+    return [
+        "Image asset tool is available.",
+        `Available image modes: ${modes.join(", ")}.`,
+        'When the product goal asks for a logo, icon, badge, official brand mark, or known existing product image, plan a get_image action with mode "search" before writing src/App.tsx.',
+        'Use mode "search" with either a keyword phrase such as "Valorant official logo Riot Games svg png" or an http(s) page/direct image URL.',
+        'When the product goal asks for a new AI-created hero image, banner, illustration, or generic local visual asset, plan a get_image action with mode "generate" before writing src/App.tsx.',
+        "All image outputPath values must be inside public/assets.",
+        'React code must reference saved assets as "/assets/file-name.ext".',
+        "Do not rely on remote image URLs for generated app UI.",
+    ].join(" ");
+}
+
 function buildTraceEvents(
     attempts: RunReactAppAgentAttempt[],
+    plannerStepCount: number,
+    plannerFallbackSummary?: string,
 ): TraceEvent[] {
     const trace: TraceEvent[] = [
         createTraceEvent(
@@ -110,17 +3320,37 @@ function buildTraceEvents(
             "Coordinate planner, coder, and reviewer",
             "succeeded",
         ),
+        createTraceEvent(
+            "planner-agent",
+            plannerFallbackSummary
+                ? "Planner Agent unavailable; local fallback plan used"
+                : "Planner Agent created implementation plan",
+            plannerFallbackSummary ? "failed" : "succeeded",
+            plannerFallbackSummary ??
+                `${plannerStepCount} plan step(s) generated`,
+        ),
     ];
 
     attempts.forEach((attempt, index) => {
         const prefix = `${attempt.kind}-${index + 1}`;
 
         trace.push(
+            ...(attempt.parallelWorkstreams ?? []).map((workstream) =>
+                createTraceEvent(
+                    `${prefix}-coding-${workstream.id}`,
+                    `${workstream.role} Coding Agent: ${workstream.path}`,
+                    workstream.status === "succeeded"
+                        ? "succeeded"
+                        : "failed",
+                    workstream.errorMessage ??
+                        `${workstream.generationAttempts} generation attempt(s); ${workstream.summary}`,
+                ),
+            ),
             createTraceEvent(
                 `${prefix}-agent`,
                 `${attempt.kind} coding agent`,
                 attempt.agent.finished ? "succeeded" : "failed",
-                `${attempt.agent.steps.length} agent step(s) executed`,
+                `${attempt.agent.steps.length} agent step(s) executed; stop reason: ${attempt.agent.stopReason ?? "unknown"}`,
             ),
             createTraceEvent(
                 `${prefix}-install`,
@@ -146,9 +3376,31 @@ function buildTraceEvents(
                           `${prefix}-browser-eval`,
                           "Evaluate app in browser",
                           attempt.browserEval.passed ? "succeeded" : "failed",
-                          `${attempt.browserEval.checks.filter((check) => check.passed).length}/${attempt.browserEval.checks.length} browser checks passed`,
+                          [
+                              `${attempt.browserEval.checks.filter((check) => check.passed).length}/${attempt.browserEval.checks.length} browser checks passed`,
+                              ...attempt.browserEval.checks
+                                  .filter((check) => !check.passed)
+                                  .slice(0, 3)
+                                  .map((check) =>
+                                      check.message
+                                          ? `${check.name}: ${check.message}`
+                                          : check.name,
+                                  ),
+                          ].join("; "),
                       ),
                   ]
+                : []),
+            ...(attempt.llmReview
+                ? [
+                    createTraceEvent(
+                        `${prefix}-llm-review`,
+                        "LLM Reviewer inspected generated app",
+                        attempt.llmReview.accepted
+                            ? "succeeded"
+                            : "failed",
+                        attempt.llmReview.reason,
+                    ),
+                ]
                 : []),
             createTraceEvent(
                 `${prefix}-review`,
@@ -162,14 +3414,266 @@ function buildTraceEvents(
     return trace;
 }
 
+function isComplexReactAppRequest(text: string): boolean {
+    const explicitlyMinimal =
+        /\b(?:simple|minimal|basic|small|single[- ]screen|one[- ]screen)\b|简单|极简|基础页面|小型页面|单屏/iu.test(
+            text,
+        );
+
+    if (explicitlyMinimal) {
+        return false;
+    }
+
+    return (
+        /complex|homepage|landing|dashboard|portal|official site|many sections|multi-section|complete|polished|hero|banner|carousel|gallery|apex|legends|官网|官方网站|复杂|完整|好看|精美|首页|主页|门户|多板块|多个板块|多栏目|轮播|图片|配图|素材|清华|北大|大学官网|游戏官网|游戏页面|介绍页面|旅游介绍/iu.test(
+            text,
+        ) ||
+        /\b(?:create|build|design|make|generate|redesign)\b.{0,50}\b(?:page|site|homepage|landing|screen|interface)\b|(?:我想要|我要|给我|来一个|做|创建|生成|设计|制作|搭建).{0,40}(?:页面|界面|网站|主页|首页)|(?:介绍|展示).{0,30}(?:页面|界面|网站)/iu.test(
+            text,
+        )
+    );
+}
+
+function isFocusedVisualAdjustmentRequest(text: string): boolean {
+    const mentionsExistingBrandElement =
+        /\b(?:logo|icon|badge|emblem|brand mark)\b|图标|徽标|校徽|标志/iu.test(
+            text,
+        );
+    const asksForVisualAdjustment =
+        /\b(?:colou?r|contrast|background|visibility|visible|size|spacing|padding|margin|position|blend|typography|font|layout|readable|fit|contain|crop|cropped|prominent|overpowering|dominant|cramped|wraps?|line[- ]break|card|cards|card-like|grid|box|boxed|tile|tiles|panel|rounded|radius|huge|massive)\b|颜色|背景|对比|看不清|看不见|不可见|不清楚|读不清|字看不见|文字看不见|字体|字号|很大|太大|过大|太夸张|太抢眼|太突兀|抢眼|突兀|压住|压过|占太多|撑开|挤在|拥挤|断行|换行|一行一字|太小|缩小|小一点|小点|收一点|别那么大|不要那么大|放大|大小|尺寸|间距|位置|排版|布局|空白|留白|图片太高|图片超过|图片.*放|图.*放在|放在里面|裁切|裁掉|截断|融入|一样|卡片|方格|格子|盒子|卡片感|像卡片|还是卡片|超级大|巨大|太巨大|面板太大|圆角|大圆角|不像游戏|游戏感/iu.test(
+            text,
+        );
+    const mentionsVisualSurface =
+        /\b(?:text|font|title|heading|copy|card|cards|grid|box|tile|panel|image|photo|layout|section|page|screen|list|route|place|spot|stop|label|name)\b|文字|字体|字号|标题|名字|名称|卡片|方格|格子|盒子|面板|圆角|图片|照片|排版|布局|页面|界面|空白|留白|文化|景点|地点|路线|节点|清单/iu.test(
+            text,
+        );
+    const asksForHorizontalReadableLabels =
+        /\b(?:row|inline|horizontal|vertical|site|point|label|abc|a\/b\/c)\b|竖着|竖排|竖起来|纵向|横排|横着|一排|同一排|一行|同一行|并排|排成一排|点位|包点|站点|标签|ABC|abc|A\/B\/C/iu.test(
+            text,
+        );
+    const explicitlyRejectsBroadReplacement =
+        /\b(?:do not|don't|without)\s+(?:redesigning|rebuilding|replacing)|(?:不要|别|无需|不需要).{0,8}(?:重做|重建|重新设计)/iu.test(
+            text,
+        );
+    const asksForBroadReplacement =
+        !explicitlyRejectsBroadReplacement &&
+        /\b(?:create|build|redesign|rebuild|replace)\b.{0,30}\b(?:page|site|homepage|app)\b|\b(?:whole|entire)\s+(?:page|site|app)\b|重做|重建|重新设计|整个(?:页面|网站|应用)/iu.test(
+            text,
+        );
+
+    return (
+        (mentionsExistingBrandElement ||
+            mentionsVisualSurface ||
+            asksForHorizontalReadableLabels) &&
+        (asksForVisualAdjustment || asksForHorizontalReadableLabels) &&
+        !asksForBroadReplacement
+    );
+}
+
+function isFreshPageGenerationRequest(text: string): boolean {
+    return /\b(?:page|pages|site|website|homepage|landing|screen|interface|dashboard|portal|spa)\b|页面|界面|网页|网站|主页|首页|官网|门户|大屏/iu.test(
+        text,
+    );
+}
+
+function isHorizontalPointLabelRequest(text: string): boolean {
+    return /\b(?:row|inline|horizontal|vertical|site|point|label|abc|a\/b\/c)\b|ABC|abc|A\/B\/C|\u7ad6\u7740|\u7ad6\u6392|\u7ad6\u8d77\u6765|\u7eb5\u5411|\u6a2a\u6392|\u6a2a\u7740|\u4e00\u6392|\u540c\u4e00\u6392|\u4e00\u884c|\u540c\u4e00\u884c|\u5e76\u6392|\u6392\u6210\u4e00\u6392|\u70b9\u4f4d|\u5305\u70b9|\u7ad9\u70b9|\u6807\u7b7e/iu.test(
+        text,
+    );
+}
+
+function isLikelyTacticalGameRequest(text: string): boolean {
+    return /\b(?:valorant|apex|cs2|counter[- ]strike|overwatch|fps|tactical|esports|game|gaming|site|map|agent|loadout)\b|\u74e6\u7f57\u5170\u7279|\u65e0\u754f\u5951\u7ea6|\u70b9\u4f4d|\u5305\u70b9|\u5730\u56fe|\u6e38\u620f|\u7535\u7ade|\u6218\u672f|\u82f1\u96c4|Apex/iu.test(
+        text,
+    );
+}
+
+function hasExplicitHorizontalPointLabelStructure(source: string): boolean {
+    return /\b(?:game-sites|game-site|site-letter|site-label-row|point-label-row|label-row|abc-row|tactical-sites|site-chip|point-chip)\b/iu.test(
+        source,
+    );
+}
+
+function stillHasUngovernedPointLabelSource(source: string): boolean {
+    return /\b(?:A\s*(?:\/|SITE|POINT|\u70b9|\u5305\u70b9)|B\s*(?:\/|SITE|POINT|\u70b9|\u5305\u70b9)|C\s*(?:\/|SITE|POINT|\u70b9|\u5305\u70b9)|A\s*\/\s*B|A\s*\/\s*B\s*\/\s*C|ABC|abc)\b/iu.test(
+        source,
+    );
+}
+
+function hasRawSlashSeparatedPointText(source: string): boolean {
+    return /(?:["'`>]\s*)A\s*\/\s*B(?:\s*\/\s*C)?(?:\s*[<"'`])|(?:["'`>]\s*)B\s*\/\s*C(?:\s*[<"'`])|(?:["'`>]\s*)A\s*\n?\s*\/\s*\n?\s*B(?:\s*\n?\s*\/\s*\n?\s*C)?(?:\s*[<"'`])/iu.test(
+        source,
+    );
+}
+
+function hasVisibleDecorativeSlashNoise(source: string): boolean {
+    return /(?:["'`>][^"'`<>{}\n]{0,40})\s\/\/\s*(?:[^"'`<>{}\n]{0,20}[<"'`])|(?:["'`>][^"'`<>{}\n]{0,40})\s(?:::|--)\s*(?:[^"'`<>{}\n]{0,20}[<"'`])/u.test(
+        source,
+    );
+}
+
+async function enforceFocusedVisualSemanticReview(input: {
+    workspaceRoot: string;
+    executionRequest: string;
+    review: ReactAppAgentReview;
+}): Promise<ReactAppAgentReview> {
+    if (!input.review.accepted) {
+        return input.review;
+    }
+
+    const shouldCheckPointLabels =
+        isHorizontalPointLabelRequest(input.executionRequest) ||
+        isLikelyTacticalGameRequest(input.executionRequest);
+
+    if (!shouldCheckPointLabels) {
+        return input.review;
+    }
+
+    const source = await readRouteImplementationSource(input.workspaceRoot);
+
+    const failureReasons: string[] = [];
+
+    if (
+        isHorizontalPointLabelRequest(input.executionRequest) &&
+        stillHasUngovernedPointLabelSource(source) &&
+        !hasExplicitHorizontalPointLabelStructure(source)
+    ) {
+        failureReasons.push(
+            "the iteration appears to have left A/B/C or point labels in the old markup",
+        );
+    }
+
+    if (hasRawSlashSeparatedPointText(source)) {
+        failureReasons.push(
+            "the source still contains raw slash-separated point labels such as A / B / C, which can wrap into vertical characters in narrow columns",
+        );
+    }
+
+    if (hasVisibleDecorativeSlashNoise(source)) {
+        failureReasons.push(
+            "the source contains visible decorative separator punctuation such as //, ::, or -- in UI copy instead of using CSS decoration",
+        );
+    }
+
+    if (failureReasons.length === 0) {
+        return input.review;
+    }
+
+    return {
+        ...input.review,
+        accepted: false,
+        reason: [
+            `Rejected because ${failureReasons.join("; ")}.`,
+            "Tactical/game point labels must be separate horizontal chips or labels, and visual separators must be CSS, not literal punctuation noise.",
+            input.review.reason,
+        ].join(" "),
+    };
+}
+
+export function shouldUseParallelCodingAgents(input: {
+    request: string;
+    navigationKind: NavigationRequestKind;
+    resetWorkspace?: boolean;
+    enabled: boolean;
+}): boolean {
+    if (!input.enabled || input.resetWorkspace === false) {
+        return false;
+    }
+
+    // Independent URL views always use page-scoped calls, even when the user
+    // calls the requested app "simple". Same-document anchors do not.
+    if (input.navigationKind === "routes") {
+        return true;
+    }
+
+    if (
+        input.navigationKind === "in-page" ||
+        isFocusedVisualAdjustmentRequest(input.request)
+    ) {
+        return false;
+    }
+
+    // Fresh single-page work uses the same page contract with a pool size of
+    // one. Complexity affects the page prompt, never the number of Coding API
+    // calls. Non-page coding tasks stay on the general iterative agent.
+    return isFreshPageGenerationRequest(input.request);
+}
+
+function chooseAgentMaxSteps(input: {
+    kind: RunReactAppAgentAttempt["kind"];
+    hasImageAssetTool: boolean;
+    complexPageRequest: boolean;
+    routeRequest: boolean;
+}): number {
+    if (input.complexPageRequest) {
+        if (input.kind === "repair") {
+            return input.hasImageAssetTool ? 5 : 4;
+        }
+
+        return input.hasImageAssetTool ? 9 : 8;
+    }
+
+    if (input.routeRequest) {
+        if (input.kind === "repair") {
+            return input.hasImageAssetTool ? 4 : 3;
+        }
+
+        return input.hasImageAssetTool ? 7 : 6;
+    }
+
+    if (input.kind === "repair") {
+        return input.hasImageAssetTool ? 3 : 2;
+    }
+
+    return input.hasImageAssetTool ? 6 : 5;
+}
+
+function agentMadeWorkspaceProgress(
+    agent: RunReactAppAgentAttempt["agent"],
+): boolean {
+    return agent.steps.some(
+        (step) =>
+            step.execution.ok &&
+            step.execution.changed !== false &&
+            (step.action.type === "write_file" ||
+                step.action.type === "append_file" ||
+                step.action.type === "edit_file" ||
+                step.action.type === "get_image"),
+    );
+}
+
+function attemptMadeWorkspaceProgress(
+    attempt: RunReactAppAgentAttempt,
+): boolean {
+    return agentMadeWorkspaceProgress(attempt.agent);
+}
+
 export async function runReactAppAgent(
     options: RunReactAppAgentOptions,
 ): Promise<RunReactAppAgentResult> {
+    options.signal?.throwIfAborted();
+    await emitRunProgress(options.onProgress, "preparing");
     let provider: ModelProvider;
+    let parallelProvider: ModelProvider;
+    let plannerProvider: ModelProvider;
+    let reviewerProvider: ModelProvider;
     const maxRepairAttempts = options.maxRepairAttempts ?? 1;
+    const focusedRequest = options.currentRequest?.trim() || options.goal;
+    // A continuation can execute only the newest focused request because the
+    // existing draft supplies the accepted baseline. Fresh generation (also
+    // used after a zero-progress failure) must receive the accumulated goal,
+    // otherwise a short follow-up such as "add navigation" would regenerate a
+    // generic page and forget the original subject.
+    const executionRequest =
+        options.resetWorkspace === false
+            ? focusedRequest
+            : options.goal;
 
     if (options.model) {
         provider = options.model;
+        parallelProvider = options.model;
+        plannerProvider = options.model;
+        reviewerProvider = options.model;
     } else {
         const providerOptions: OpenAICompatibleProviderOptions = {
             baseUrl: options.llm.baseUrl,
@@ -181,76 +3685,805 @@ export async function runReactAppAgent(
             providerOptions.timeoutMs = options.llm.timeoutMs;
         }
 
+        if (options.llm.maxRetries !== undefined) {
+            providerOptions.maxRetries = options.llm.maxRetries;
+        }
+
+        if (options.llm.stream !== undefined) {
+            providerOptions.stream = options.llm.stream;
+        }
+
+        if (options.llm.serviceTier !== undefined) {
+            providerOptions.serviceTier = options.llm.serviceTier;
+        }
+
+        if (options.llm.maxTokens !== undefined) {
+            providerOptions.maxTokens = options.llm.maxTokens;
+        }
+
         provider = new OpenAICompatibleProvider(providerOptions);
+        parallelProvider = new OpenAICompatibleProvider({
+            ...providerOptions,
+            // Page retries are coordinated above the provider so a successful
+            // page is never regenerated because another page failed.
+            maxRetries: 0,
+            maxTokens:
+                options.llm.parallelMaxTokens ??
+                Math.min(options.llm.maxTokens ?? 8_000, 4_000),
+            thinking: options.llm.parallelThinking ?? "disabled",
+        });
+
+        plannerProvider = new OpenAICompatibleProvider({
+            ...providerOptions,
+            timeoutMs:
+                options.llm.plannerTimeoutMs ??
+                Math.min(options.llm.timeoutMs ?? 120_000, 30_000),
+            maxRetries: 0,
+        });
+        reviewerProvider = new OpenAICompatibleProvider({
+            ...providerOptions,
+            timeoutMs:
+                options.llm.reviewerTimeoutMs ??
+                Math.min(options.llm.timeoutMs ?? 120_000, 45_000),
+            maxRetries: 0,
+        });
     }
 
-    await copyWorkspaceTemplate(options.workspaceRoot, options.templateRoot);
-    const coordination = coordinateAgents({
-        goal: options.goal,
+    const imageAssetTool = options.imageAssetProvider
+        ? new ImageAssetTool({
+              workspaceRoot: options.workspaceRoot,
+              provider: options.imageAssetProvider,
+          })
+        : undefined;
+    const imageAssetModes = imageAssetTool
+        ? options.imageAssetModes ?? [
+              "search",
+              "generate",
+          ]
+        : [];
+    const imageToolContext = formatImageToolContext(imageAssetModes);
+    const navigationRequestKind = classifyNavigationRequest(executionRequest);
+    const navigationExecutionContext = formatNavigationExecutionContext(
+        navigationRequestKind,
+    );
+    const complexPageRequest =
+        !isFocusedVisualAdjustmentRequest(executionRequest) &&
+        isComplexReactAppRequest(executionRequest);
+    const useParallelCodingAgents = shouldUseParallelCodingAgents({
+        request: executionRequest,
+        navigationKind: navigationRequestKind,
+        ...(options.resetWorkspace !== undefined
+            ? { resetWorkspace: options.resetWorkspace }
+            : {}),
+        enabled:
+            options.parallelCoding ??
+            // Production uses a real provider. Keep injected-model tests and
+            // embedders on the legacy single-agent path unless they opt in.
+            options.model === undefined,
+    });
+    const complexPageExecutionContext = complexPageRequest
+        ? navigationRequestKind === "routes"
+            ? [
+                  "Complex routed-page execution profile:",
+                  "Connect the route shell in src/App.tsx first. The first action must establish real route links, route state, and browser history listeners in the existing app.",
+                  "Only after the route shell works, add complete, substantive route-specific content and polished responsive CSS in small focused edits.",
+                  "Preserve existing content and styling while making routing functional; do not restart the whole complex page.",
+              ].join("\n")
+            : [
+                  "Complex page execution profile:",
+                  "This app is likely a rich homepage, portal, game page, or image-heavy page.",
+                  "Use staged file architecture instead of a giant App.tsx.",
+                  "Recommended order: essential get_image actions, write src/content.ts, append_file additional content chunks if needed, write src/App.css, append_file CSS chunks if needed, write compact src/App.tsx, then finish.",
+                  "Keep App.tsx compact by importing data from ./content.js and styles from ./App.css.",
+                  "Do not rewrite finished files unless the next request is a repair or focused iteration.",
+              ].join("\n")
+        : "";
+
+    if (options.resetWorkspace !== false) {
+        await copyWorkspaceTemplate(
+            options.workspaceRoot,
+            options.templateRoot,
+        );
+        options.signal?.throwIfAborted();
+    }
+
+    const defaultCoordination = coordinateAgents({
+        goal: executionRequest,
+    });
+    const baseCoordination: CoordinateAgentsResult = defaultCoordination;
+
+    if (options.resetWorkspace === false) {
+        if (navigationRequestKind === "in-page") {
+            await emitRunProgress(options.onProgress, "coding");
+            const navigationFallbackMessages =
+                await applyHashNavigationFallback(
+                    options.workspaceRoot,
+                    executionRequest,
+                    options.signal,
+                );
+
+            if (navigationFallbackMessages.length > 0) {
+                return evaluateLocalWorkspaceChangeResult({
+                    goal: options.goal,
+                    workspaceRoot: options.workspaceRoot,
+                    coordination: {
+                        ...baseCoordination,
+                        plan: [
+                            "Detect an explicit same-page navigation request",
+                            "Patch existing placeholder links into valid hash navigation without rewriting the whole app",
+                            "Run install, build, static evaluation, and browser evaluation after the navigation fix",
+                        ],
+                    },
+                    messages: navigationFallbackMessages,
+                    ...(options.signal ? { signal: options.signal } : {}),
+                    ...(options.evaluateBrowser
+                        ? { evaluateBrowser: options.evaluateBrowser }
+                        : {}),
+                    ...(options.onProgress
+                        ? { onProgress: options.onProgress }
+                        : {}),
+                });
+            }
+        }
+
+        const semanticVisualMessages =
+            await applyFocusedSemanticVisualFallback(
+                options.workspaceRoot,
+                executionRequest,
+                options.signal,
+            );
+
+        if (semanticVisualMessages.length > 0) {
+            await emitRunProgress(options.onProgress, "coding");
+            return evaluateLocalWorkspaceChangeResult({
+                goal: options.goal,
+                workspaceRoot: options.workspaceRoot,
+                coordination: {
+                    ...baseCoordination,
+                    plan: [
+                        "Detect a focused tactical visual iteration on an existing draft",
+                        "Rewrite raw slash-separated point labels into horizontal semantic chips and remove visible separator noise",
+                        "Run install, build, static evaluation, and browser evaluation after the semantic visual fix",
+                    ],
+                },
+                messages: semanticVisualMessages,
+                action: {
+                    path: "src/pages/home.tsx",
+                    oldText: "raw point labels such as A / B / C and visible // separators",
+                    newText: "horizontal point-label chips and CSS-backed visual separators",
+                },
+                traceName: "local-semantic-visual-fix",
+                traceTitle: "Apply semantic tactical visual fix",
+                ...(options.signal ? { signal: options.signal } : {}),
+                ...(options.evaluateBrowser
+                    ? { evaluateBrowser: options.evaluateBrowser }
+                    : {}),
+                ...(options.onProgress
+                    ? { onProgress: options.onProgress }
+                    : {}),
+            });
+        }
+
+        await emitRunProgress(options.onProgress, "coding");
+        const savedAssets = await prepareMissingLocalAssets({
+            goal: executionRequest,
+            workspaceRoot: options.workspaceRoot,
+            imageAssetTool,
+            imageAssetModes,
+            ...(options.signal ? { signal: options.signal } : {}),
+        });
+
+        if (savedAssets.length > 0) {
+            return evaluatePreparedAssetOnlyResult({
+                goal: options.goal,
+                workspaceRoot: options.workspaceRoot,
+                coordination: {
+                    ...baseCoordination,
+                    plan: [
+                        "Prepare missing local image assets referenced by the current app",
+                        "Run install, build, static evaluation, and browser evaluation after the asset fix",
+                    ],
+                },
+                savedAssets,
+                ...(options.signal ? { signal: options.signal } : {}),
+                ...(options.evaluateBrowser
+                    ? { evaluateBrowser: options.evaluateBrowser }
+                    : {}),
+                ...(options.onProgress
+                    ? { onProgress: options.onProgress }
+                    : {}),
+            });
+        }
+    }
+
+    const continuationWorkspaceContext =
+        options.resetWorkspace === false
+            ? await formatContinuationWorkspaceContext(
+                  options.workspaceRoot,
+                  executionRequest,
+              )
+            : "";
+    const continuationPlanningContext =
+        options.resetWorkspace === false
+            ? [
+                  "Continuation mode:",
+                  "Plan a focused modification to the existing app.",
+                  "Preserve current behavior and visual identity unless the user explicitly asks to replace them.",
+              ].join(" ")
+            : "";
+
+    const plannerAgent = new PlannerAgent({
+        model: labelModelProviderStage(
+            plannerProvider,
+            "Planner Agent model request",
+            options.signal,
+            createRunProgressHeartbeat(options.onProgress, "planning"),
+            options.llm.plannerTimeoutMs ?? 30_000,
+        ),
     });
 
-    const coordinationContext = formatCoordinationContext(coordination);
+    await emitRunProgress(options.onProgress, "planning");
+    const plannerOutput = await createPlannerOutputWithFallback({
+        plannerAgent,
+        goal: executionRequest,
+        ...(options.signal ? { signal: options.signal } : {}),
+        context: [
+            formatSkillInstructions(reactViteAppSkill),
+            formatSkillInstructions(visualDesignSkill),
+            imageToolContext,
+            navigationExecutionContext,
+            complexPageExecutionContext,
+            continuationPlanningContext,
+        ]
+            .filter((part) => part.length > 0)
+            .join("\n\n"),
+    });
+    const plannedPages = useParallelCodingAgents
+        ? resolveReactPagePlans({
+              goal: executionRequest,
+              plannerOutput,
+              routeRequest: navigationRequestKind === "routes",
+          })
+        : [];
+    const reviewerAgent = new ReviewerAgent({
+        model: labelModelProviderStage(
+            reviewerProvider,
+            "Reviewer Agent model request",
+            options.signal,
+            createRunProgressHeartbeat(options.onProgress, "reviewing"),
+            options.llm.reviewerTimeoutMs ?? 45_000,
+        ),
+    });
 
-    const workspaceContext = formatSkillInstructions(reactViteAppSkill);
+    const plannerCoordinationPlan = plannerOutput.steps.map((step) =>
+        [
+            step.title,
+            step.description,
+            `Acceptance: ${step.acceptanceCriteria.join("; ")}`,
+        ].join(" - "),
+    );
+    const parallelCoordinationPlan = plannedPages.map((page) =>
+        [
+            `Run one Coding API for the ${page.label} webpage at ${page.path}`,
+            `Exclusive ownership: ${page.filePath}`,
+            `Acceptance: ${page.acceptanceCriteria.join("; ")}`,
+        ].join(" - "),
+    );
+    const pageAssignments = plannedPages.map((page) => ({
+        role: "coder" as const,
+        task: `Generate only the ${page.label} webpage (${page.path}) in ${page.filePath}`,
+    }));
+    const coordination: CoordinateAgentsResult = {
+        ...baseCoordination,
+        assignments: useParallelCodingAgents
+            ? [
+                  baseCoordination.assignments.find(
+                      (assignment) => assignment.role === "planner",
+                  ) ?? {
+                      role: "planner",
+                      task: `Plan the requested pages for: ${executionRequest}`,
+                  },
+                  ...pageAssignments,
+                  baseCoordination.assignments.find(
+                      (assignment) => assignment.role === "reviewer",
+                  ) ?? {
+                      role: "reviewer",
+                      task: `Review the generated pages for: ${executionRequest}`,
+                  },
+              ]
+            : baseCoordination.assignments,
+        plan:
+            useParallelCodingAgents
+                ? [
+                      ...parallelCoordinationPlan,
+                      "Merge every validated page proposal atomically, generate shared routing and styles locally, then install, build, evaluate, and review once",
+                      ...plannerCoordinationPlan,
+                  ].slice(0, 10)
+                : navigationRequestKind === "routes"
+                ? [
+                      options.resetWorkspace === false
+                          ? "Connect the route shell in src/App.tsx - First edit the existing App.tsx to add real route targets, route-specific rendering, and popstate or hashchange handling before content and CSS work - Acceptance: a real link changes the URL and browser Back/Forward restores the matching view"
+                          : "Create the route shell in src/App.tsx - First write App.tsx with real route targets, route-specific rendering, and popstate or hashchange handling before content and CSS work - Acceptance: a real link changes the URL and browser Back/Forward restores the matching view",
+                      ...plannerCoordinationPlan,
+                  ].slice(0, 10)
+                : plannerCoordinationPlan,
+    };
 
-    const baseContext = [
-        workspaceContext,
-        coordinationContext,
-        options.memoryContext,
-    ]
-        .filter((part) => part && part.length > 0)
-        .join("\n\n");
+    const compactCoordinationContext =
+        formatCompactCoordinationContext(coordination);
+
+
+
+    const fullGoalContractContext = options.currentRequest?.trim()
+        ? [
+              "Full accumulated goal contract:",
+              "Preserve requirements already satisfied by the current workspace while executing the focused request above.",
+              limitContextText(options.goal, 6_000),
+          ].join("\n")
+        : "";
+    const formatAttemptBaseContext = (currentWorkspaceContext: string) =>
+        [
+            formatSkillInstructions(reactViteAppSkill),
+            formatSkillInstructions(visualDesignSkill),
+            imageToolContext,
+            currentWorkspaceContext,
+            navigationExecutionContext,
+            complexPageExecutionContext,
+            compactCoordinationContext,
+            fullGoalContractContext,
+            limitContextText(options.memoryContext, 1_200),
+        ]
+            .filter((part) => part && part.length > 0)
+            .join("\n\n");
+    const baseContext = formatAttemptBaseContext(
+        continuationWorkspaceContext,
+    );
+    let successfulInstallCache:
+        | {
+              fingerprint: string;
+              result: RunReactAppAgentCommandResult;
+          }
+        | undefined;
+
+    async function installCurrentDependencies(): Promise<RunReactAppAgentCommandResult> {
+        options.signal?.throwIfAborted();
+        await emitRunProgress(options.onProgress, "installing");
+        const fingerprint = await createInstallDependencyFingerprint(
+            options.workspaceRoot,
+        );
+
+        if (successfulInstallCache?.fingerprint === fingerprint) {
+            return {
+                ...successfulInstallCache.result,
+                stdout: [
+                    "Reused successful npm install result because dependency manifests are unchanged.",
+                    successfulInstallCache.result.stdout,
+                ]
+                    .filter((part) => part.length > 0)
+                    .join("\n"),
+            };
+        }
+
+        const result = await runWorkspaceCommand(
+            options.workspaceRoot,
+            {
+                command: "npm",
+                args: ["install"],
+            },
+            {
+                timeoutMs: INSTALL_COMMAND_TIMEOUT_MS,
+                ...(options.signal ? { signal: options.signal } : {}),
+            },
+        );
+        options.signal?.throwIfAborted();
+
+        if (result.exitCode === 0) {
+            successfulInstallCache = {
+                // npm install may create or normalize package-lock.json, so
+                // cache the post-install fingerprint used by later repairs.
+                fingerprint: await createInstallDependencyFingerprint(
+                    options.workspaceRoot,
+                ),
+                result,
+            };
+        }
+
+        return result;
+    }
+
     async function runAttempt(
         kind: RunReactAppAgentAttempt["kind"],
         context: string,
         attemptNumber: number,
     ): Promise<RunReactAppAgentAttempt> {
-        const agent = await runCodingAgentLoop({
-            goal: options.goal,
-            model: provider,
-            workspaceRoot: options.workspaceRoot,
-            maxSteps: 3,
-            context,
+        options.signal?.throwIfAborted();
+        await emitRunProgress(
+            options.onProgress,
+            kind === "repair" ? "repairing" : "coding",
+        );
+        const maxSteps = chooseAgentMaxSteps({
+            kind,
+            hasImageAssetTool: imageAssetTool !== undefined,
+            complexPageRequest,
+            routeRequest: navigationRequestKind === "routes",
         });
 
-        const install = await runWorkspaceCommand(options.workspaceRoot, {
-            command: "npm",
-            args: ["install"],
-        });
+        const codingModel = labelModelProviderStage(
+            useParallelCodingAgents && kind === "initial"
+                ? parallelProvider
+                : provider,
+            kind === "repair"
+                ? "Repair Agent model request"
+                : useParallelCodingAgents && kind === "initial"
+                  ? "parallel Coding Agent model request"
+                  : "initial Coding Agent model request",
+            options.signal,
+            createRunProgressHeartbeat(
+                options.onProgress,
+                kind === "repair" ? "repairing" : "coding",
+            ),
+            options.llm.hardTimeoutMs ?? 240_000,
+        );
+        let parallelWorkstreams:
+            | ParallelCodingWorkstreamResult[]
+            | undefined;
+        let agent: RunCodingAgentLoopResult;
 
-        const build = await runWorkspaceCommand(options.workspaceRoot, {
-            command: "npm",
-            args: ["run", "build"],
-        });
+        if (useParallelCodingAgents && kind === "initial") {
+            const parallelResult = await runParallelReactPagesAgent({
+                goal: executionRequest,
+                plannerOutput,
+                model: codingModel,
+                workspaceRoot: options.workspaceRoot,
+                routeRequest: navigationRequestKind === "routes",
+                maxConcurrency: options.parallelCodingConcurrency ?? 2,
+                workstreamTimeoutMs:
+                    options.parallelCodingTimeoutMs ?? 240_000,
+                ...(imageAssetTool ? { imageAssetTool } : {}),
+                ...(imageAssetModes.length > 0 ? { imageAssetModes } : {}),
+                ...(options.topicLookupProvider
+                    ? { topicLookupProvider: options.topicLookupProvider }
+                    : {}),
+                ...(options.signal ? { signal: options.signal } : {}),
+            });
+            agent = parallelResult.agent;
+            parallelWorkstreams = parallelResult.workstreams;
 
-        const appSource = await readFile(
-            path.join(options.workspaceRoot, "src", "App.tsx"),
-            "utf8",
+            if (!agent.finished && agent.steps.length === 0) {
+                const fallbackModel = labelModelProviderStage(
+                    provider,
+                    "initial Coding Agent fallback model request",
+                    options.signal,
+                    createRunProgressHeartbeat(options.onProgress, "coding"),
+                    options.llm.hardTimeoutMs ?? 240_000,
+                );
+                agent = await runCodingAgentLoop({
+                    goal: executionRequest,
+                    model: fallbackModel,
+                    workspaceRoot: options.workspaceRoot,
+                    maxSteps,
+                    requireWorkspaceChange: true,
+                    mode: "coding",
+                    context: [
+                        context,
+                        "Workspace execution mode: initial generation. The parallel page-per-API path failed before producing any draft, so this fallback must prioritize producing a complete runnable webpage draft over perfect visual sophistication.",
+                        "Use the stable compact path: write src/App.css for the visual system, write src/App.tsx for the React page, then finish. Avoid huge JSON content, giant inline style objects, and oversized files.",
+                    ].join("\n\n"),
+                    ...(imageAssetTool ? { imageAssetTool } : {}),
+                    ...(imageAssetTool ? { imageAssetModes } : {}),
+                    ...(options.signal ? { signal: options.signal } : {}),
+                });
+            }
+        } else {
+            agent = await runCodingAgentLoop({
+                goal: executionRequest,
+                model: codingModel,
+                workspaceRoot: options.workspaceRoot,
+                maxSteps,
+                requireWorkspaceChange: true,
+                mode: kind === "repair" ? "repair" : "coding",
+                context: [
+                    context,
+                    kind === "initial"
+                        ? "Workspace execution mode: initial generation. Replace the starter with the requested application; use write_file when establishing src/App.tsx because no exact existing source is supplied."
+                        : "Workspace execution mode: existing draft. Preserve working code and use focused edits when exact current source is supplied.",
+                ].join("\n\n"),
+                ...(imageAssetTool
+                    ? { imageAssetTool }
+                    : {}),
+                ...(imageAssetTool
+                    ? {
+                          imageAssetModes,
+                      }
+                    : {}),
+                ...(options.signal ? { signal: options.signal } : {}),
+            });
+        }
+        options.signal?.throwIfAborted();
+
+        const madeWorkspaceProgress = agentMadeWorkspaceProgress(agent);
+
+        // A repair that times out before changing the draft is not a new
+        // attempt result. Surface the repair failure while keeping the last
+        // previewable attempt as the canonical result.
+        if (
+            kind === "repair" &&
+            attemptNumber > 1 &&
+            agent.stopReason === "model_error" &&
+            !madeWorkspaceProgress
+        ) {
+            throw new Error(
+                agent.errorMessage ??
+                    "Repair Agent model request failed before changing the draft",
+            );
+        }
+
+        if (!madeWorkspaceProgress) {
+            const failureDetail =
+                agent.errorMessage ??
+                "The Coding Agent completed without a file or image change.";
+            const reason = [
+                "No new draft was produced because the Coding Agent did not change the workspace.",
+                failureDetail,
+            ].join(" ");
+            const skippedCommand: RunReactAppAgentCommandResult = {
+                exitCode: 1,
+                stdout: "",
+                stderr:
+                    "Skipped because the Coding Agent produced no workspace changes.",
+            };
+            const evalResult: ReactAppEvalResult = {
+                passed: false,
+                checks: [
+                    {
+                        name: `Coding Agent produced a new draft: ${reason}`,
+                        passed: false,
+                    },
+                ],
+            };
+            const review: ReactAppAgentReview = {
+                accepted: false,
+                reason,
+                checks: {
+                    agentFinished: agent.finished,
+                    installPassed: false,
+                    buildPassed: false,
+                    evalPassed: false,
+                },
+            };
+
+            return {
+                kind,
+                agent,
+                install: skippedCommand,
+                build: skippedCommand,
+                eval: evalResult,
+                review,
+                ...(parallelWorkstreams
+                    ? { parallelWorkstreams }
+                    : {}),
+            };
+        }
+
+        const sourceAutofix = await autofixReactSource(
+            options.workspaceRoot,
+            options.signal,
         );
 
-        const evalResult = evaluateReactApp({
-            source: appSource,
+        const install = await installCurrentDependencies();
+
+        await emitRunProgress(options.onProgress, "building");
+        const buildResult = await runWorkspaceCommand(
+            options.workspaceRoot,
+            {
+                command: "npm",
+                args: ["run", "build"],
+            },
+            {
+                timeoutMs: BUILD_COMMAND_TIMEOUT_MS,
+                ...(options.signal ? { signal: options.signal } : {}),
+            },
+        );
+        options.signal?.throwIfAborted();
+        let build = sourceAutofix.changed
+            ? {
+                  ...buildResult,
+                  stdout: [
+                      ...sourceAutofix.messages,
+                      buildResult.stdout,
+                  ]
+                      .filter((part) => part.length > 0)
+                      .join("\n"),
+              }
+            : buildResult;
+
+        await emitRunProgress(options.onProgress, "evaluating");
+        const evaluationSource = await formatStaticEvaluationSource(
+            options.workspaceRoot,
+        );
+
+        const baseEvalResult = evaluateReactApp({
+            source: evaluationSource,
             goal: options.goal,
         });
+        const routeImplementationFailures =
+            navigationRequestKind === "routes"
+                ? listRouteImplementationFailures(
+                      await readRouteImplementationSource(
+                          options.workspaceRoot,
+                      ),
+                  )
+                : [];
+        const evalResult: ReactAppEvalResult =
+            routeImplementationFailures.length > 0
+                ? {
+                      passed: false,
+                      checks: [
+                          ...baseEvalResult.checks,
+                          {
+                              name: `has distinct URL routes: ${routeImplementationFailures.join(" ")}`,
+                              passed: false,
+                          },
+                      ],
+                  }
+                : baseEvalResult;
+        const assetEvidence = [
+            formatAssetEvidence(agent),
+            await formatLocalAssetReferenceEvidence(options.workspaceRoot),
+        ]
+            .filter((part) => part.length > 0)
+            .join("\n\n");
 
-        const browserEval =
+        let browserEval: BrowserEvalResult | undefined;
+
+        if (
             options.evaluateBrowser &&
             install.exitCode === 0 &&
             build.exitCode === 0
-                ? await options.evaluateBrowser({
-                      goal: options.goal,
-                      workspaceRoot: options.workspaceRoot,
-                      kind,
-                      attemptNumber,
-                  })
-                : undefined;
+        ) {
+            try {
+                await emitRunProgress(options.onProgress, "evaluating");
+                browserEval = await options.evaluateBrowser({
+                    goal: options.goal,
+                    workspaceRoot: options.workspaceRoot,
+                    kind,
+                    attemptNumber,
+                    ...(options.signal ? { signal: options.signal } : {}),
+                });
+            } catch (error) {
+                if (options.signal?.aborted) {
+                    options.signal.throwIfAborted();
+                }
+                // Preview infrastructure must not crash the coding run. Feed
+                // the failure into the normal repair/review loop instead.
+                browserEval = {
+                    passed: false,
+                    checks: [
+                        {
+                            name: "browser preview starts",
+                            passed: false,
+                            message:
+                                error instanceof Error
+                                    ? error.message
+                                    : "Browser preview could not start",
+                        },
+                    ],
+                };
+            }
+        }
 
-        const review = reviewReactAppAgentResult({
-            agent,
+        const contrastHardeningMessages =
+            await applyBrowserContrastHardeningFallback(
+                options.workspaceRoot,
+                options.goal,
+                browserEval,
+                options.signal,
+            );
+
+        if (
+            contrastHardeningMessages.length > 0 &&
+            options.evaluateBrowser &&
+            install.exitCode === 0
+        ) {
+            agent.steps.push({
+                action: {
+                    type: "edit_file",
+                    path: "src/App.css",
+                    oldText: "low-contrast browser-visible text",
+                    newText: "WCAG-readable header, hero, navigation, tag, chip, and tactical label contrast rules",
+                },
+                execution: {
+                    ok: true,
+                    message: contrastHardeningMessages.join("\n"),
+                    changed: true,
+                },
+            });
+            await emitRunProgress(options.onProgress, "building");
+            build = await runWorkspaceCommand(
+                options.workspaceRoot,
+                {
+                    command: "npm",
+                    args: ["run", "build"],
+                },
+                {
+                    timeoutMs: BUILD_COMMAND_TIMEOUT_MS,
+                    ...(options.signal ? { signal: options.signal } : {}),
+                },
+            );
+            options.signal?.throwIfAborted();
+
+            if (build.exitCode === 0) {
+                try {
+                    await emitRunProgress(options.onProgress, "evaluating");
+                    browserEval = await options.evaluateBrowser({
+                        goal: options.goal,
+                        workspaceRoot: options.workspaceRoot,
+                        kind,
+                        attemptNumber: attemptNumber + 1,
+                        ...(options.signal ? { signal: options.signal } : {}),
+                    });
+                } catch (error) {
+                    if (options.signal?.aborted) {
+                        options.signal.throwIfAborted();
+                    }
+                    browserEval = {
+                        passed: false,
+                        checks: [
+                            {
+                                name: "browser preview starts",
+                                passed: false,
+                                message:
+                                    error instanceof Error
+                                        ? error.message
+                                        : "Browser preview could not start",
+                            },
+                        ],
+                    };
+                }
+            }
+        }
+
+        const baseDeterministicReview = reviewReactAppAgentResult({
+            agent: {
+                ...agent,
+                madeProgress: agentMadeWorkspaceProgress(agent),
+            },
             install,
             build,
             eval: evalResult,
             ...(browserEval ? { browserEval } : {}),
+        });
+        const deterministicReview =
+            routeImplementationFailures.length > 0
+                ? {
+                      ...baseDeterministicReview,
+                      accepted: false,
+                      reason: `Rejected because the requested independent pages do not have a verifiable routing implementation: ${routeImplementationFailures.join(" ")}`,
+                  }
+                : baseDeterministicReview;
+        await emitRunProgress(options.onProgress, "reviewing");
+        const { review: reviewedResult, llmReview } = await reviewWithOptionalLlm({
+            reviewerAgent,
+            deterministicReview,
+            goal: options.goal,
+            plan: coordination.plan,
+            source: await formatReviewerSourceEvidence(
+                options.workspaceRoot,
+                executionRequest,
+            ),
+            buildPassed: build.exitCode === 0,
+            evaluationSummary: formatEvaluationSummary(
+                evalResult,
+                browserEval,
+            ),
+            assetEvidence,
+            ...(options.signal ? { signal: options.signal } : {}),
+        });
+        options.signal?.throwIfAborted();
+        const review = await enforceFocusedVisualSemanticReview({
+            workspaceRoot: options.workspaceRoot,
+            executionRequest,
+            review: reviewedResult,
         });
 
         return {
@@ -260,13 +4493,19 @@ export async function runReactAppAgent(
             build,
             eval: evalResult,
             ...(browserEval ? { browserEval } : {}),
+            ...(llmReview ? { llmReview } : {}),
             review,
+            ...(parallelWorkstreams
+                ? { parallelWorkstreams }
+                : {}),
         };
     }
     const attempts:RunReactAppAgentAttempt[]=[];
 
+    const firstAttemptKind: RunReactAppAgentAttempt["kind"] =
+        options.resetWorkspace === false ? "repair" : "initial";
     const firstAttempt = await runAttempt(
-        "initial",
+        firstAttemptKind,
         baseContext,
         1,
     );
@@ -279,8 +4518,17 @@ export async function runReactAppAgent(
             review: latestAttempt.review,
             repairAttempt,
             maxRepairAttempts,
+            attemptMadeProgress:
+                attemptMadeWorkspaceProgress(latestAttempt),
+            ...(latestAttempt.agent.stopReason
+                ? {
+                      attemptStopReason:
+                          latestAttempt.agent.stopReason,
+                  }
+                : {}),
         })
         ){
+        options.signal?.throwIfAborted();
         const repairContext = formatRepairContext({
             build: latestAttempt.build,
             eval: latestAttempt.eval,
@@ -288,22 +4536,55 @@ export async function runReactAppAgent(
                 ? { browserEval: latestAttempt.browserEval }
                 : {}),
             review: latestAttempt.review,
+            sourceExcerpt: await formatBuildErrorSourceExcerpt(
+                options.workspaceRoot,
+                latestAttempt.build.stderr,
+            ),
         });
+        const latestWorkspaceContext =
+            await formatContinuationWorkspaceContext(
+                options.workspaceRoot,
+                executionRequest,
+            );
+        const failedActionContext =
+            await formatFailedActionRepairContext(
+                options.workspaceRoot,
+                latestAttempt.agent,
+            );
 
-        const nextAttempt = await runAttempt(
-            "repair",
-            [
-                baseContext,
-                repairContext,
-            ].join("\n\n"),
-            repairAttempt + 2,
-        );
+        try {
+            const nextAttempt = await runAttempt(
+                "repair",
+                [
+                    formatAttemptBaseContext(latestWorkspaceContext),
+                    repairContext,
+                    failedActionContext,
+                ].join("\n\n"),
+                repairAttempt + 2,
+            );
 
-        attempts.push(nextAttempt);
-        latestAttempt = nextAttempt;
+            attempts.push(nextAttempt);
+            latestAttempt = nextAttempt;
+        } catch (error) {
+            if (options.signal?.aborted) {
+                options.signal.throwIfAborted();
+            }
+            latestAttempt = {
+                ...latestAttempt,
+                review: markReviewWithRepairFailure(
+                    latestAttempt.review,
+                    error,
+                ),
+            };
+
+            attempts[attempts.length - 1] = latestAttempt;
+            break;
+        }
+
         repairAttempt += 1;
     }
 
+    options.signal?.throwIfAborted();
     return {
         workspaceRoot: options.workspaceRoot,
         coordination,
@@ -314,9 +4595,20 @@ export async function runReactAppAgent(
         ...(latestAttempt.browserEval
             ? { browserEval: latestAttempt.browserEval }
             : {}),
+        ...(latestAttempt.llmReview
+            ? { llmReview: latestAttempt.llmReview }
+            : {}),
         review: latestAttempt.review,
         attempts,
-        trace: buildTraceEvents(attempts),
+        trace: buildTraceEvents(
+            attempts,
+            coordination.plan.length,
+            plannerOutput.summary.startsWith(
+                "Planner Agent was unavailable",
+            )
+                ? plannerOutput.summary
+                : undefined,
+        ),
     };
 
 }

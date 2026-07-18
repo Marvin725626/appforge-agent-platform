@@ -15,10 +15,14 @@ export type  CommandResult={
 export type CommandOptions = {
     timeoutMs?: number;
     maxOutputBytes?: number;
+    signal?: AbortSignal;
 };
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+// Cold dependency installs for generated apps regularly exceed 30 seconds.
+// The enclosing run still has its own cancellation signal and hard deadline.
+const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
+const PROCESS_CLEANUP_TIMEOUT_MS = 5_000;
 
 type ResolvedCommand = {
     executable: string;
@@ -49,59 +53,123 @@ function resolveCommand(request: WorkspaceCommand): ResolvedCommand {
     };
 }
 
-function terminateProcessTree(child: ChildProcess): Promise<void> {
+type ProcessTerminationDependencies = {
+    platform?: NodeJS.Platform;
+    cleanupTimeoutMs?: number;
+    spawnProcess?: typeof spawn;
+};
+
+function tryKill(child: ChildProcess): void {
+    try {
+        child.kill();
+    } catch {
+        // The process may already have exited between the state check and kill.
+    }
+}
+
+function tryUnref(child: ChildProcess): void {
+    try {
+        child.unref();
+    } catch {
+        // A partially-created child process may not have a live handle to unref.
+    }
+}
+
+function terminateProcessTree(
+    child: ChildProcess,
+    dependencies: ProcessTerminationDependencies = {},
+): Promise<void> {
     if (child.pid === undefined || child.exitCode !== null) {
         return Promise.resolve();
     }
 
-    if (process.platform === "win32") {
-        return new Promise((resolve) => {
-            let finished = false;
+    const cleanupTimeoutMs =
+        dependencies.cleanupTimeoutMs ?? PROCESS_CLEANUP_TIMEOUT_MS;
 
-            const finish = () => {
+    return new Promise((resolve) => {
+        let cleanupTimer: NodeJS.Timeout | undefined;
+        let killer: ChildProcess | undefined;
+        let finished = false;
+
+        const finish = () => {
+            if (finished) {
+                return;
+            }
+
+            finished = true;
+            if (cleanupTimer !== undefined) {
+                clearTimeout(cleanupTimer);
+            }
+            resolve();
+        };
+
+        child.once("close", finish);
+
+        cleanupTimer = setTimeout(() => {
+            // Neither taskkill nor a child close event is guaranteed on Windows.
+            // Make one final direct kill attempt, detach any lingering handles, and
+            // let the original timeout/cancellation rejection settle regardless.
+            tryKill(child);
+            tryUnref(child);
+            if (killer !== undefined) {
+                tryKill(killer);
+                tryUnref(killer);
+            }
+            finish();
+        }, cleanupTimeoutMs);
+
+        if ((dependencies.platform ?? process.platform) === "win32") {
+            const spawnProcess = dependencies.spawnProcess ?? spawn;
+
+            try {
+                killer = spawnProcess(
+                    "taskkill",
+                    ["/pid", String(child.pid), "/T", "/F"],
+                    {
+                        shell: false,
+                        stdio: "ignore",
+                    },
+                );
+            } catch {
+                tryKill(child);
+                return;
+            }
+
+            // Keep an error listener attached even after the cleanup deadline so a
+            // late taskkill error cannot become an unhandled EventEmitter error.
+            killer.on("error", () => {
                 if (finished) {
                     return;
                 }
-
-                finished = true;
-                resolve();
-            };
-
-            child.once("close", finish);
-
-            const killer = spawn(
-                "taskkill",
-                ["/pid", String(child.pid), "/T", "/F"],
-                {
-                    shell: false,
-                    stdio: "ignore",
-                },
-            );
-
-            killer.on("error", () => {
-                child.kill();
+                tryKill(child);
             });
 
             killer.on("close", (exitCode) => {
+                if (finished) {
+                    return;
+                }
                 if (exitCode !== 0 && child.exitCode === null) {
-                    child.kill();
+                    tryKill(child);
                 }
 
                 if (child.exitCode !== null) {
                     finish();
                 }
             });
-        });
-    }
+            return;
+        }
 
-    return new Promise((resolve) => {
-        child.on("close", () => {
-            resolve();
-        });
-
-        child.kill("SIGKILL");
+        try {
+            child.kill("SIGKILL");
+        } catch {
+            // The cleanup deadline still guarantees that the caller can settle.
+        }
     });
 }
+
+// Kept out of the package entry point; exported only for deterministic cleanup
+// deadline tests that do not launch or strand real operating-system processes.
+export const __testOnlyTerminateProcessTree = terminateProcessTree;
 
 export async function runWorkspaceCommand(
     workspaceRoot:string,
@@ -109,6 +177,7 @@ export async function runWorkspaceCommand(
     options: CommandOptions = {},
 ): Promise<CommandResult>{
     assertCommandAllowed(request);
+    options.signal?.throwIfAborted();
 
     return new Promise((resolve,reject)=>{
         const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -123,6 +192,19 @@ export async function runWorkspaceCommand(
         let stderr="";
         let settled = false;
 
+        const abortCommand = () => {
+            const reason = options.signal?.reason;
+            finishWithError(
+                reason instanceof Error
+                    ? reason
+                    : new DOMException("Command was aborted", "AbortError"),
+            );
+        };
+
+        const removeAbortListener = () => {
+            options.signal?.removeEventListener("abort", abortCommand);
+        };
+
         const finishWithError = (error: Error) => {
             if (settled) {
                 return;
@@ -130,6 +212,7 @@ export async function runWorkspaceCommand(
 
             settled = true;
             clearTimeout(timeout);
+            removeAbortListener();
             void terminateProcessTree(child).then(
                 () => reject(error),
                 () => reject(error),
@@ -153,11 +236,25 @@ export async function runWorkspaceCommand(
             );
         }, timeoutMs);
 
+        options.signal?.addEventListener("abort", abortCommand, {
+            once: true,
+        });
+        if (options.signal?.aborted) {
+            abortCommand();
+            return;
+        }
+
         child.stdout.on("data",(chunk)=>{
+            if (settled) {
+                return;
+            }
             stdout+=chunk.toString();
             checkOutputLimit();
         });
         child.stderr.on("data",(chunk)=>{
+            if (settled) {
+                return;
+            }
             stderr+=chunk.toString();
             checkOutputLimit();
         });
@@ -171,6 +268,7 @@ export async function runWorkspaceCommand(
 
             settled = true;
             clearTimeout(timeout);
+            removeAbortListener();
             resolve({
                 exitCode: exitCode ?? -1,
                 stdout:stripAnsi(stdout),

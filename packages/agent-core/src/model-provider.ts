@@ -6,6 +6,9 @@ export type ModelMessage = {
 };
 export type ModelRequest ={
     messages:ModelMessage[];
+    responseFormat?: "json_object";
+    signal?: AbortSignal;
+    onActivity?: () => void;
 };
 export type ModelResponse= {
     content:string;

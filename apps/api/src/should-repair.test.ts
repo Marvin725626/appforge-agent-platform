@@ -39,6 +39,26 @@ describe("shouldRepair", () => {
         ).toBe(true);
     });
 
+    it("does not auto-repair when only the LLM reviewer rejects a quality-passing draft", () => {
+        expect(
+            shouldRepair({
+                review: {
+                    accepted: false,
+                    reason: "LLM reviewer rejected: Please improve the layout.",
+                    checks: {
+                        agentFinished: true,
+                        installPassed: true,
+                        buildPassed: true,
+                        evalPassed: true,
+                        browserPassed: true,
+                    },
+                },
+                repairAttempt: 0,
+                maxRepairAttempts: 1,
+            }),
+        ).toBe(false);
+    });
+
     it("does not repair when max attempts have been reached", () => {
         expect(
             shouldRepair({
@@ -47,5 +67,29 @@ describe("shouldRepair", () => {
                 maxRepairAttempts: 1,
             }),
         ).toBe(false);
+    });
+
+    it("does not start a full repair after a model timeout with no progress", () => {
+        expect(
+            shouldRepair({
+                review: createReview(false),
+                repairAttempt: 0,
+                maxRepairAttempts: 2,
+                attemptMadeProgress: false,
+                attemptStopReason: "model_error",
+            }),
+        ).toBe(false);
+    });
+
+    it("continues once from a changed draft after a model timeout", () => {
+        expect(
+            shouldRepair({
+                review: createReview(false),
+                repairAttempt: 0,
+                maxRepairAttempts: 1,
+                attemptMadeProgress: true,
+                attemptStopReason: "model_error",
+            }),
+        ).toBe(true);
     });
 });

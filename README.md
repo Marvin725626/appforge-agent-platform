@@ -177,8 +177,55 @@ Create `.env` from `.env.example`:
 APPFORGE_LLM_BASE_URL=https://your-openai-compatible-endpoint/v1
 APPFORGE_LLM_API_KEY=your-api-key
 APPFORGE_LLM_MODEL=your-model-or-endpoint-id
-APPFORGE_LLM_TIMEOUT_MS=60000
+APPFORGE_LLM_TIMEOUT_MS=120000
+APPFORGE_LLM_HARD_TIMEOUT_MS=240000
+APPFORGE_LLM_MAX_RETRIES=1
+APPFORGE_LLM_STREAM=true
+APPFORGE_LLM_SERVICE_TIER=auto
+APPFORGE_PLANNER_TIMEOUT_MS=30000
+APPFORGE_REVIEWER_TIMEOUT_MS=45000
+APPFORGE_RUN_TIMEOUT_MS=1800000
+APPFORGE_LLM_MAX_TOKENS=8000
+APPFORGE_PARALLEL_CODING=true
+APPFORGE_PARALLEL_CODER_CONCURRENCY=2
+APPFORGE_PARALLEL_CODER_TIMEOUT_MS=240000
+APPFORGE_PARALLEL_CODER_MAX_TOKENS=4000
+APPFORGE_PARALLEL_CODER_THINKING=disabled
 ```
+
+For Volcengine Ark, keep `APPFORGE_LLM_STREAM=true`: streamed SSE chunks
+reset the provider's idle deadline while a long response is still making
+progress. `APPFORGE_LLM_SERVICE_TIER=auto` uses a TPM guarantee package when
+the endpoint has one and otherwise falls back to the ordinary service tier.
+`APPFORGE_LLM_HARD_TIMEOUT_MS` is a separate absolute per-call deadline and is
+never extended by SSE activity. The run-level deadline remains bounded by
+`APPFORGE_RUN_TIMEOUT_MS`.
+
+Fresh page generation is page-scoped. The Planner returns one entry for every
+independent webpage or URL view, and the coordinator starts one initial Coding
+API request per entry. A single-page request therefore uses one page request;
+multi-page sites run those requests concurrently. Every page owns only
+`src/pages/<page-id>.tsx`. Shared `src/content.ts`, `src/App.css`, and the hash
+router in `src/App.tsx` are generated deterministically in-process and consume
+no Coding API requests.
+
+Page proposals remain in memory until all pages pass validation. If one page
+fails, the coordinator retries only that page once within the same absolute
+page deadline; successful pages are not regenerated. Provider-level retries
+are disabled for page requests. The complete batch is written under a
+workspace rollback transaction, so a failed batch cannot expose a partial
+site. Existing-draft iterations remain on the focused single-agent path.
+Planner and Reviewer are separate model requests in addition to page Coding
+requests.
+
+`APPFORGE_PARALLEL_CODER_CONCURRENCY` is capped at 6; keep the default of 2 for
+Volcengine Ark endpoints unless the endpoint's concurrency, RPM, and TPM quotas
+support more. The per-page hard timeout is absolute and is not extended by
+streamed activity. Page agents use the smaller
+`APPFORGE_PARALLEL_CODER_MAX_TOKENS` budget because each owns one component.
+For deterministic page generation on Volcengine Ark, the default
+`APPFORGE_PARALLEL_CODER_THINKING=disabled` avoids spending minutes on hidden
+reasoning before emitting JSON; Planner and Reviewer requests are unaffected.
 
 Install and start locally:
 
@@ -280,6 +327,8 @@ multi-tenant SaaS.
   deterministic Memory pipeline.
 - More realistic multi-agent execution with separate planner, coder, reviewer,
   and test agents.
+- A provider-based Image Asset Tool for controlled image search or generation,
+  workspace-local asset storage, and an optional MCP adapter.
 - Stronger sandboxing for command execution.
 - Visual regression and screenshot comparison on top of the current Playwright
   behavior checks.

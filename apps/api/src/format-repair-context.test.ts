@@ -39,12 +39,15 @@ describe("formatRepairContext", () => {
             [
                 "Repair request:",
                 "Reviewer rejected the result.",
+                "You must revise the current workspace to satisfy every reviewer issue below.",
+                "Do not replace the app with an unrelated starter. Keep existing working features and make the smallest coherent fix.",
                 "Build exit code: 0",
                 "Eval passed: no",
                 "Eval checks:",
                 "- has input: passed",
                 "- has button: failed",
-                "Reason: Rejected because eval failed.",
+                "Reviewer issues to fix:",
+                "- Rejected because eval failed.",
             ].join("\n"),
         );
     });
@@ -78,6 +81,39 @@ describe("formatRepairContext", () => {
         });
 
         expect(context).toContain("Build stderr:\nTypeScript error");
+    });
+
+    it("includes a source excerpt when available", () => {
+        const context = formatRepairContext({
+            build: {
+                exitCode: 1,
+                stdout: "",
+                stderr: "src/App.tsx:10:4: Expected closing tag",
+            },
+            eval: {
+                passed: true,
+                checks: [
+                    {
+                        name: "has readable text",
+                        passed: true,
+                    },
+                ],
+            },
+            review: {
+                accepted: false,
+                reason: "Rejected because npm build failed.",
+                checks: {
+                    agentFinished: true,
+                    installPassed: true,
+                    buildPassed: false,
+                    evalPassed: true,
+                },
+            },
+            sourceExcerpt: ">   10 | </footer>",
+        });
+
+        expect(context).toContain("Relevant source near build error:");
+        expect(context).toContain(">   10 | </footer>");
     });
 
     it("includes browser eval failures", () => {
@@ -123,6 +159,7 @@ describe("formatRepairContext", () => {
         expect(context).toContain(
             "- adds a task item: failed (The task text was not rendered.)",
         );
-        expect(context).toContain("Reason: Rejected because browser eval failed.");
+        expect(context).toContain("Reviewer issues to fix:");
+        expect(context).toContain("- Rejected because browser eval failed.");
     });
 });

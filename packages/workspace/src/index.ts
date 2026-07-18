@@ -9,3 +9,6 @@ export { copyWorkspaceTemplate } from "./copy-template.js";
 export type { WorkspaceCommand } from "./command-policy.js";
 export { runWorkspaceCommand } from "./run-command.js";
 export type { CommandOptions, CommandResult } from "./run-command.js";
+export {
+    writeWorkspaceBinaryFile,
+} from "./write-binary-file.js";

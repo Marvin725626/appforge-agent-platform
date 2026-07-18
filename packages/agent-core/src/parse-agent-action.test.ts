@@ -15,6 +15,42 @@ describe("parseAgentAction", () => {
         expect(action.type).toBe("write_file");
     });
 
+    it("accepts legacy action and args output", () => {
+        expect(
+            parseAgentAction(
+                JSON.stringify({
+                    action: "write_file",
+                    args: {
+                        path: "src/App.tsx",
+                        content: "export function App() {}",
+                    },
+                }),
+            ),
+        ).toEqual({
+            type: "write_file",
+            path: "src/App.tsx",
+            content: "export function App() {}",
+        });
+    });
+
+    it("extracts JSON from a fenced response", () => {
+        expect(
+            parseAgentAction(
+                [
+                    "```json",
+                    JSON.stringify({
+                        type: "finish",
+                        summary: "Done",
+                    }),
+                    "```",
+                ].join("\n"),
+            ),
+        ).toEqual({
+            type: "finish",
+            summary: "Done",
+        });
+    });
+
     it("parses a valid run_command action", () => {
         const action = parseAgentAction(
             JSON.stringify({

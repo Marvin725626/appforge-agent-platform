@@ -8,6 +8,10 @@ export type RunRepositoryLike = {
     deleteById(id: string): boolean | Promise<boolean>;
     listVersions(runId: string): RunVersion[] | Promise<RunVersion[]>;
     saveVersion(version: RunVersion): RunVersion | Promise<RunVersion>;
+    replaceVersions(
+        runId: string,
+        versions: RunVersion[],
+    ): void | Promise<void>;
     deleteVersions(runId: string): void | Promise<void>;
     saveResult(
         runId: string,
@@ -52,9 +56,37 @@ export class RunRepository implements RunRepositoryLike{
 
     saveVersion(version:RunVersion):RunVersion{
         const existingVersions = this.versions.get(version.runId) ?? [];
-        this.versions.set(version.runId,[...existingVersions, version]);
+        const conflictingVersion = existingVersions.find(
+            (candidate) =>
+                candidate.versionNumber === version.versionNumber &&
+                candidate.id !== version.id,
+        );
+
+        if (conflictingVersion) {
+            throw new Error(
+                `Run ${version.runId} already has version ${version.versionNumber}`,
+            );
+        }
+
+        const existingIndex = existingVersions.findIndex(
+            (candidate) => candidate.id === version.id,
+        );
+
+        if (existingIndex >= 0) {
+            const updatedVersions = [...existingVersions];
+            updatedVersions[existingIndex] = version;
+            this.versions.set(version.runId, updatedVersions);
+        } else {
+            this.versions.set(version.runId,[...existingVersions, version]);
+        }
+
         return version;
     }
+
+    replaceVersions(runId: string, versions: RunVersion[]): void {
+        this.versions.set(runId, [...versions]);
+    }
+
     deleteVersions(runId:string):void{
         this.versions.delete(runId);
     }

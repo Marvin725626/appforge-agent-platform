@@ -116,9 +116,13 @@ goal
    summarization, and replace keyword retrieval with embedding-based RAG.
 3. Real multi-agent execution: planner, coder, reviewer, and test agents with
    separate turns.
-4. Browser evaluation hardening: add screenshot comparison, accessibility checks,
+4. Image Asset Tool and MCP adapter: let agents search or generate images,
+   validate MIME type, source, size, and timeout, then save approved assets under
+   the workspace `public/assets` directory. Keep providers behind an internal
+   interface and expose MCP as an optional adapter rather than a hard dependency.
+5. Browser evaluation hardening: add screenshot comparison, accessibility checks,
    and more goal-specific browser scenarios.
-5. Share/export: save run reports, screenshots, and artifacts for portfolio demos.
+6. Share/export: save run reports, screenshots, and artifacts for portfolio demos.
 
 ## End-to-End Demo Checklist
 

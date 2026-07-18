@@ -3,6 +3,8 @@ export { AgentActionSchema } from "./agent-action.js";
 export {
     CreateRunInputSchema,
     RunSchema,
+    RunOperationSchema,
+    RunOperationStageSchema,
     RunStatusSchema,
     RunVersionSchema,
 } from "./run.js";
@@ -12,6 +14,8 @@ export type {
     CreateRunInput,
     Run,
     RunStatus,
+    RunOperation,
+    RunOperationStage,
     RunVersion,
 } from "./run.js";
 export type { RunReport } from "./report.js";

@@ -1,14 +1,22 @@
 import type { AgentAction } from "@appforge/protocol";
-
+import type { ImageAssetMode } from "./image-asset-provider.js";
+import type { ImageAssetTool } from "./image-asset-tool.js";
 import { ActionExecutor, type ActionExecutionResult } from "./action-executor.js";
 import { CodingAgent } from "./coding-agent.js";
+import { RepairAgent } from "./repair-agent.js";
 import type { ModelProvider } from "./model-provider.js";
 
+export type CodingAgentStepMode = "coding" | "repair";
+
 export type RunCodingAgentStepOptions = {
-    goal:string;
-    model:ModelProvider;
-    workspaceRoot:string;
+    goal: string;
+    model: ModelProvider;
+    workspaceRoot: string;
     context?: string;
+    imageAssetTool?: ImageAssetTool;
+    imageAssetModes?: ImageAssetMode[];
+    mode?: CodingAgentStepMode;
+    signal?: AbortSignal;
 };
 
 export type RunCodingAgentStepResult = {
@@ -19,17 +27,44 @@ export type RunCodingAgentStepResult = {
 export async function runCodingAgentStep(
     options:RunCodingAgentStepOptions,
 ):Promise<RunCodingAgentStepResult>{
-    const agent= new CodingAgent({
-        model:options.model,
-    });
+    options.signal?.throwIfAborted();
+    const signal = options.signal;
+    const agentOptions = {
+        model: signal
+            ? {
+                  complete: (request: Parameters<ModelProvider["complete"]>[0]) =>
+                      options.model.complete({
+                          ...request,
+                          signal,
+                      }),
+              }
+            : options.model,
+        imageToolsEnabled:
+            options.imageAssetTool !== undefined,
+        ...(options.imageAssetModes
+            ? { imageToolModes: options.imageAssetModes }
+            : {}),
+    };
+    const agent =
+        options.mode === "repair"
+            ? new RepairAgent(agentOptions)
+            : new CodingAgent(agentOptions);
 
     const executor = new ActionExecutor({
-        workspaceRoot:options.workspaceRoot,
+        workspaceRoot: options.workspaceRoot,
+        ...(signal ? { signal } : {}),
+        ...(options.imageAssetTool
+            ? {
+                imageAssetTool:
+                options.imageAssetTool,
+            }
+            : {}),
     });
     const action = await agent.decideNextAction(
         options.goal,
         options.context,
     );
+    options.signal?.throwIfAborted();
     const execution = await executor.execute(action);
     return{
         action,
