@@ -9,6 +9,13 @@ export {
     RunVersionSchema,
 } from "./run.js";
 export { RunReportSchema } from "./report.js";
+export {
+    ApplicationTypeSchema,
+    DesignPlanComplianceSchema,
+    DesignPlanSchema,
+    DesignPlanSourceSchema,
+    SurfaceStrategySchema,
+} from "./design-plan.js";
 export type { AgentAction } from "./agent-action.js";
 export type {
     CreateRunInput,
@@ -19,6 +26,13 @@ export type {
     RunVersion,
 } from "./run.js";
 export type { RunReport } from "./report.js";
+export type {
+    ApplicationType,
+    DesignPlan,
+    DesignPlanCompliance,
+    DesignPlanSource,
+    SurfaceStrategy,
+} from "./design-plan.js";
 export {
     TraceEventSchema,
     TraceEventStatusSchema,

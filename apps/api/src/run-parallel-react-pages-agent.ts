@@ -8,8 +8,11 @@ import {
     type PlannerOutput,
     type RunCodingAgentLoopResult,
 } from "@appforge/agent-core";
+import type { DesignPlan, DesignPlanSource } from "@appforge/protocol";
 
 import { executeWithWorkspaceRollback } from "./workspace-execution-transaction.js";
+import { formatDesignPlanForPrompt } from "./design-plan-utils.js";
+import { formatProjectStyles } from "./project-styles.js";
 
 const DEFAULT_MAX_CONCURRENCY = 2;
 const DEFAULT_PAGE_TIMEOUT_MS = 240_000;
@@ -428,12 +431,16 @@ export type RunParallelReactPagesAgentOptions = {
     imageAssetTool?: ImageAssetTool;
     imageAssetModes?: ImageAssetMode[];
     topicLookupProvider?: TopicLookupProvider;
+    designPlan?: DesignPlan;
+    designPlanSource?: DesignPlanSource;
     signal?: AbortSignal;
 };
 
 export type RunParallelReactPagesAgentResult = {
     agent: RunCodingAgentLoopResult;
     workstreams: PageCodingWorkstreamStatus[];
+    designPlan?: DesignPlan;
+    designPlanSource?: DesignPlanSource;
 };
 
 class PageWorkstreamTimeoutError extends Error {
@@ -1896,6 +1903,9 @@ export async function runParallelReactPagesAgent(
         plannerOutput: options.plannerOutput,
         routeRequest: options.routeRequest,
     });
+    const designPlanPrompt = options.designPlan
+        ? formatDesignPlanForPrompt(options.designPlan)
+        : "";
     const maxConcurrency = clampInteger(
         options.maxConcurrency,
         DEFAULT_MAX_CONCURRENCY,
@@ -2048,6 +2058,10 @@ export async function runParallelReactPagesAgent(
                 path: page.filePath,
                 planContext: [
                     `Planner summary: ${options.plannerOutput.summary}`,
+                    designPlanPrompt,
+                    options.designPlanSource
+                        ? `DesignPlan source: ${options.designPlanSource}`
+                        : "",
                     `Page purpose: ${page.purpose}`,
                     `Page acceptance: ${page.acceptanceCriteria.join("; ")}`,
                     otherPages ? `Sibling pages handled by other API calls: ${otherPages}` : "",
@@ -2059,6 +2073,9 @@ export async function runParallelReactPagesAgent(
                     `Export const pageId = ${JSON.stringify(page.id)} as const and export function ${page.componentName}().`,
                     "Import only React. Do not import CSS, content, App, another page, or a new dependency.",
                     "Apply the frontend-design template pack: use design tokens from shared CSS, semantic section structure, accessible content hierarchy, responsive layout, and the subject-specific blueprint. Do not invent inline styles or same-looking cards.",
+                    options.designPlan
+                        ? "Follow the Structured DesignPlan above. Respect its composition, surfaceStrategy, sectionRhythm, typographyCharacter, shapeLanguage, mediaStrategy, uniqueMotifs, and forbiddenPatterns. This page may have local composition, but it must not invent a conflicting visual language."
+                        : "",
                     "Keep this file compact. Do not use inline style objects; use the shared class names only. Avoid huge JSX, long repeated prose, and large arrays so the JSON response does not get truncated.",
                     "Keep typography normal and readable: one h1 only, no 5rem+ headings, no huge metric numbers, no one-character-per-line labels, and no inline fontSize styles. Let shared CSS control scale.",
                     subjectDesignBrief,
@@ -2338,7 +2355,15 @@ export async function runParallelReactPagesAgent(
                                 ),
                         };
                     }),
-                    { path: "src/App.css", content: formatSharedStyles() },
+                    {
+                        path: "src/App.css",
+                        content: options.designPlan
+                            ? formatProjectStyles({
+                                  designPlan: options.designPlan,
+                                  pages,
+                              })
+                            : formatSharedStyles(),
+                    },
                     { path: "src/App.tsx", content: formatAppModule(pages, siteVisualGrammar) },
                 ];
 
@@ -2375,6 +2400,10 @@ export async function runParallelReactPagesAgent(
                 stopReason: "finish",
             },
             workstreams: statuses,
+            ...(options.designPlan ? { designPlan: options.designPlan } : {}),
+            ...(options.designPlanSource
+                ? { designPlanSource: options.designPlanSource }
+                : {}),
         };
     } catch (error) {
         if (options.signal?.aborted) {

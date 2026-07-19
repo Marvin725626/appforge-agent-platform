@@ -128,9 +128,60 @@ type ReactAppAgentResult = {
     metrics?: RunMetrics;
     requirements?: RequirementResult[];
     workspaceDiff?: WorkspaceDiff;
+    designPlan?: DesignPlan;
+    designPlanSource?: "planner" | "preserved" | "fallback";
+    designPlanCompliance?: DesignPlanCompliance[];
     focusedEditScope?: FocusedEditScope;
     scopeViolations?: ScopeViolation[];
     executionMode?: "fast_edit" | "structural_edit";
+};
+
+type DesignPlan = {
+    version: 1;
+    applicationType: string;
+    designIntent: {
+        audience: string;
+        primaryGoal: string;
+        emotionalTone: string[];
+        brandTraits: string[];
+    };
+    informationArchitecture: {
+        routes: Array<{
+            path: string;
+            purpose: string;
+            primaryContent: string[];
+            primaryActions: string[];
+        }>;
+    };
+    visualDNA: {
+        composition: string;
+        density: "low" | "medium" | "high";
+        surfaceStrategy: "open" | "mixed" | "contained";
+        navigationPattern: string;
+        heroPattern: string;
+        sectionRhythm: string[];
+        typographyCharacter: string;
+        shapeLanguage: string;
+        mediaStrategy: string;
+        uniqueMotifs: string[];
+        forbiddenPatterns: string[];
+    };
+    designTokens: {
+        colorRoles: Record<string, string>;
+        radiusScale: number[];
+        spacingScale: number[];
+    };
+    acceptanceCriteria: Array<{
+        id: string;
+        instruction: string;
+        verification: string;
+    }>;
+};
+
+type DesignPlanCompliance = {
+    criterion: string;
+    status: "PASS" | "FAIL" | "UNVERIFIED";
+    evidence: string;
 };
 
 type WorkspaceDiff = {
@@ -369,6 +420,8 @@ type RunVersion = {
     goal: string;
     summary: string;
     review?: AgentReview;
+    designPlan?: DesignPlan;
+    designPlanSource?: "planner" | "preserved" | "fallback";
     createdAt: string;
 };
 
@@ -1085,6 +1138,104 @@ function isUnchangedIterationMessage(message: string | undefined): boolean {
 
 function formatStatusClass(status: string): string {
     return `status-pill status-${status.replaceAll("_", "-")}`;
+}
+
+function DesignPlanPanel({
+    designPlan,
+    source,
+    compliance,
+    language,
+}: {
+    designPlan?: DesignPlan;
+    source?: "planner" | "preserved" | "fallback";
+    compliance?: DesignPlanCompliance[];
+    language: Language;
+}) {
+    if (!designPlan) {
+        return null;
+    }
+
+    return (
+        <details className="design-plan-panel" open>
+            <summary>
+                Design Plan / VisualDNA
+                {source ? <span>{source}</span> : null}
+            </summary>
+            <dl className="design-plan-list">
+                <div>
+                    <dt>{language === "zh" ? "类型" : "Type"}</dt>
+                    <dd>{designPlan.applicationType}</dd>
+                </div>
+                <div>
+                    <dt>{language === "zh" ? "受众" : "Audience"}</dt>
+                    <dd>{designPlan.designIntent.audience}</dd>
+                </div>
+                <div>
+                    <dt>{language === "zh" ? "目标" : "Primary goal"}</dt>
+                    <dd>{designPlan.designIntent.primaryGoal}</dd>
+                </div>
+                <div>
+                    <dt>{language === "zh" ? "构图" : "Composition"}</dt>
+                    <dd>{designPlan.visualDNA.composition}</dd>
+                </div>
+                <div>
+                    <dt>{language === "zh" ? "表面策略" : "Surface"}</dt>
+                    <dd>{designPlan.visualDNA.surfaceStrategy}</dd>
+                </div>
+                <div>
+                    <dt>{language === "zh" ? "节奏" : "Rhythm"}</dt>
+                    <dd>{designPlan.visualDNA.sectionRhythm.join(" → ")}</dd>
+                </div>
+                <div>
+                    <dt>{language === "zh" ? "独特母题" : "Unique motifs"}</dt>
+                    <dd className="tag-row">
+                        {designPlan.visualDNA.uniqueMotifs.map((motif) => (
+                            <span key={motif}>{motif}</span>
+                        ))}
+                    </dd>
+                </div>
+                <div>
+                    <dt>{language === "zh" ? "禁止模式" : "Forbidden"}</dt>
+                    <dd className="tag-row warning-tags">
+                        {designPlan.visualDNA.forbiddenPatterns.length > 0
+                            ? designPlan.visualDNA.forbiddenPatterns.map((pattern) => (
+                                  <span key={pattern}>{pattern}</span>
+                              ))
+                            : "—"}
+                    </dd>
+                </div>
+            </dl>
+            <ul className="design-criteria-list">
+                {designPlan.acceptanceCriteria.map((criterion) => (
+                    <li key={criterion.id}>
+                        <strong>{criterion.id}</strong>
+                        <span>{criterion.instruction}</span>
+                        <small>{criterion.verification}</small>
+                    </li>
+                ))}
+            </ul>
+            {compliance && compliance.length > 0 ? (
+                <table className="design-compliance-table">
+                    <thead>
+                        <tr>
+                            <th>{language === "zh" ? "检查项" : "Criterion"}</th>
+                            <th>{language === "zh" ? "状态" : "Status"}</th>
+                            <th>{language === "zh" ? "证据" : "Evidence"}</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {compliance.map((item) => (
+                            <tr key={item.criterion}>
+                                <td>{item.criterion}</td>
+                                <td>{item.status}</td>
+                                <td>{item.evidence}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            ) : null}
+        </details>
+    );
 }
 
 function isRunActive(status: string): boolean {
@@ -3236,6 +3387,15 @@ export function App() {
     const workspaceDiff = agentResult?.workspaceDiff;
     const focusedEditScope = agentResult?.focusedEditScope;
     const scopeViolations = agentResult?.scopeViolations ?? [];
+    const selectedDesignVersion = selectedVersionNumber === null
+        ? null
+        : currentRunVersions.find(
+              (version) => version.versionNumber === selectedVersionNumber,
+          ) ?? null;
+    const displayedDesignPlan =
+        selectedDesignVersion?.designPlan ?? agentResult?.designPlan;
+    const displayedDesignPlanSource =
+        selectedDesignVersion?.designPlanSource ?? agentResult?.designPlanSource;
 
     return (
         <main className="app-shell workspace-shell">
@@ -3763,6 +3923,14 @@ export function App() {
                                             {copy.versionReviewUnavailable}
                                         </p>
                                     ) : null}
+                                    <DesignPlanPanel
+                                        designPlan={displayedDesignPlan}
+                                        source={displayedDesignPlanSource}
+                                        compliance={
+                                            agentResult?.designPlanCompliance
+                                        }
+                                        language={language}
+                                    />
                                     {requirementResults.length > 0 ? (
                                         <div className="requirement-ledger">
                                             <h3>Requirement Ledger</h3>

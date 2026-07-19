@@ -67,11 +67,16 @@ export {
     PlannerStepSchema,
     PlannerWorkstreamSchema,
 } from "./planner-agent.js";
+export { DesignPlannerAgent } from "./design-planner-agent.js";
 
 export type {
     PlannerAgentOptions,
     PlannerOutput,
 } from "./planner-agent.js";
+export type {
+    DesignPlannerAgentOptions,
+    DesignPlannerInput,
+} from "./design-planner-agent.js";
 export {
     ReviewerAgent,
     ReviewerOutputSchema,

@@ -263,7 +263,7 @@ describe("PlaywrightBrowserEvaluator runtime gate", () => {
                 <script>
                     const pages = {
                         '#/home': '<section class="hero"><h1>温州 · 东瓯名镇</h1><p>山水斗城，百工之乡，民营经济之都。</p><a class="btn" href="#/travel">探索风景名胜</a></section><section class="cards"><a class="card" href="#/culture"><h3>文化</h3><p>永嘉学派、南戏故里、江心屿诗岛。</p></a><a class="card" href="#/food"><h3>美食</h3><p>鱼圆、糯米饭、灯盏糕，瓯味十足。</p></a><a class="card" href="#/travel"><h3>风光</h3><p>雁荡山、楠溪江、洞头列岛。</p></a></section>',
-                        '#/culture': '<h2>文化底蕴</h2><p>内容建设中……</p>',
+                        '#/culture': '<section><h2>文化底蕴</h2><p>永嘉学派、南戏故里、瓯绣工艺和江心屿诗路构成温州文化的主轴，这里本应展开独立叙事与路线说明。</p><p>内容建设中……</p></section>',
                         '#/food': '<h2>瓯越美食</h2><p>内容建设中……</p>',
                         '#/travel': '<h2>风景名胜</h2><p>内容建设中……</p>',
                         '#/contact': '<h2>联系我们</h2><p>内容建设中……</p>'

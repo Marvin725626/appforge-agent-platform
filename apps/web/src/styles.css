@@ -1545,6 +1545,7 @@ pre {
 }
 
 .fallback-warning,
+.design-plan-panel,
 .requirement-ledger,
 .run-metrics {
     margin-top: 16px;
@@ -1558,6 +1559,118 @@ pre {
     border-color: #f59e0b;
     background: #fffbeb;
     color: #78350f;
+}
+
+.design-plan-panel {
+    background: #fbfdff;
+}
+
+.design-plan-panel summary {
+    display: flex;
+    cursor: pointer;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    color: #172033;
+    font-weight: 900;
+}
+
+.design-plan-panel summary span {
+    border-radius: 999px;
+    background: #e0e7ff;
+    color: #3730a3;
+    padding: 3px 8px;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+}
+
+.design-plan-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 16px;
+    margin: 12px 0 0;
+}
+
+.design-plan-list div {
+    border-bottom: 1px solid #edf2f7;
+    padding-bottom: 8px;
+}
+
+.design-plan-list dt {
+    color: #667085;
+    font-size: 0.74rem;
+    font-weight: 850;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.design-plan-list dd {
+    margin: 4px 0 0;
+    color: #172033;
+    line-height: 1.45;
+}
+
+.tag-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.tag-row span {
+    border-radius: 999px;
+    background: #eef2ff;
+    color: #312e81;
+    padding: 3px 8px;
+    font-size: 0.76rem;
+    font-weight: 800;
+}
+
+.warning-tags span {
+    background: #fff7ed;
+    color: #9a3412;
+}
+
+.design-criteria-list {
+    display: grid;
+    gap: 8px;
+    margin: 12px 0 0;
+    padding-left: 18px;
+}
+
+.design-criteria-list li {
+    color: #344054;
+    line-height: 1.45;
+}
+
+.design-criteria-list strong {
+    margin-right: 6px;
+    color: #172033;
+}
+
+.design-criteria-list small {
+    display: block;
+    color: #667085;
+}
+
+.design-compliance-table {
+    width: 100%;
+    margin-top: 12px;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+}
+
+.design-compliance-table th,
+.design-compliance-table td {
+    border-top: 1px solid #e5e7eb;
+    padding: 7px 8px;
+    text-align: left;
+    vertical-align: top;
+}
+
+.design-compliance-table th {
+    color: #475467;
+    font-size: 0.72rem;
+    text-transform: uppercase;
 }
 
 .fallback-warning p,

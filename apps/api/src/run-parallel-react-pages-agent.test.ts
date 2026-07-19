@@ -19,6 +19,7 @@ import {
     resolveReactPagePlans,
     runParallelReactPagesAgent,
 } from "./run-parallel-react-pages-agent.js";
+import { createFallbackDesignPlan } from "./design-plan-utils.js";
 
 type PageId = "home" | "culture" | "itinerary";
 
@@ -596,6 +597,65 @@ describe("runParallelReactPagesAgent", () => {
             "src/App.css",
             "src/App.tsx",
         ]);
+    });
+
+    it("passes a shared DesignPlan to every page agent and writes project-specific styles", async () => {
+        const workspaceRoot = await createWorkspace();
+        const pagePrompts: string[] = [];
+        const designPlan = createFallbackDesignPlan({
+            goal: "创建温州城市文化编辑页，不要卡片化，不要蓝色模板，要像杂志路线一样展开",
+            plannerOutput: PLANNER_OUTPUT,
+            routes: PLANNER_OUTPUT.pages ?? [],
+        });
+        const provider = new PageModelProvider(({ pageId, request }) => {
+            pagePrompts.push(
+                request.messages.map((message) => message.content).join("\n"),
+            );
+            return artifactResponse(pageId, editorialFlowPageSource(pageId));
+        });
+
+        const result = await runParallelReactPagesAgent({
+            goal: "创建温州城市文化编辑页，不要卡片化，不要蓝色模板，要像杂志路线一样展开",
+            plannerOutput: PLANNER_OUTPUT,
+            model: provider,
+            workspaceRoot,
+            routeRequest: true,
+            maxConcurrency: 2,
+            designPlan,
+            designPlanSource: "fallback",
+        });
+
+        expect(result.agent.finished).toBe(true);
+        expect(result.designPlan).toEqual(designPlan);
+        expect(result.designPlanSource).toBe("fallback");
+        expect(pagePrompts).toHaveLength(PAGE_IDS.length);
+        expect(
+            pagePrompts.every((prompt) =>
+                prompt.includes("Structured DesignPlan v1:"),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.every((prompt) =>
+                prompt.includes(designPlan.visualDNA.composition),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.every((prompt) =>
+                prompt.includes("forbiddenPatterns: card grid"),
+            ),
+        ).toBe(true);
+
+        const styles = await readFile(
+            path.join(workspaceRoot, "src", "App.css"),
+            "utf8",
+        );
+        expect(styles).toContain("--project-composition");
+        expect(styles).toContain("--surface-strategy: mixed");
+        expect(styles).toContain("--section-rhythm");
+        expect(styles).toContain("--unique-motifs");
+        expect(styles).toContain("route timeline");
+        expect(styles).not.toContain("--color-ink-900");
+        expect(styles).not.toContain("--radius-component");
     });
 
     it("marks invalid page model output as fallback instead of normal success", async () => {

@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { DesignPlanSchema, DesignPlanSourceSchema } from "./design-plan.js";
 export const RunStatusSchema = z.enum([
   "queued",
   "planning",
@@ -67,6 +68,8 @@ export const RunVersionSchema = z.object({
       browserPassed: z.boolean().optional(),
     }),
   }).optional(),
+  designPlan: DesignPlanSchema.optional(),
+  designPlanSource: DesignPlanSourceSchema.optional(),
   createdAt:z.string(),
 });
 export const CreateRunInputSchema = z.object({

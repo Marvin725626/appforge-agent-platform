@@ -14,6 +14,7 @@ import { RunRepository, type RunRepositoryLike } from "./run-repository.js";
 import {
     CreateRunInputSchema,
     RunReportSchema,
+    type DesignPlan,
     type Run,
     type RunOperationStage,
     type RunReport,
@@ -73,6 +74,7 @@ export type ExecuteRun = (input:{
     workspaceRoot:string;
     maxRepairAttempts?:number;
     memoryContext?: string;
+    designPlan?: DesignPlan;
     resetWorkspace?: boolean;
     signal?: AbortSignal;
     onProgress?: (
@@ -1431,6 +1433,8 @@ export  function buildApp(
         goal: string;
         summaryForVersion: (versionNumber: number) => string;
         review?: RunReactAppAgentResult["review"];
+        designPlan?: RunReactAppAgentResult["designPlan"];
+        designPlanSource?: RunReactAppAgentResult["designPlanSource"];
         signal?: AbortSignal;
         operationId?: string;
     }): Promise<RunVersion> {
@@ -1463,6 +1467,10 @@ export  function buildApp(
             goal: input.goal,
             summary: input.summaryForVersion(nextVersionNumber),
             ...(input.review ? { review: input.review } : {}),
+            ...(input.designPlan ? { designPlan: input.designPlan } : {}),
+            ...(input.designPlanSource
+                ? { designPlanSource: input.designPlanSource }
+                : {}),
             createdAt: new Date().toISOString(),
         };
 
@@ -1634,6 +1642,8 @@ export  function buildApp(
                                 ? "Initial generated version"
                                 : `Accepted version ${versionNumber}`,
                         review: normalizedResult.review,
+                        designPlan: normalizedResult.designPlan,
+                        designPlanSource: normalizedResult.designPlanSource,
                     });
                 }
             }
@@ -1712,6 +1722,18 @@ export  function buildApp(
         }
 
         return normalizedResult;
+    }
+
+    async function loadLatestDesignPlan(run: Run): Promise<DesignPlan | undefined> {
+        const result = await runRepository.findResultByRunId(run.id);
+        if (result?.designPlan) {
+            return result.designPlan;
+        }
+
+        const latestVersion = findLatestVersion(
+            await runRepository.listVersions(run.id),
+        );
+        return latestVersion?.designPlan;
     }
 
     void app.register(cors, {
@@ -1924,6 +1946,10 @@ export  function buildApp(
                 if (currentRequest) {
                     executeRunInput.currentRequest = currentRequest;
                 }
+                const latestDesignPlan = await loadLatestDesignPlan(run);
+                if (latestDesignPlan) {
+                    executeRunInput.designPlan = latestDesignPlan;
+                }
                 const memoryContext =
                     await buildExecutionMemoryContext(executionContract);
                 signal.throwIfAborted();
@@ -2001,6 +2027,8 @@ export  function buildApp(
                                         : "Initial attempt did not finish"
                                     : `Execution version ${versionNumber}`,
                             review: result.review,
+                            designPlan: result.designPlan,
+                            designPlanSource: result.designPlanSource,
                             signal,
                             operationId,
                         });
@@ -2314,6 +2342,10 @@ export  function buildApp(
                             operationId,
                         });
                 }
+                const latestDesignPlan = await loadLatestDesignPlan(run);
+                if (latestDesignPlan) {
+                    executeRunInput.designPlan = latestDesignPlan;
+                }
                 const memoryContext =
                     await buildExecutionMemoryContext(repairGoal);
                 signal.throwIfAborted();
@@ -2406,6 +2438,8 @@ export  function buildApp(
                             summaryForVersion: (versionNumber) =>
                                 `Repair version ${versionNumber}`,
                             review: result.review,
+                            designPlan: result.designPlan,
+                            designPlanSource: result.designPlanSource,
                             signal,
                             operationId,
                         });
@@ -2614,6 +2648,8 @@ export  function buildApp(
                         goal: run.goal,
                         summaryForVersion: () => "Initial generated version",
                         review: existingResult.review,
+                        designPlan: existingResult.designPlan,
+                        designPlanSource: existingResult.designPlanSource,
                         signal,
                         operationId,
                     });
@@ -2665,6 +2701,10 @@ export  function buildApp(
                             runId: run.id,
                             operationId,
                         });
+                }
+                const latestDesignPlan = await loadLatestDesignPlan(run);
+                if (latestDesignPlan) {
+                    executeRunInput.designPlan = latestDesignPlan;
                 }
                 const memoryContext =
                     await buildExecutionMemoryContext(iterationContract);
@@ -2750,6 +2790,8 @@ export  function buildApp(
                             summaryForVersion: (versionNumber) =>
                                 `Iteration version ${versionNumber}`,
                             review: result.review,
+                            designPlan: result.designPlan,
+                            designPlanSource: result.designPlanSource,
                             signal,
                             operationId,
                         });

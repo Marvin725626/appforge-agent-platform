@@ -1,5 +1,6 @@
 import {
     OpenAICompatibleProvider,
+    DesignPlannerAgent,
     PlannerAgent,
     type OpenAICompatibleProviderOptions,
     runCodingAgentLoop,
@@ -18,6 +19,11 @@ import {
     type SavedImageAsset,
     type PlannerOutput,
 } from "@appforge/agent-core";
+import type {
+    DesignPlan,
+    DesignPlanCompliance,
+    DesignPlanSource,
+} from "@appforge/protocol";
 import {
     copyWorkspaceTemplate,
     runWorkspaceCommand,
@@ -67,6 +73,11 @@ import {
     type ScopeViolation,
     type WorkspaceDiff,
 } from "./focused-edit-diagnostics.js";
+import {
+    createFallbackDesignPlan,
+    evaluateDesignPlanCompliance,
+    formatDesignPlanForPrompt,
+} from "./design-plan-utils.js";
 
 const INSTALL_COMMAND_TIMEOUT_MS = 5 * 60 * 1_000;
 const BUILD_COMMAND_TIMEOUT_MS = 2 * 60 * 1_000;
@@ -110,6 +121,8 @@ export type RunReactAppAgentOptions = {
     imageAssetProvider?: ImageAssetProvider;
     imageAssetModes?: ImageAssetMode[];
     topicLookupProvider?: TopicLookupProvider;
+    designPlan?: DesignPlan;
+    designPlanning?: boolean;
     resetWorkspace?: boolean;
     signal?: AbortSignal;
     onProgress?: (
@@ -236,6 +249,9 @@ export type RunReactAppAgentResult = {
     metrics?: RunMetrics;
     requirements?: RequirementResult[];
     workspaceDiff?: WorkspaceDiff;
+    designPlan?: DesignPlan;
+    designPlanSource?: DesignPlanSource;
+    designPlanCompliance?: DesignPlanCompliance[];
     focusedEditScope?: FocusedEditScope;
     scopeViolations?: ScopeViolation[];
     executionMode?: FocusedEditExecutionMode;
@@ -687,6 +703,91 @@ async function createPlannerOutputWithFallback(
         }
         return createFallbackPlannerOutput(error);
     }
+}
+
+function explicitlyRequestsDesignPlanRefresh(request: string): boolean {
+    return /\b(?:redesign|rebrand|new visual direction|different style|change the whole style|overall style)\b|整体风格|重新设计|换个风格|视觉语言|不要.*风格|更像.*网站|不像.*网站/iu.test(
+        request,
+    );
+}
+
+async function createDesignPlanWithFallback(input: {
+    designPlannerAgent: DesignPlannerAgent;
+    goal: string;
+    requirements: readonly Requirement[];
+    plannerOutput: PlannerOutput;
+    routes: readonly {
+        path: string;
+        purpose: string;
+        acceptanceCriteria?: readonly string[];
+    }[];
+    existingDesignPlan?: DesignPlan;
+    preserveExisting: boolean;
+    designPlanningEnabled: boolean;
+    signal?: AbortSignal;
+}): Promise<{
+    designPlan: DesignPlan;
+    designPlanSource: DesignPlanSource;
+}> {
+    if (input.existingDesignPlan && input.preserveExisting) {
+        return {
+            designPlan: input.existingDesignPlan,
+            designPlanSource: "preserved",
+        };
+    }
+
+    if (input.designPlanningEnabled) {
+        try {
+            input.signal?.throwIfAborted();
+            const designPlan = await input.designPlannerAgent.createDesignPlan({
+                goal: input.goal,
+                currentRequirements: input.requirements.map(
+                    (requirement) =>
+                        `${requirement.id} [${requirement.priority}]: ${requirement.instruction}`,
+                ),
+                pagePlan: JSON.stringify(
+                    {
+                        summary: input.plannerOutput.summary,
+                        pages: input.routes,
+                    },
+                    null,
+                    2,
+                ),
+                forbiddenPatterns: input.requirements
+                    .map((requirement) => requirement.instruction)
+                    .filter((instruction) =>
+                        /不要|禁止|avoid|no |without|not /iu.test(
+                            instruction,
+                        ),
+                    ),
+                ...(input.existingDesignPlan
+                    ? {
+                          historicalContext: formatDesignPlanForPrompt(
+                              input.existingDesignPlan,
+                          ),
+                      }
+                    : {}),
+            });
+
+            return {
+                designPlan,
+                designPlanSource: "planner",
+            };
+        } catch (error) {
+            if (input.signal?.aborted) {
+                input.signal.throwIfAborted();
+            }
+        }
+    }
+
+    return {
+        designPlan: createFallbackDesignPlan({
+            goal: input.goal,
+            plannerOutput: input.plannerOutput,
+            routes: input.routes,
+        }),
+        designPlanSource: "fallback",
+    };
 }
 
 function createFocusedEditPlannerOutput(
@@ -4806,6 +4907,24 @@ export async function runReactAppAgent(
     let browserProbes = requirements.flatMap(
         (requirement) => requirement.browserProbes ?? [],
     );
+    let resolvedDesignPlan = options.designPlan;
+    let resolvedDesignPlanSource: DesignPlanSource | undefined =
+        options.designPlan ? "preserved" : undefined;
+    const withDesignPlanResult = (
+        result: RunReactAppAgentResult,
+        designPlanCompliance?: DesignPlanCompliance[],
+    ): RunReactAppAgentResult => ({
+        ...result,
+        ...(resolvedDesignPlan ? { designPlan: resolvedDesignPlan } : {}),
+        ...(resolvedDesignPlanSource
+            ? { designPlanSource: resolvedDesignPlanSource }
+            : {}),
+        ...(designPlanCompliance
+            ? { designPlanCompliance }
+            : result.designPlanCompliance
+              ? { designPlanCompliance: result.designPlanCompliance }
+              : {}),
+    });
     let beforeBrowserProbeEvidence: RequirementEvidence[] = [];
     let beforeWorkspaceSnapshot: FileSnapshot[] | undefined;
     let focusedEditScope: FocusedEditScope | undefined;
@@ -5081,7 +5200,7 @@ export async function runReactAppAgent(
                     focusedEdit: focusedEditRequest,
                 });
 
-                return withRequirementLedgerResult(
+                return withDesignPlanResult(withRequirementLedgerResult(
                     result,
                     requirements,
                     focusedEditRequest,
@@ -5095,7 +5214,7 @@ export async function runReactAppAgent(
                         : undefined,
                     focusedEditScope,
                     scopeViolations,
-                );
+                ));
             }
         }
 
@@ -5139,7 +5258,7 @@ export async function runReactAppAgent(
                 focusedEdit: focusedEditRequest,
             });
 
-            return withRequirementLedgerResult(
+            return withDesignPlanResult(withRequirementLedgerResult(
                 result,
                 requirements,
                 focusedEditRequest,
@@ -5151,7 +5270,7 @@ export async function runReactAppAgent(
                     : undefined,
                 focusedEditScope,
                 scopeViolations,
-            );
+            ));
         }
 
         await emitRunProgress(options.onProgress, "coding");
@@ -5184,7 +5303,7 @@ export async function runReactAppAgent(
                     : {}),
             });
 
-            return withRequirementLedgerResult(
+            return withDesignPlanResult(withRequirementLedgerResult(
                 withRunDiagnostics(result, runMetrics, runStartedAt),
                 requirements,
                 focusedEditRequest,
@@ -5196,7 +5315,7 @@ export async function runReactAppAgent(
                     : undefined,
                 focusedEditScope,
                 scopeViolations,
-            );
+            ));
         }
     }
 
@@ -5256,6 +5375,55 @@ export async function runReactAppAgent(
               routeRequest: navigationRequestKind === "routes",
           })
         : [];
+    const designPlannerAgent = new DesignPlannerAgent({
+        model: labelModelProviderStage(
+            plannerProvider,
+            "Design Planner model request",
+            options.signal,
+            createRunProgressHeartbeat(options.onProgress, "planning"),
+            options.llm.plannerTimeoutMs ?? 30_000,
+        ),
+    });
+    const routesForDesignPlan =
+        plannedPages.length > 0
+            ? plannedPages
+            : (plannerOutput.pages ?? [
+                  {
+                      id: "home",
+                      path: "/",
+                      label: "Home",
+                      purpose: plannerOutput.summary,
+                      acceptanceCriteria: [
+                          "The page satisfies the requested goal.",
+                      ],
+                  },
+              ]);
+    const preserveExistingDesignPlan =
+        options.designPlan !== undefined &&
+        (focusedEditRequest ||
+            (options.resetWorkspace === false &&
+                !explicitlyRequestsDesignPlanRefresh(executionRequest)));
+    const designPlanResult = await timeRunPhase(
+        runMetrics,
+        "plannerDurationMs",
+        () =>
+            createDesignPlanWithFallback({
+                designPlannerAgent,
+                goal: executionRequest,
+                requirements,
+                plannerOutput,
+                routes: routesForDesignPlan,
+                ...(options.designPlan
+                    ? { existingDesignPlan: options.designPlan }
+                    : {}),
+                preserveExisting: preserveExistingDesignPlan,
+                designPlanningEnabled:
+                    options.designPlanning ?? options.model === undefined,
+                ...(options.signal ? { signal: options.signal } : {}),
+            }),
+    );
+    resolvedDesignPlan = designPlanResult.designPlan;
+    resolvedDesignPlanSource = designPlanResult.designPlanSource;
     const reviewerAgent = new ReviewerAgent({
         model: labelModelProviderStage(
             reviewerProvider,
@@ -5337,6 +5505,15 @@ export async function runReactAppAgent(
             formatSkillInstructions(reactViteAppSkill),
             formatSkillInstructions(visualDesignSkill),
             formatRequirementLedgerContext(requirements),
+            resolvedDesignPlan
+                ? [
+                      formatDesignPlanForPrompt(resolvedDesignPlan),
+                      `DesignPlan source: ${resolvedDesignPlanSource ?? "fallback"}`,
+                      focusedEditRequest
+                          ? "Focused Edit must preserve this DesignPlan unless the user explicitly requested an overall style replacement."
+                          : "Structural generation must implement this DesignPlan. Do not fall back to a generic shared card/grid template.",
+                  ].join("\n")
+                : "",
             focusedEditRequest
                 ? [
                       "Focused Edit Fast Path:",
@@ -5490,6 +5667,12 @@ export async function runReactAppAgent(
                         : {}),
                     ...(options.topicLookupProvider
                         ? { topicLookupProvider: options.topicLookupProvider }
+                        : {}),
+                    ...(resolvedDesignPlan
+                        ? { designPlan: resolvedDesignPlan }
+                        : {}),
+                    ...(resolvedDesignPlanSource
+                        ? { designPlanSource: resolvedDesignPlanSource }
                         : {}),
                     ...(options.signal ? { signal: options.signal } : {}),
                 });
@@ -5896,7 +6079,16 @@ export async function runReactAppAgent(
                       reviewerAgent,
                       deterministicReview,
                       goal: options.goal,
-                      plan: coordination.plan,
+                      plan: [
+                          ...coordination.plan,
+                          ...(resolvedDesignPlan
+                              ? [
+                                    formatDesignPlanForPrompt(
+                                        resolvedDesignPlan,
+                                    ),
+                                ]
+                              : []),
+                      ],
                       source: await formatReviewerSourceEvidence(
                           options.workspaceRoot,
                           executionRequest,
@@ -6093,10 +6285,32 @@ export async function runReactAppAgent(
         review: latestAttempt.review,
         requirements: requirementResults,
     });
-    const finalReview = enforceFallbackPagesReview(
+    let finalReview = enforceFallbackPagesReview(
         ledgerReview,
         finalizedMetrics,
     );
+    const designPlanCompliance =
+        resolvedDesignPlan && resolvedDesignPlanSource
+            ? await evaluateDesignPlanCompliance({
+                  workspaceRoot: options.workspaceRoot,
+                  designPlan: resolvedDesignPlan,
+                  designPlanSource: resolvedDesignPlanSource,
+              })
+            : undefined;
+    const failedDesignCompliance =
+        designPlanCompliance?.filter(
+            (compliance) => compliance.status === "FAIL",
+        ) ?? [];
+    if (finalReview.accepted && failedDesignCompliance.length > 0) {
+        finalReview = {
+            ...finalReview,
+            accepted: false,
+            reason: [
+                finalReview.reason,
+                `DesignPlan compliance failed: ${failedDesignCompliance.map((item) => `${item.criterion} (${item.evidence})`).join("; ")}`,
+            ].join(" "),
+        };
+    }
     if (finalReview !== latestAttempt.review) {
         latestAttempt = {
             ...latestAttempt,
@@ -6105,7 +6319,7 @@ export async function runReactAppAgent(
         attempts[attempts.length - 1] = latestAttempt;
     }
 
-    return {
+    return withDesignPlanResult({
         workspaceRoot: options.workspaceRoot,
         coordination,
         agent: latestAttempt.agent,
@@ -6137,7 +6351,7 @@ export async function runReactAppAgent(
                 ? plannerOutput.summary
                 : undefined,
         ),
-    };
+    }, designPlanCompliance);
 
 }
 
