@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import type { ModelProvider } from "./model-provider.js";
 import { completeStructuredOutput } from "./complete-structured-output.js";
+import { ReviewerOutputJsonSchema } from "./structured-output-schemas.js";
 
 export const ReviewerOutputSchema = z.object({
     accepted: z.boolean(),
@@ -69,6 +70,7 @@ export class ReviewerAgent {
             parse: (text) =>
                 ReviewerOutputSchema.parse(JSON.parse(text) as unknown),
             outputName: "ReviewerOutput",
+            schema: ReviewerOutputJsonSchema,
         });
     }
 }

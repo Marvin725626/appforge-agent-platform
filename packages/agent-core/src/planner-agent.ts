@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import type { ModelProvider } from "./model-provider.js";
 import { completeStructuredOutput } from "./complete-structured-output.js";
+import { PlannerOutputJsonSchema } from "./structured-output-schemas.js";
 
 export const PlannerStepSchema = z.object({
     id: z.string().min(1),
@@ -143,6 +144,7 @@ export class PlannerAgent{
             parse: (text) =>
                 PlannerOutputSchema.parse(JSON.parse(text) as unknown),
             outputName: "PlannerOutput",
+            schema: PlannerOutputJsonSchema,
         });
     }
 }

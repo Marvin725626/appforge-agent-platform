@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
+import { access } from "node:fs/promises";
 import { stripAnsi } from "./strip-ansi.js";
 import {
     assertCommandAllowed,
@@ -16,6 +17,7 @@ export type CommandOptions = {
     timeoutMs?: number;
     maxOutputBytes?: number;
     signal?: AbortSignal;
+    spawnProcess?: typeof spawn;
 };
 
 // Cold dependency installs for generated apps regularly exceed 30 seconds.
@@ -29,7 +31,10 @@ type ResolvedCommand = {
     args: string[];
 };
 
-function resolveCommand(request: WorkspaceCommand): ResolvedCommand {
+async function resolveCommand(
+    workspaceRoot: string,
+    request: WorkspaceCommand,
+): Promise<ResolvedCommand> {
     if (request.command === "npm") {
         const npmCliPath =
             process.env.npm_execpath ??
@@ -44,6 +49,37 @@ function resolveCommand(request: WorkspaceCommand): ResolvedCommand {
         return {
             executable: process.execPath,
             args: [npmCliPath, ...request.args],
+        };
+    }
+
+    if (request.command === "node") {
+        const [cliRelativePath, ...cliArgs] = request.args;
+
+        if (!cliRelativePath) {
+            throw new Error("Node CLI command is missing a CLI path.");
+        }
+
+        const cliPath = path.resolve(workspaceRoot, cliRelativePath);
+        const relativeToWorkspace = path.relative(workspaceRoot, cliPath);
+
+        if (
+            relativeToWorkspace.startsWith("..") ||
+            path.isAbsolute(relativeToWorkspace)
+        ) {
+            throw new Error(
+                `Node CLI path must stay inside the workspace: ${cliRelativePath}`,
+            );
+        }
+
+        try {
+            await access(cliPath);
+        } catch {
+            throw new Error(`Node CLI was not found at ${cliRelativePath}.`);
+        }
+
+        return {
+            executable: process.execPath,
+            args: [cliPath, ...cliArgs],
         };
     }
 
@@ -178,13 +214,14 @@ export async function runWorkspaceCommand(
 ): Promise<CommandResult>{
     assertCommandAllowed(request);
     options.signal?.throwIfAborted();
+    const resolvedCommand = await resolveCommand(workspaceRoot, request);
 
     return new Promise((resolve,reject)=>{
         const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         const maxOutputBytes =
             options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-        const resolvedCommand = resolveCommand(request);
-        const child= spawn(resolvedCommand.executable,resolvedCommand.args,{
+        const spawnProcess = options.spawnProcess ?? spawn;
+        const child= spawnProcess(resolvedCommand.executable,resolvedCommand.args,{
             cwd:workspaceRoot,
             shell:false,
         });

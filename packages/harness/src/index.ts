@@ -120,6 +120,7 @@ export type ElementSnapshot = {
 export type BrowserRuntimeEvidence = {
     rootExists: boolean;
     rootHasContent: boolean;
+    rootHasVisibleMainContent: boolean;
     runtimeErrors: readonly string[];
 };
 
@@ -140,6 +141,8 @@ export function createBrowserRuntimeChecks(
     evidence: BrowserRuntimeEvidence,
 ): BrowserCheck[] {
     const rootPassed = evidence.rootExists && evidence.rootHasContent;
+    const visibleMainContentPassed =
+        evidence.rootExists && evidence.rootHasVisibleMainContent;
     const runtimeErrors = [
         ...new Set(
             evidence.runtimeErrors
@@ -167,6 +170,16 @@ export function createBrowserRuntimeChecks(
                 ? {}
                 : {
                       message: runtimeErrors.join(" | "),
+                  }),
+        },
+        {
+            name: "has visible main content",
+            passed: visibleMainContentPassed,
+            ...(visibleMainContentPassed
+                ? {}
+                : {
+                      message:
+                          "The application root did not contain a visible main, section, article, h1, or substantial root child with a usable bounding box.",
                   }),
         },
     ];
@@ -2320,14 +2333,19 @@ export class PlaywrightBrowserEvaluator implements BrowserEvaluator {
             page.setDefaultNavigationTimeout(timeoutMs);
             page.on("console", (message) => {
                 if (message.type() === "error") {
+                    const location = message.location();
+                    const locationText = location.url
+                        ? ` (${location.url}:${location.lineNumber}:${location.columnNumber})`
+                        : "";
                     runtimeErrors.add(
-                        `console.error: ${message.text() || "No message was provided."}`,
+                        `console.error${locationText}: ${message.text() || "No message was provided."}`,
                     );
                 }
             });
             page.on("pageerror", (error) => {
+                const stack = error.stack ? ` Stack: ${error.stack}` : "";
                 runtimeErrors.add(
-                    `Uncaught page error: ${error.message || String(error)}`,
+                    `Uncaught page error: ${error.message || String(error)}${stack}`,
                 );
             });
             page.on("crash", () => {
@@ -2472,6 +2490,30 @@ export class PlaywrightBrowserEvaluator implements BrowserEvaluator {
 
             rootEvidence = await page.evaluate(() => {
                 const root = document.querySelector("#root");
+                const hasUsableBox = (element: Element): boolean => {
+                    const htmlElement = element as HTMLElement;
+                    const style = window.getComputedStyle(htmlElement);
+
+                    if (
+                        style.display === "none" ||
+                        style.visibility === "hidden" ||
+                        Number.parseFloat(style.opacity || "1") < 0.05
+                    ) {
+                        return false;
+                    }
+
+                    const box = htmlElement.getBoundingClientRect();
+
+                    return box.width >= 24 && box.height >= 24;
+                };
+                const visibleMainContent = root
+                    ? [
+                          ...root.querySelectorAll(
+                              "main, section, article, h1",
+                          ),
+                          ...Array.from(root.children),
+                      ].some(hasUsableBox)
+                    : false;
 
                 return {
                     rootExists: root !== null,
@@ -2480,6 +2522,7 @@ export class PlaywrightBrowserEvaluator implements BrowserEvaluator {
                             (root.children.length > 0 ||
                                 (root.textContent ?? "").trim().length > 0),
                     ),
+                    rootHasVisibleMainContent: visibleMainContent,
                 };
             });
         } catch (error) {
@@ -2510,6 +2553,7 @@ export class PlaywrightBrowserEvaluator implements BrowserEvaluator {
             const runtimeErrorChecks = createBrowserRuntimeChecks({
                 rootExists: false,
                 rootHasContent: false,
+                rootHasVisibleMainContent: false,
                 runtimeErrors: [...runtimeErrors],
             });
 

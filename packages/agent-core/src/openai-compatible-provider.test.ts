@@ -594,6 +594,142 @@ describe("OpenAICompatibleProvider", () => {
         });
     });
 
+    it("sends strict json_schema, disables thinking for doubao 2.1, and stays non-streaming by default", async () => {
+        const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    choices: [
+                        {
+                            message: {
+                                content: '{"accepted":true}',
+                            },
+                            finish_reason: "stop",
+                        },
+                    ],
+                }),
+                {
+                    status: 200,
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                },
+            ),
+        );
+
+        const provider = new OpenAICompatibleProvider({
+            baseUrl: "https://example.com/v1",
+            apiKey: "test-key",
+            model: "doubao-seed-2.1-pro",
+            stream: true,
+        });
+
+        const result = await provider.complete({
+            stream: false,
+            responseFormat: {
+                type: "json_schema",
+                name: "ReviewerOutput",
+                strict: true,
+                schema: {
+                    type: "object",
+                    properties: {
+                        accepted: { type: "boolean" },
+                    },
+                    required: ["accepted"],
+                    additionalProperties: false,
+                },
+            },
+            messages: [
+                {
+                    role: "user",
+                    content: "Return JSON",
+                },
+            ],
+        });
+
+        const body = JSON.parse(
+            String(fetchMock.mock.calls[0]?.[1]?.body),
+        ) as Record<string, unknown>;
+
+        expect(body.stream).toBe(false);
+        expect(body.thinking).toEqual({ type: "disabled" });
+        expect(body.response_format).toEqual({
+            type: "json_schema",
+            json_schema: {
+                name: "ReviewerOutput",
+                strict: true,
+                schema: {
+                    type: "object",
+                    properties: {
+                        accepted: { type: "boolean" },
+                    },
+                    required: ["accepted"],
+                    additionalProperties: false,
+                },
+            },
+        });
+        expect(result.finishReason).toBe("stop");
+        expect(result.metrics?.stream).toBe(false);
+        expect(result.metrics?.thinkingEnabled).toBe(true);
+        expect(result.metrics?.responseLength).toBe('{"accepted":true}'.length);
+        expect(result.metrics?.durationMs).toEqual(expect.any(Number));
+    });
+
+    it("does not add doubao thinking controls for other providers", async () => {
+        const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    choices: [
+                        {
+                            message: {
+                                content: '{"accepted":true}',
+                            },
+                        },
+                    ],
+                }),
+                {
+                    status: 200,
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                },
+            ),
+        );
+
+        const provider = new OpenAICompatibleProvider({
+            baseUrl: "https://example.com/v1",
+            apiKey: "test-key",
+            model: "test-model",
+        });
+
+        await provider.complete({
+            responseFormat: {
+                type: "json_schema",
+                name: "ReviewerOutput",
+                strict: true,
+                schema: {
+                    type: "object",
+                    properties: {
+                        accepted: { type: "boolean" },
+                    },
+                    required: ["accepted"],
+                    additionalProperties: false,
+                },
+            },
+            messages: [
+                {
+                    role: "user",
+                    content: "Return JSON",
+                },
+            ],
+        });
+
+        const body = JSON.parse(
+            String(fetchMock.mock.calls[0]?.[1]?.body),
+        ) as Record<string, unknown>;
+
+        expect(body.thinking).toBeUndefined();
+    });
+
     it("sends max_tokens when configured", async () => {
         const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
             new Response(

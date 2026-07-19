@@ -173,6 +173,7 @@ describe("runReactAppAgent", () => {
                 agentFinished: true,
                 installPassed: true,
                 buildPassed: true,
+                typecheckPassed: true,
                 evalPassed: true,
             },
         });
@@ -3158,7 +3159,7 @@ describe("runReactAppAgent", () => {
         );
     }, 20_000);
 
-    it("keeps browser eval failures as non-blocking warnings", async () => {
+    it("blocks acceptance on browser runtime failure and repairs before accepting", async () => {
         const templateRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-api-template-"),
         );
@@ -3186,21 +3187,37 @@ describe("runReactAppAgent", () => {
             "utf8",
         );
 
-        const taskApp =
+        const brokenTaskApp =
             "export function App() { const tasks = ['Learn']; return <div><input /><button>Add</button>{tasks.map((task) => <p>{task}</p>)}</div>; }";
+        const repairedTaskApp =
+            "export function App() { const tasks = ['Learn']; return <main><h1>Tasks</h1><input /><button type=\"button\">Add</button>{tasks.map((task) => <p key={task}>{task}</p>)}</main>; }";
         const model = new FakeModelProvider([
             PLANNER_RESPONSE,
             {
                 content: JSON.stringify({
                     type: "write_file",
                     path: "src/App.tsx",
-                    content: taskApp,
+                    content: brokenTaskApp,
                 }),
             },
             {
                 content: JSON.stringify({
                     type: "finish",
                     summary: "Initial attempt done",
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "edit_file",
+                    path: "src/App.tsx",
+                    oldText: brokenTaskApp,
+                    newText: repairedTaskApp,
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "Browser runtime repair done",
                 }),
             },
             APPROVED_REVIEW_RESPONSE,
@@ -3215,6 +3232,12 @@ describe("runReactAppAgent", () => {
                         passed: false,
                         message: "The task text was not rendered.",
                     },
+                    {
+                        name: "has no runtime errors",
+                        passed: false,
+                        message:
+                            "Uncaught page error: ReferenceError: features is not defined Stack: ReferenceError: features is not defined at App (src/App.tsx:3:18)",
+                    },
                 ],
             },
             {
@@ -3222,6 +3245,18 @@ describe("runReactAppAgent", () => {
                 checks: [
                     {
                         name: "adds a task item",
+                        passed: true,
+                    },
+                    {
+                        name: "application root renders",
+                        passed: true,
+                    },
+                    {
+                        name: "has visible main content",
+                        passed: true,
+                    },
+                    {
+                        name: "has no runtime errors",
                         passed: true,
                     },
                 ],
@@ -3251,10 +3286,122 @@ describe("runReactAppAgent", () => {
         });
 
         expect(result.review.accepted).toBe(true);
-        expect(result.browserEval?.passed).toBe(false);
-        expect(result.review.reason).toContain("Browser eval warning");
-        expect(result.attempts).toHaveLength(1);
+        expect(result.browserEval?.passed).toBe(true);
+        expect(result.attempts).toHaveLength(2);
+        expect(result.attempts[0]?.review.accepted).toBe(false);
+        expect(result.attempts[0]?.review.reason).toContain(
+            "页面构建成功，但浏览器运行验证失败",
+        );
+        expect(result.attempts[0]?.review.reason).toContain("ReferenceError");
+        expect(result.attempts[1]?.kind).toBe("repair");
+        const repairRequest = model.requests[3]?.messages[1]?.content ?? "";
+        expect(repairRequest).toContain("Browser eval checks:");
+        expect(repairRequest).toContain("ReferenceError");
+        expect(browserResults).toHaveLength(0);
     }, 15_000);
+
+    it("runs typecheck and repairs undefined TypeScript references before accepting", async () => {
+        const templateRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-template-"),
+        );
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-typecheck-repair-"),
+        );
+
+        temporaryDirectories.push(templateRoot, workspaceRoot);
+
+        await mkdir(path.join(templateRoot, "src"));
+
+        await writeFile(
+            path.join(templateRoot, "package.json"),
+            JSON.stringify({
+                scripts: {
+                    build: "node -e \"console.log('build ok')\"",
+                    typecheck:
+                        "node -e \"const fs=require('fs'); const source=fs.readFileSync('src/App.tsx','utf8'); if (source.includes('tasks.map') && !source.includes('const tasks')) { console.error('src/App.tsx:2:24 - error TS2304: Cannot find name tasks.'); process.exit(1); } console.log('typecheck ok');\"",
+                },
+            }),
+            "utf8",
+        );
+
+        await writeFile(
+            path.join(templateRoot, "src", "App.tsx"),
+            "export function App() { return null; }",
+            "utf8",
+        );
+
+        const brokenApp =
+            "export function App() { return <main><h1>Task application</h1><p>Add and review project tasks.</p><input aria-label=\"New task\" /><button>Add task</button>{tasks.map((task) => <p key={task}>{task}</p>)}</main>; }";
+        const fixedApp =
+            "export function App() { const tasks = ['Runtime gate']; return <main><h1>Task application</h1><p>Add and review project tasks.</p><input aria-label=\"New task\" /><button>Add task</button>{tasks.map((task) => <p key={task}>{task}</p>)}</main>; }";
+        const model = new FakeModelProvider([
+            PLANNER_RESPONSE,
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.tsx",
+                    content: brokenApp,
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "Initial attempt done",
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.tsx",
+                    content: fixedApp,
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "Typecheck repair done",
+                }),
+            },
+            APPROVED_REVIEW_RESPONSE,
+        ]);
+
+        const result = await runReactAppAgent({
+            goal: "Create a simple task app",
+            workspaceRoot,
+            templateRoot,
+            model,
+            maxRepairAttempts: 1,
+            evaluateBrowser: async () => ({
+                passed: true,
+                checks: [
+                    {
+                        name: "application root renders",
+                        passed: true,
+                    },
+                    {
+                        name: "has visible main content",
+                        passed: true,
+                    },
+                    {
+                        name: "has no runtime errors",
+                        passed: true,
+                    },
+                ],
+            }),
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        expect(result.review.accepted).toBe(true);
+        expect(result.attempts).toHaveLength(2);
+        expect(result.attempts[0]?.typecheck?.exitCode).toBe(1);
+        expect(result.attempts[0]?.eval.passed).toBe(false);
+        expect(result.attempts[0]?.review.reason).toContain("typecheck failed");
+        expect(result.attempts[1]?.typecheck?.exitCode).toBe(0);
+    }, 20_000);
 
     it("keeps repairing until review passes or max repair attempts is reached", async () => {
         const templateRoot = await mkdtemp(

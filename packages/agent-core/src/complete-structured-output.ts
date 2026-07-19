@@ -1,4 +1,5 @@
 import type {
+    JsonSchemaResponseFormat,
     ModelProvider,
     ModelRequest,
 } from "./model-provider.js";
@@ -8,6 +9,7 @@ export type CompleteStructuredOutputOptions<T> = {
     request: ModelRequest;
     parse: (text: string) => T;
     outputName: string;
+    schema?: JsonSchemaResponseFormat["schema"];
     maxAttempts?: number;
     invalidResponseInstruction?: string;
 };
@@ -44,7 +46,17 @@ export async function completeStructuredOutput<T>(
 
     let request: ModelRequest = {
         ...options.request,
-        responseFormat: options.request.responseFormat ?? "json_object",
+        responseFormat:
+            options.request.responseFormat ??
+            (options.schema
+                ? {
+                      type: "json_schema",
+                      name: options.outputName,
+                      schema: options.schema,
+                      strict: true,
+                  }
+                : "json_object"),
+        stream: options.request.stream ?? false,
     };
     let lastError: unknown;
     let lastOutput = "";
@@ -54,6 +66,12 @@ export async function completeStructuredOutput<T>(
         const response = await options.model.complete(request);
         request.signal?.throwIfAborted();
         lastOutput = response.content;
+
+        if (response.finishReason === "length") {
+            throw new Error(
+                `${options.outputName} output_truncated: model response ended before a complete JSON object was available. finish_reason=${response.finishReason ?? "unknown"} responseLength=${response.content.length}`,
+            );
+        }
 
         try {
             return options.parse(response.content);

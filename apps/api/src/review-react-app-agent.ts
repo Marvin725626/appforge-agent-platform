@@ -7,6 +7,7 @@ export type ReactAppAgentReview = {
         agentFinished: boolean;
         installPassed: boolean;
         buildPassed: boolean;
+        typecheckPassed?: boolean;
         evalPassed: boolean;
         browserPassed?: boolean;
     };
@@ -21,7 +22,9 @@ export function hasReviewQualityFailure(
         !review.checks.agentFinished ||
         !review.checks.installPassed ||
         !review.checks.buildPassed ||
-        !review.checks.evalPassed
+        review.checks.typecheckPassed === false ||
+        !review.checks.evalPassed ||
+        review.checks.browserPassed === false
     );
 }
 
@@ -59,15 +62,6 @@ export function combineReactAppAgentReviews(
                 accepted: true,
                 reason:
                     "LLM reviewer only found an image file extension/media-type mismatch. The generated app passed install/build/eval, so the review was accepted because image assets are saved using their actual media type.",
-            };
-        }
-
-        if (isBrowserEvalOnlyReviewRejection(llmReview)) {
-            return {
-                ...deterministicReview,
-                accepted: true,
-                reason:
-                    "LLM reviewer only found non-blocking browser/contrast warnings. The generated app passed install/build/static eval, so the review was accepted and the browser issue was kept as a warning.",
             };
         }
 
@@ -157,6 +151,9 @@ export type ReviewReactAppAgentInput = {
     build: {
         exitCode: number;
     };
+    typecheck?: {
+        exitCode: number;
+    };
     eval:{
         passed:boolean;
     };
@@ -188,8 +185,46 @@ function formatBrowserEvalFailure(input: ReviewReactAppAgentInput): string {
             }) ?? [];
 
     return failedChecks.length > 0
-        ? `browser eval failed (${failedChecks.join("; ")})`
-        : "browser eval failed";
+        ? `browser runtime validation failed (${failedChecks.join("; ")})`
+        : "browser runtime validation failed";
+}
+
+function formatBrowserRuntimeFailureReason(
+    input: ReviewReactAppAgentInput,
+): string {
+    const browserFailure = formatBrowserEvalFailure(input);
+
+    if (browserFailure.length === 0) {
+        return "";
+    }
+
+    const rootCheck = input.browserEval?.checks?.find(
+        (check) => check.name === "application root renders",
+    );
+    const visibleCheck = input.browserEval?.checks?.find(
+        (check) => check.name === "has visible main content",
+    );
+    const runtimeCheck = input.browserEval?.checks?.find(
+        (check) => check.name === "has no runtime errors",
+    );
+
+    return [
+        "页面构建成功，但浏览器运行验证失败。",
+        browserFailure,
+        rootCheck
+            ? `root: ${rootCheck.passed ? "passed" : "failed"}${
+                  rootCheck.message ? ` (${rootCheck.message})` : ""
+              }`
+            : "root: unavailable",
+        visibleCheck
+            ? `visible content: ${visibleCheck.passed ? "passed" : "failed"}${
+                  visibleCheck.message ? ` (${visibleCheck.message})` : ""
+              }`
+            : "visible content: unavailable",
+        runtimeCheck?.message
+            ? `runtime console errors: ${runtimeCheck.message}`
+            : "runtime console errors: none reported",
+    ].join(" ");
 }
 
 export function reviewReactAppAgentResult(
@@ -197,9 +232,11 @@ export function reviewReactAppAgentResult(
 ): ReactAppAgentReview {
     const installPassed = input.install.exitCode === 0;
     const buildPassed = input.build.exitCode === 0;
+    const typecheckPassed = input.typecheck
+        ? input.typecheck.exitCode === 0
+        : undefined;
     const evalPassed = input.eval.passed;
     const browserPassed = input.browserEval?.passed;
-    const browserWarning = formatBrowserEvalFailure(input);
     const deterministicallyCompletedAfterModelError =
         input.agent.stopReason === "model_error" &&
         input.agent.madeProgress === true &&
@@ -231,6 +268,10 @@ export function reviewReactAppAgentResult(
         evalPassed,
     };
 
+    if (typecheckPassed !== undefined) {
+        checks.typecheckPassed = typecheckPassed;
+    }
+
     if (browserPassed !== undefined) {
         checks.browserPassed = browserPassed;
     }
@@ -239,22 +280,26 @@ export function reviewReactAppAgentResult(
         checks.agentFinished ? "" : "agent did not finish",
         checks.installPassed ? "" : "npm install failed",
         checks.buildPassed ? "" : "npm build failed",
+        checks.typecheckPassed === false ? "typecheck failed" : "",
         checks.evalPassed ? "":"eval failed",
+        checks.browserPassed === false
+            ? formatBrowserRuntimeFailureReason(input)
+            : "",
     ].filter((failure) => failure.length > 0);
 
     const accepted = qualityFailures.length === 0;
-    const acceptedBrowserWarning =
-        accepted && browserWarning.length > 0
-            ? ` Browser eval warning was recorded but is non-blocking: ${browserWarning}.`
-            : "";
+    const successfulValidationSummary =
+        browserPassed === true
+            ? "install/build/static eval passed and browser runtime checks passed"
+            : "install/build/static eval passed";
     const reason = accepted
         ? deterministicallyCompletedAfterModelError
-            ? `The model timed out after making workspace progress, but install/build/static eval passed.${acceptedBrowserWarning}`
+            ? `The model timed out after making workspace progress, but ${successfulValidationSummary}.`
             : deterministicallyCompletedAfterLateActionFailure
-              ? `The agent hit a late action failure after changing the workspace, but install/build/static eval passed.${acceptedBrowserWarning}`
+              ? `The agent hit a late action failure after changing the workspace, but ${successfulValidationSummary}.`
               : deterministicallyCompletedAfterValidatedProgress
-                ? `The agent stopped after making workspace progress, but install/build/static eval passed.${acceptedBrowserWarning}`
-            : `Agent finished and install/build/static eval passed.${acceptedBrowserWarning}`
+                ? `The agent stopped after making workspace progress, but ${successfulValidationSummary}.`
+            : `Agent finished and ${successfulValidationSummary}.`
         : `Rejected because ${qualityFailures.join(", ")}.`;
 
     return {

@@ -201,7 +201,7 @@ describe("reviewReactAppAgentResult", () => {
         expect(review.checks.evalPassed).toBe(false);
     });
 
-    it("accepts browser eval failures as non-blocking warnings", () => {
+    it("blocks acceptance when browser runtime validation fails", () => {
         const review = reviewReactAppAgentResult({
             agent: {
                 finished: true,
@@ -217,11 +217,25 @@ describe("reviewReactAppAgentResult", () => {
             },
             browserEval: {
                 passed: false,
+                checks: [
+                    {
+                        name: "application root renders",
+                        passed: false,
+                        message: "#root was empty.",
+                    },
+                    {
+                        name: "has visible main content",
+                        passed: false,
+                    },
+                ],
             },
         });
 
-        expect(review.accepted).toBe(true);
-        expect(review.reason).toContain("Browser eval warning");
+        expect(review.accepted).toBe(false);
+        expect(review.reason).toContain(
+            "页面构建成功，但浏览器运行验证失败",
+        );
+        expect(review.reason).toContain("#root was empty");
         expect(review.checks.browserPassed).toBe(false);
     });
 });
@@ -315,7 +329,7 @@ describe("combineReactAppAgentReviews", () => {
         expect(review.accepted).toBe(false);
     });
 
-    it("accepts when the LLM reviewer only rejects non-blocking browser contrast warnings", () => {
+    it("keeps browser runtime failures blocking even when the LLM reviewer calls them warnings", () => {
         const deterministicReview = reviewReactAppAgentResult({
             agent: {
                 finished: true,
@@ -341,8 +355,10 @@ describe("combineReactAppAgentReviews", () => {
             issues: ["Visible text needs 4.5:1 contrast"],
         });
 
-        expect(review.accepted).toBe(true);
-        expect(review.reason).toContain("non-blocking browser/contrast");
+        expect(review.accepted).toBe(false);
+        expect(review.reason).toContain(
+            "页面构建成功，但浏览器运行验证失败",
+        );
     });
 });
 

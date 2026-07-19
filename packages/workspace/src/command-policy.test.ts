@@ -12,6 +12,22 @@ describe("assertCommandAllowed", () => {
         ).not.toThrow();
     });
 
+    it("allows approved typecheck commands", () => {
+        expect(() =>
+            assertCommandAllowed({
+                command: "npm",
+                args: ["run", "typecheck"],
+            }),
+        ).not.toThrow();
+
+        expect(() =>
+            assertCommandAllowed({
+                command: "node",
+                args: ["node_modules/typescript/bin/tsc", "--noEmit"],
+            }),
+        ).not.toThrow();
+    });
+
     it("rejects a command that is not approved", () => {
         expect(() =>
             assertCommandAllowed({

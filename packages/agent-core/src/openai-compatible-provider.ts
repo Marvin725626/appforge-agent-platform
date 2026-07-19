@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type {
+    JsonSchemaResponseFormat,
     ModelProvider,
     ModelRequest,
     ModelResponse,
@@ -25,6 +26,7 @@ const ChatCompletionResponseSchema = z.object({
                 message: z.object({
                     content: z.string(),
                 }),
+                finish_reason: z.string().nullable().optional(),
             }),
         )
         .min(1),
@@ -40,6 +42,7 @@ const ChatCompletionChunkSchema = z.object({
                     content: z.string().nullable().optional(),
                 })
                 .passthrough(),
+            finish_reason: z.string().nullable().optional(),
         }).passthrough(),
     ),
 }).passthrough();
@@ -154,6 +157,7 @@ async function readChatCompletionEventStream(
     let lineBuffer = "";
     let dataLines: string[] = [];
     let content = "";
+    let finishReason: string | null | undefined;
     let sawChoice = false;
     let reachedDone = false;
 
@@ -195,6 +199,10 @@ async function readChatCompletionEventStream(
 
         if (typeof choice.delta.content === "string") {
             content += choice.delta.content;
+        }
+
+        if (choice.finish_reason !== undefined) {
+            finishReason = choice.finish_reason;
         }
     };
 
@@ -264,7 +272,14 @@ async function readChatCompletionEventStream(
         throw new Error("Model stream did not include a choice");
     }
 
-    return { content };
+    return {
+        content,
+        ...(finishReason !== undefined ? { finishReason } : {}),
+        metrics: {
+            responseLength: content.length,
+            stream: true,
+        },
+    };
 }
 
 function isEventStreamResponse(response: Response): boolean {
@@ -314,9 +329,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
     private async completeOnce(
         request: ModelRequest,
     ): Promise<ModelResponse> {
-        let useStream = this.options.stream === true;
-        let useJsonResponseFormat = request.responseFormat === "json_object";
-        let useThinking = this.options.thinking !== undefined;
+        let useStream = request.stream ?? this.options.stream === true;
+        let useJsonResponseFormat = request.responseFormat !== undefined;
+        let useThinking = this.resolveThinkingType(request) !== undefined;
 
         // Compatibility fallbacks can omit unsupported response_format,
         // streaming, and provider-specific thinking controls independently.
@@ -363,6 +378,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     ): Promise<ModelResponse> {
         const controller = new AbortController();
         const timeoutMs = this.options.timeoutMs ?? 60_000;
+        const startedAt = Date.now();
         const abortFromRequest = () => {
             controller.abort(request.signal?.reason);
         };
@@ -381,6 +397,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         );
 
         try {
+            const thinkingType = this.resolveThinkingType(request);
             const response = await activityTimeout.wait(
                 fetch(`${this.options.baseUrl}/chat/completions`, {
                     method: "POST",
@@ -394,11 +411,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
                         ...(this.options.maxTokens !== undefined
                             ? { max_tokens: this.options.maxTokens }
                             : {}),
-                        ...(compatibility.useJsonResponseFormat
+                        ...(compatibility.useJsonResponseFormat &&
+                        request.responseFormat
                             ? {
-                                  response_format: {
-                                      type: "json_object",
-                                  },
+                                  response_format:
+                                      formatResponseFormat(
+                                          request.responseFormat,
+                                      ),
                               }
                             : {}),
                         ...(compatibility.useStream
@@ -408,14 +427,18 @@ export class OpenAICompatibleProvider implements ModelProvider {
                                       include_usage: true,
                                   },
                               }
+                            : request.stream === false
+                              ? {
+                                    stream: false,
+                                }
                             : {}),
                         ...(this.options.serviceTier
                             ? { service_tier: this.options.serviceTier }
                             : {}),
-                        ...(compatibility.useThinking && this.options.thinking
+                        ...(compatibility.useThinking && thinkingType
                             ? {
                                   thinking: {
-                                      type: this.options.thinking,
+                                      type: thinkingType,
                                   },
                               }
                             : {}),
@@ -439,11 +462,28 @@ export class OpenAICompatibleProvider implements ModelProvider {
             }
 
             if (isEventStreamResponse(response)) {
-                return await readChatCompletionEventStream(
+                const streamResponse = await readChatCompletionEventStream(
                     response,
                     activityTimeout,
                     request.onActivity,
                 );
+                return {
+                    content: streamResponse.content,
+                    ...(streamResponse.finishReason !== undefined
+                        ? { finishReason: streamResponse.finishReason }
+                        : {}),
+                    ...(isJsonSchemaResponseFormat(request.responseFormat)
+                        ? {
+                              metrics: {
+                                  ...streamResponse.metrics,
+                                  durationMs: Date.now() - startedAt,
+                                  responseLength: streamResponse.content.length,
+                                  thinkingEnabled: compatibility.useThinking,
+                                  stream: true,
+                              },
+                          }
+                        : {}),
+                };
             }
 
             // Some OpenAI-compatible services ignore stream=true and return a
@@ -464,6 +504,19 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
             return {
                 content: firstChoice.message.content,
+                ...(firstChoice.finish_reason !== undefined
+                    ? { finishReason: firstChoice.finish_reason }
+                    : {}),
+                ...(isJsonSchemaResponseFormat(request.responseFormat)
+                    ? {
+                          metrics: {
+                              durationMs: Date.now() - startedAt,
+                              responseLength: firstChoice.message.content.length,
+                              thinkingEnabled: compatibility.useThinking,
+                              stream: false,
+                          },
+                      }
+                    : {}),
             };
         } catch (error) {
             if (request.signal?.aborted) {
@@ -495,6 +548,57 @@ export class OpenAICompatibleProvider implements ModelProvider {
             request.signal?.removeEventListener("abort", abortFromRequest);
         }
     }
+
+    private resolveThinkingType(
+        request: ModelRequest,
+    ): OpenAICompatibleProviderOptions["thinking"] | undefined {
+        if (request.thinking) {
+            return request.thinking.type;
+        }
+
+        if (this.options.thinking !== undefined) {
+            return this.options.thinking;
+        }
+
+        if (
+            request.responseFormat !== undefined &&
+            this.options.model.toLowerCase() === "doubao-seed-2.1-pro"
+        ) {
+            return "disabled";
+        }
+
+        return undefined;
+    }
+}
+
+function isJsonSchemaResponseFormat(
+    responseFormat: ModelRequest["responseFormat"],
+): responseFormat is JsonSchemaResponseFormat {
+    return typeof responseFormat === "object" && responseFormat.type === "json_schema";
+}
+
+function formatResponseFormat(
+    responseFormat: NonNullable<ModelRequest["responseFormat"]>,
+): { type: "json_object" } | {
+    type: "json_schema";
+    json_schema: {
+        name: string;
+        strict: boolean;
+        schema: JsonSchemaResponseFormat["schema"];
+    };
+} {
+    if (responseFormat === "json_object") {
+        return { type: "json_object" };
+    }
+
+    return {
+        type: "json_schema",
+        json_schema: {
+            name: responseFormat.name,
+            strict: responseFormat.strict ?? true,
+            schema: responseFormat.schema,
+        },
+    };
 }
 
 function isTransientModelRequestError(error: unknown): boolean {

@@ -179,6 +179,10 @@ describe("PlaywrightBrowserEvaluator runtime gate", () => {
             name: "has no runtime errors",
             passed: true,
         });
+        expect(result.checks).toContainEqual({
+            name: "has visible main content",
+            passed: true,
+        });
     }, 15_000);
 
     it("rejects logo text that blends into its background", async () => {
@@ -458,6 +462,25 @@ describe("PlaywrightBrowserEvaluator runtime gate", () => {
             name: "application root renders",
             passed: false,
             message: "The #root element remained empty after the page loaded.",
+        });
+    }, 15_000);
+
+    it("rejects a populated root without visible main content", async () => {
+        const evaluator = new PlaywrightBrowserEvaluator();
+        const result = await evaluator.evaluate({
+            url: createDataPage(
+                '<div id="root"><main style="display:none"><h1>Hidden page</h1></main></div>',
+            ),
+            goal: "Verify visible main page content",
+            timeoutMs: 2_000,
+        });
+
+        expect(result.passed).toBe(false);
+        expect(result.checks).toContainEqual({
+            name: "has visible main content",
+            passed: false,
+            message:
+                "The application root did not contain a visible main, section, article, h1, or substantial root child with a usable bounding box.",
         });
     }, 15_000);
 
@@ -1082,6 +1105,7 @@ describe("createBrowserRuntimeChecks", () => {
             createBrowserRuntimeChecks({
                 rootExists: true,
                 rootHasContent: true,
+                rootHasVisibleMainContent: true,
                 runtimeErrors: [],
             }),
         ).toEqual([
@@ -1093,6 +1117,10 @@ describe("createBrowserRuntimeChecks", () => {
                 name: "has no runtime errors",
                 passed: true,
             },
+            {
+                name: "has visible main content",
+                passed: true,
+            },
         ]);
     });
 
@@ -1101,6 +1129,7 @@ describe("createBrowserRuntimeChecks", () => {
             createBrowserRuntimeChecks({
                 rootExists: true,
                 rootHasContent: false,
+                rootHasVisibleMainContent: false,
                 runtimeErrors: [],
             }),
         ).toContainEqual({
@@ -1114,6 +1143,7 @@ describe("createBrowserRuntimeChecks", () => {
         const checks = createBrowserRuntimeChecks({
             rootExists: true,
             rootHasContent: true,
+            rootHasVisibleMainContent: true,
             runtimeErrors: [
                 "console.error: Objects are not valid as a React child ({title,date})",
                 "Uncaught page error: Objects are not valid as a React child",
@@ -1133,6 +1163,7 @@ describe("createBrowserRuntimeChecks", () => {
         const runtimeCheck = createBrowserRuntimeChecks({
             rootExists: true,
             rootHasContent: true,
+            rootHasVisibleMainContent: true,
             runtimeErrors: [
                 repeatedError,
                 repeatedError,

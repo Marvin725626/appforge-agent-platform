@@ -81,6 +81,7 @@ import {
 
 const INSTALL_COMMAND_TIMEOUT_MS = 5 * 60 * 1_000;
 const BUILD_COMMAND_TIMEOUT_MS = 2 * 60 * 1_000;
+const TYPECHECK_COMMAND_TIMEOUT_MS = 2 * 60 * 1_000;
 
 export type RunReactAppAgentOptions = {
     goal: string;
@@ -228,6 +229,7 @@ export type RunReactAppAgentAttempt = {
     agent: RunCodingAgentLoopResult;
     install: RunReactAppAgentCommandResult;
     build: RunReactAppAgentCommandResult;
+    typecheck?: RunReactAppAgentCommandResult;
     eval: ReactAppEvalResult;
     browserEval?: BrowserEvalResult;
     llmReview?: ReviewerOutput;
@@ -242,6 +244,7 @@ export type RunReactAppAgentResult = {
     agent: RunCodingAgentLoopResult;
     install: RunReactAppAgentCommandResult;
     build: RunReactAppAgentCommandResult;
+    typecheck?: RunReactAppAgentCommandResult;
     eval:ReactAppEvalResult;
     browserEval?: BrowserEvalResult;
     review: ReactAppAgentReview;
@@ -1606,11 +1609,11 @@ function formatEvaluationSummary(
         ),
         ...(browserEval
             ? [
-                  `Browser evaluation: ${browserEval.passed ? "passed" : "warning only; non-blocking"}`,
+                  `Browser evaluation: ${browserEval.passed ? "passed" : "failed; blocking runtime gate"}`,
                   ...browserEval.checks.map(
                       (check) =>
                           [
-                              `- ${check.name}: ${check.passed ? "passed" : "warning"}`,
+                              `- ${check.name}: ${check.passed ? "passed" : "failed"}`,
                               check.message ? ` (${check.message})` : "",
                           ].join(""),
                   ),
@@ -1672,6 +1675,78 @@ async function pathExists(filePath: string): Promise<boolean> {
     } catch {
         return false;
     }
+}
+
+async function hasPackageScript(
+    workspaceRoot: string,
+    scriptName: string,
+): Promise<boolean> {
+    try {
+        const raw = await readFile(
+            path.join(workspaceRoot, "package.json"),
+            "utf8",
+        );
+        const parsed = JSON.parse(raw) as { scripts?: Record<string, unknown> };
+
+        return typeof parsed.scripts?.[scriptName] === "string";
+    } catch {
+        return false;
+    }
+}
+
+async function findLocalTypeScriptCli(
+    workspaceRoot: string,
+): Promise<string | undefined> {
+    const cliRelativePath = "node_modules/typescript/bin/tsc";
+    const cliPath = path.join(workspaceRoot, cliRelativePath);
+
+    if (await pathExists(cliPath)) {
+        return cliRelativePath;
+    }
+
+    return undefined;
+}
+
+async function runTypecheckIfAvailable(input: {
+    workspaceRoot: string;
+    signal?: AbortSignal;
+}): Promise<RunReactAppAgentCommandResult> {
+    if (await hasPackageScript(input.workspaceRoot, "typecheck")) {
+        return runWorkspaceCommand(
+            input.workspaceRoot,
+            {
+                command: "npm",
+                args: ["run", "typecheck"],
+            },
+            {
+                timeoutMs: TYPECHECK_COMMAND_TIMEOUT_MS,
+                ...(input.signal ? { signal: input.signal } : {}),
+            },
+        );
+    }
+
+    const tscCli = await findLocalTypeScriptCli(input.workspaceRoot);
+
+    if (!tscCli) {
+        return {
+            exitCode: 0,
+            stdout:
+                "Skipped typecheck because no npm typecheck script or local TypeScript compiler was available.",
+            stderr: "",
+        };
+    }
+
+    return runWorkspaceCommand(
+        input.workspaceRoot,
+        {
+            command: "node",
+            args: [tscCli, "--noEmit"],
+        },
+        {
+            timeoutMs: TYPECHECK_COMMAND_TIMEOUT_MS,
+            ...(input.signal ? { signal: input.signal } : {}),
+        },
+    );
 }
 
 async function formatLocalAssetReferenceEvidence(
@@ -4844,7 +4919,7 @@ function chooseAgentMaxSteps(input: {
             return input.hasImageAssetTool ? 5 : 4;
         }
 
-        return input.hasImageAssetTool ? 9 : 8;
+        return 8;
     }
 
     if (input.routeRequest) {
@@ -5879,9 +5954,18 @@ export async function runReactAppAgent(
                       .join("\n"),
               }
             : buildResult;
+        let typecheck: RunReactAppAgentCommandResult | undefined;
+
+        if (install.exitCode === 0 && build.exitCode === 0) {
+            typecheck = await runTypecheckIfAvailable({
+                workspaceRoot: options.workspaceRoot,
+                ...(options.signal ? { signal: options.signal } : {}),
+            });
+            options.signal?.throwIfAborted();
+        }
 
         await emitRunProgress(options.onProgress, "evaluating");
-        const baseEvalResult = await timeRunPhase(
+        const staticEvalResult = await timeRunPhase(
             runMetrics,
             "evaluationDurationMs",
             async () => {
@@ -5907,6 +5991,26 @@ export async function runReactAppAgent(
                 });
             },
         );
+        const baseEvalResult =
+            typecheck && typecheck.exitCode !== 0
+                ? {
+                      passed: false,
+                      checks: [
+                          ...staticEvalResult.checks,
+                          {
+                              name: "TypeScript typecheck passes",
+                              passed: false,
+                              message: [
+                                  typecheck.stderr.trim(),
+                                  typecheck.stdout.trim(),
+                              ]
+                                  .filter((part) => part.length > 0)
+                                  .join("\n")
+                                  .slice(0, 2_000),
+                          },
+                      ],
+                  }
+                : staticEvalResult;
         const routeImplementationFailures =
             navigationRequestKind === "routes"
                 ? listRouteImplementationFailures(
@@ -5940,7 +6044,8 @@ export async function runReactAppAgent(
         if (
             options.evaluateBrowser &&
             install.exitCode === 0 &&
-            build.exitCode === 0
+            build.exitCode === 0 &&
+            (typecheck?.exitCode ?? 0) === 0
         ) {
             try {
                 await emitRunProgress(options.onProgress, "evaluating");
@@ -6074,6 +6179,7 @@ export async function runReactAppAgent(
             },
             install,
             build,
+            ...(typecheck ? { typecheck } : {}),
             eval: evalResult,
             ...(browserEval ? { browserEval } : {}),
         });
@@ -6128,6 +6234,7 @@ export async function runReactAppAgent(
             agent,
             install,
             build,
+            ...(typecheck ? { typecheck } : {}),
             eval: evalResult,
             ...(browserEval ? { browserEval } : {}),
             ...(llmReview ? { llmReview } : {}),
@@ -6339,6 +6446,9 @@ export async function runReactAppAgent(
         agent: latestAttempt.agent,
         install: latestAttempt.install,
         build: latestAttempt.build,
+        ...(latestAttempt.typecheck
+            ? { typecheck: latestAttempt.typecheck }
+            : {}),
         eval: latestAttempt.eval,
         ...(latestAttempt.browserEval
             ? { browserEval: latestAttempt.browserEval }

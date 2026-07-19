@@ -5,6 +5,7 @@ import {
 
 import type { ModelProvider } from "./model-provider.js";
 import { completeStructuredOutput } from "./complete-structured-output.js";
+import { DesignPlanJsonSchema } from "./structured-output-schemas.js";
 
 export type DesignPlannerInput = {
     goal: string;
@@ -55,6 +56,7 @@ export class DesignPlannerAgent {
             parse: (text) =>
                 DesignPlanSchema.parse(JSON.parse(text) as unknown),
             outputName: "DesignPlan",
+            schema: DesignPlanJsonSchema,
         });
     }
 }

@@ -13,6 +13,14 @@ const allowedCommands:WorkspaceCommand[]=[
     },
     {
         command: "npm",
+        args: ["run", "typecheck"],
+    },
+    {
+        command: "node",
+        args: ["node_modules/typescript/bin/tsc", "--noEmit"],
+    },
+    {
+        command: "npm",
         args: ["test"],
     },
 ];

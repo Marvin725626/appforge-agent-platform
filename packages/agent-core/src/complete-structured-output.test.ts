@@ -103,6 +103,90 @@ describe("completeStructuredOutput", () => {
         );
     });
 
+    it("uses strict json_schema and disables streaming when a schema is provided", async () => {
+        const provider = new FakeModelProvider({
+            content: JSON.stringify({
+                accepted: true,
+            }),
+        });
+
+        await completeStructuredOutput({
+            model: provider,
+            request: {
+                messages: [
+                    {
+                        role: "user",
+                        content: "Return review JSON",
+                    },
+                ],
+            },
+            schema: {
+                type: "object",
+                properties: {
+                    accepted: { type: "boolean" },
+                },
+                required: ["accepted"],
+                additionalProperties: false,
+            },
+            parse: (text) => JSON.parse(text) as { accepted: boolean },
+            outputName: "ReviewerOutput",
+        });
+
+        expect(provider.requests[0]?.stream).toBe(false);
+        expect(provider.requests[0]?.responseFormat).toEqual({
+            type: "json_schema",
+            name: "ReviewerOutput",
+            strict: true,
+            schema: {
+                type: "object",
+                properties: {
+                    accepted: { type: "boolean" },
+                },
+                required: ["accepted"],
+                additionalProperties: false,
+            },
+        });
+    });
+
+    it("returns output_truncated instead of retrying length-finished output", async () => {
+        const provider = new FakeModelProvider([
+            {
+                content: '{"accepted":',
+                finishReason: "length",
+            },
+            {
+                content: JSON.stringify({
+                    accepted: true,
+                }),
+            },
+        ]);
+
+        await expect(
+            completeStructuredOutput({
+                model: provider,
+                request: {
+                    messages: [
+                        {
+                            role: "user",
+                            content: "Return review JSON",
+                        },
+                    ],
+                },
+                schema: {
+                    type: "object",
+                    properties: {
+                        accepted: { type: "boolean" },
+                    },
+                    required: ["accepted"],
+                    additionalProperties: false,
+                },
+                parse: (text) => JSON.parse(text) as { accepted: boolean },
+                outputName: "ReviewerOutput",
+            }),
+        ).rejects.toThrow("output_truncated");
+        expect(provider.requests).toHaveLength(1);
+    });
+
     it("does not echo an oversized invalid response back into the retry prompt", async () => {
         const oversizedInvalidResponse = `{ "content": "${"x".repeat(2_000)}`;
         const provider = new FakeModelProvider([

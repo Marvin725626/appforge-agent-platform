@@ -29,6 +29,37 @@ describe("CodingAgent", () => {
             path: "src/App.tsx",
             content: "export default function App() {}",
         });
+        expect(provider.requests[0]?.stream).toBe(false);
+        expect(provider.requests[0]?.responseFormat).toMatchObject({
+            type: "json_schema",
+            name: "AgentAction",
+            strict: true,
+        });
+    });
+
+    it("rejects an action that is missing required fields", async () => {
+        const provider = new FakeModelProvider([
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.tsx",
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.tsx",
+                }),
+            },
+        ]);
+
+        const agent = new CodingAgent({
+            model: provider,
+        });
+
+        await expect(
+            agent.decideNextAction("Create a React task application"),
+        ).rejects.toThrow("AgentAction remained invalid after 2 attempt");
     });
 
     it("sends coding-agent instructions and the user goal", async () => {
@@ -569,15 +600,10 @@ describe("CodingAgent", () => {
         );
     });
 
-    it("allows three attempts for malformed action output", async () => {
+    it("allows one correction attempt for malformed action output", async () => {
         const provider = new FakeModelProvider([
             {
                 content: "not json",
-            },
-            {
-                content: JSON.stringify({
-                    type: "unknown",
-                }),
             },
             {
                 content: JSON.stringify({
@@ -599,7 +625,7 @@ describe("CodingAgent", () => {
             type: "finish",
             summary: "Done",
         });
-        expect(provider.requests).toHaveLength(3);
+        expect(provider.requests).toHaveLength(2);
     });
 
     it("asks the model to switch to smaller file batches after invalid action output", async () => {

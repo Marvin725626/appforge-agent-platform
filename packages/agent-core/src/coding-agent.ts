@@ -4,6 +4,7 @@ import type { ImageAssetMode } from "./image-asset-provider.js";
 import type { ModelProvider } from "./model-provider.js";
 import { parseAgentAction } from "./parse-agent-action.js";
 import { completeStructuredOutput } from "./complete-structured-output.js";
+import { AgentActionJsonSchema } from "./structured-output-schemas.js";
 
 export type CodingAgentOptions = {
     model: ModelProvider;
@@ -287,7 +288,8 @@ export class CodingAgent {
             },
             parse: parseAgentAction,
             outputName: "AgentAction",
-            maxAttempts: 3,
+            schema: AgentActionJsonSchema,
+            maxAttempts: 2,
             invalidResponseInstruction: [
                 "For AgentAction correction, do not repeat a huge src/App.tsx response.",
                 "write_file content over 6000 characters is invalid and will be rejected.",

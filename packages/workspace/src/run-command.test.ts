@@ -1,6 +1,6 @@
 import type { ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -81,6 +81,85 @@ describe("runWorkspaceCommand", () => {
         expect(result.stdout).toContain("build succeeded");
         expect(result.stdout).not.toContain("\u001b[32m");
         expect(result.stdout).not.toContain("\u001b[39m");
+    });
+
+    it("launches local TypeScript CLI with Node instead of npx or a shell", async () => {
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-command-winpath-"),
+        );
+
+        temporaryDirectories.push(workspaceRoot);
+
+        await mkdir(
+            path.join(workspaceRoot, "node_modules", "typescript", "bin"),
+            { recursive: true },
+        );
+        await writeFile(
+            path.join(workspaceRoot, "node_modules", "typescript", "bin", "tsc"),
+            "console.log('tsc ok');",
+            "utf8",
+        );
+
+        const spawnProcess = vi.fn((executable, args, options) => {
+            const stdout = new EventEmitter();
+            const stderr = new EventEmitter();
+            const child = Object.assign(new EventEmitter(), {
+                stdout,
+                stderr,
+                pid: 1234,
+                exitCode: null,
+                kill: vi.fn(),
+                unref: vi.fn(),
+            }) as unknown as ChildProcess;
+
+            process.nextTick(() => {
+                stdout.emit("data", Buffer.from("tsc ok"));
+                child.emit("close", 0);
+            });
+
+            return child;
+        }) as unknown as typeof spawn;
+
+        const result = await runWorkspaceCommand(
+            workspaceRoot,
+            {
+                command: "node",
+                args: ["node_modules/typescript/bin/tsc", "--noEmit"],
+            },
+            {
+                spawnProcess,
+            },
+        );
+
+        const [executable, args, options] = vi.mocked(spawnProcess).mock
+            .calls[0] as Parameters<typeof spawn>;
+
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain("tsc ok");
+        expect(executable).toBe(process.execPath);
+        expect(executable.toLowerCase()).not.toContain("npx");
+        expect(args[0]).toBe(
+            path.join(workspaceRoot, "node_modules", "typescript", "bin", "tsc"),
+        );
+        expect(args).toContain("--noEmit");
+        expect(options?.shell).toBe(false);
+    });
+
+    it("returns a clear error when a requested local Node CLI is missing", async () => {
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-command-missing-cli-"),
+        );
+
+        temporaryDirectories.push(workspaceRoot);
+
+        await expect(
+            runWorkspaceCommand(workspaceRoot, {
+                command: "node",
+                args: ["node_modules/typescript/bin/tsc", "--noEmit"],
+            }),
+        ).rejects.toThrow(
+            "Node CLI was not found at node_modules/typescript/bin/tsc.",
+        );
     });
 
     it("rejects a command that is not approved", async () => {
