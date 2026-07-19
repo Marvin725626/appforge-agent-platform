@@ -1481,6 +1481,7 @@ function assertPageArtifact(
     expectedVisualAssetPath = visualAssetPath(page),
     expectedThemeClass?: string,
     visualGrammar: PageVisualGrammar = "editorial",
+    enforceLegacyVisualGrammar = true,
 ): void {
     const content = artifact.content;
     if (content.length < 800) {
@@ -1508,22 +1509,27 @@ function assertPageArtifact(
             `named ${page.componentName} component`,
         ],
         [/<article\b[^>]*\bclassName=["'][^"']*\bpage-view\b/iu, "page-view article"],
-        [
-            /<[a-z][^>]*\bclassName=["'][^"']*\bpage-hero\b/iu,
-            "page hero",
-        ],
-        [
-            /<[a-z][^>]*\bclassName=["'][^"']*\bpage-copy\b/iu,
-            "page hero text column",
-        ],
         [/<h1\b/iu, "one page heading"],
     ];
+    if (enforceLegacyVisualGrammar) {
+        requiredPatterns.push(
+            [
+                /<[a-z][^>]*\bclassName=["'][^"']*\bpage-hero\b/iu,
+                "page hero",
+            ],
+            [
+                /<[a-z][^>]*\bclassName=["'][^"']*\bpage-copy\b/iu,
+                "page hero text column",
+            ],
+        );
+    }
     for (const [pattern, description] of requiredPatterns) {
         if (!pattern.test(content)) {
             throw new Error(`${page.filePath} is missing ${description}`);
         }
     }
     if (
+        enforceLegacyVisualGrammar &&
         expectedThemeClass &&
         !new RegExp(
             `<article\\b[^>]*\\bclassName=["'][^"']*\\b${escapeRegExp(expectedThemeClass)}\\b`,
@@ -1538,7 +1544,11 @@ function assertPageArtifact(
         throw new Error(`${page.filePath} must include exactly one h1`);
     }
 
-    if (visualGrammar === "editorial") {
+    if (!enforceLegacyVisualGrammar) {
+        // A planner/preserved DesignPlan is allowed to choose a different
+        // section silhouette from the legacy visual grammar, so keep only the
+        // route/component/accessibility/source-safety checks below.
+    } else if (visualGrammar === "editorial") {
         if (!/\b(?:page-grid|editorial-flow)\b/u.test(content)) {
             throw new Error(
                 `${page.filePath} is missing an editorial content flow`,
@@ -1630,14 +1640,18 @@ function assertPageArtifact(
         });
     }
     const assetPath = expectedVisualAssetPath;
-    if (!content.includes(`src="${assetPath}"`)) {
-        throw new Error(`${page.filePath} must include the local visual asset ${assetPath}`);
-    }
-    if (!/\bclassName=["'][^"']*\bpage-media\b/iu.test(content)) {
-        throw new Error(`${page.filePath} must include a page-media visual panel`);
-    }
-    if (!/\bclassName=["'][^"']*\bpage-image\b/iu.test(content)) {
-        throw new Error(`${page.filePath} must style the local visual asset with page-image`);
+    if (enforceLegacyVisualGrammar) {
+        if (!content.includes(`src="${assetPath}"`)) {
+            throw new Error(`${page.filePath} must include the local visual asset ${assetPath}`);
+        }
+        if (!/\bclassName=["'][^"']*\bpage-media\b/iu.test(content)) {
+            throw new Error(`${page.filePath} must include a page-media visual panel`);
+        }
+        if (!/\bclassName=["'][^"']*\bpage-image\b/iu.test(content)) {
+            throw new Error(`${page.filePath} must style the local visual asset with page-image`);
+        }
+    } else if (/<img\b/iu.test(content) && !content.includes(`src="${assetPath}"`)) {
+        throw new Error(`${page.filePath} must use the provided local visual asset when it renders an image`);
     }
     const imports = [
         ...content.matchAll(/\bfrom\s*["']([^"']+)["']/gu),
@@ -1906,6 +1920,8 @@ export async function runParallelReactPagesAgent(
     const designPlanPrompt = options.designPlan
         ? formatDesignPlanForPrompt(options.designPlan)
         : "";
+    const useLegacyLayoutInstructions =
+        !options.designPlan || options.designPlanSource === "fallback";
     const maxConcurrency = clampInteger(
         options.maxConcurrency,
         DEFAULT_MAX_CONCURRENCY,
@@ -1922,21 +1938,25 @@ export async function runParallelReactPagesAgent(
         options.goal,
         options.plannerOutput,
     );
-    const topicLookupEvidence = await lookupTopicEvidenceForVisualGrammar({
-        provider: options.topicLookupProvider,
-        goal: options.goal,
-        siteTitle: siteIdentity.title,
-        pages,
-        ...(options.signal ? { signal: options.signal } : {}),
-    });
-    const siteVisualGrammar = inferPageVisualGrammar({
-        goal: options.goal,
-        siteTitle: siteIdentity.title,
-        page: pages[0]!,
-        ...(topicLookupEvidence
-            ? { topicEvidence: topicLookupEvidence }
-            : {}),
-    });
+    const topicLookupEvidence = useLegacyLayoutInstructions
+        ? await lookupTopicEvidenceForVisualGrammar({
+              provider: options.topicLookupProvider,
+              goal: options.goal,
+              siteTitle: siteIdentity.title,
+              pages,
+              ...(options.signal ? { signal: options.signal } : {}),
+          })
+        : undefined;
+    const siteVisualGrammar = useLegacyLayoutInstructions
+        ? inferPageVisualGrammar({
+              goal: options.goal,
+              siteTitle: siteIdentity.title,
+              page: pages[0]!,
+              ...(topicLookupEvidence
+                  ? { topicEvidence: topicLookupEvidence }
+                  : {}),
+          })
+        : "editorial";
     const formalImageMode = options.imageAssetTool
         ? selectFormalImageMode(options.imageAssetModes)
         : undefined;
@@ -2012,7 +2032,9 @@ export async function runParallelReactPagesAgent(
                 ? { topicEvidence: topicLookupEvidence }
                 : {}),
         });
-        const grammarClass = pageVisualGrammarClass(visualGrammar);
+        const grammarClass = useLegacyLayoutInstructions
+            ? pageVisualGrammarClass(visualGrammar)
+            : "";
         const rootClasses = grammarClass
             ? `page-view ${themeClass} ${grammarClass}`
             : `page-view ${themeClass}`;
@@ -2037,11 +2059,16 @@ export async function runParallelReactPagesAgent(
                       "Use the large image only in the hero. If a later section needs supporting media, keep it short and secondary inside media-panel; never let an image dominate a text block or create tall empty columns.",
                       "Design like a finished editorial website, not a demo: strong topic-specific headline, generous whitespace, asymmetric magazine rhythm, concrete local details, and no generic labels such as 主题网站, Generated Site, Feature 1, Feature 2, or placeholder copy. Do not make every section a same-looking card grid.",
                   ];
-        const layoutInstructions =
-            visualGrammar === "immersive-game" ||
-            visualGrammar === "editorial"
+        const layoutInstructions = useLegacyLayoutInstructions
+            ? visualGrammar === "immersive-game" ||
+              visualGrammar === "editorial"
                 ? fallbackLayoutInstructions
-                : formatPageLayoutInstructions(visualGrammar);
+                : formatPageLayoutInstructions(visualGrammar)
+            : [
+                  "DesignPlan is the primary layout authority for this page. Build the page composition from its composition, surfaceStrategy, sectionRhythm, shapeLanguage, mediaStrategy, and uniqueMotifs.",
+                  "Do not force the legacy split-hero blueprint, exactly two hero children, fixed section order, fixed industry blueprint, or page-type class combinations unless the DesignPlan explicitly calls for them.",
+                  "You may use shared primitives such as page-hero, page-copy, page-media, editorial-flow, story-band, game-stage, dashboard-shell, product-stage, or data-table when they fit the DesignPlan, but vary the spatial silhouette by route purpose.",
+              ];
         const subjectDesignBrief = formatSubjectDesignBrief({
             goal: options.goal,
             siteTitle: siteIdentity.title,
@@ -2072,22 +2099,30 @@ export async function runParallelReactPagesAgent(
                     `This API call owns exactly the ${page.label} webpage at ${page.path}.`,
                     `Export const pageId = ${JSON.stringify(page.id)} as const and export function ${page.componentName}().`,
                     "Import only React. Do not import CSS, content, App, another page, or a new dependency.",
-                    "Apply the frontend-design template pack: use design tokens from shared CSS, semantic section structure, accessible content hierarchy, responsive layout, and the subject-specific blueprint. Do not invent inline styles or same-looking cards.",
+                    "Apply the frontend-design template pack: use design tokens from shared CSS, semantic section structure, accessible content hierarchy, responsive layout, and subject-specific visual decisions. Do not invent inline styles or same-looking cards.",
                     options.designPlan
                         ? "Follow the Structured DesignPlan above. Respect its composition, surfaceStrategy, sectionRhythm, typographyCharacter, shapeLanguage, mediaStrategy, uniqueMotifs, and forbiddenPatterns. This page may have local composition, but it must not invent a conflicting visual language."
                         : "",
                     "Keep this file compact. Do not use inline style objects; use the shared class names only. Avoid huge JSX, long repeated prose, and large arrays so the JSON response does not get truncated.",
                     "Keep typography normal and readable: one h1 only, no 5rem+ headings, no huge metric numbers, no one-character-per-line labels, and no inline fontSize styles. Let shared CSS control scale.",
-                    subjectDesignBrief,
-                    `The root must be <article className="${rootClasses}" data-page-id=${JSON.stringify(page.id)}>. This page-specific visual grammar and theme are mandatory.`,
-                    `Create a magazine-quality page-hero with exactly two direct children: <div className="page-copy"> containing page-kicker, one unique h1, and page-lead; then <div className="page-media"><img className="page-image" src="${expectedVisualPath(page)}" alt="..." /></div>. Do not put loose hero text nodes outside page-copy.`,
+                    useLegacyLayoutInstructions ? subjectDesignBrief : "",
+                    useLegacyLayoutInstructions
+                        ? `The root must be <article className="${rootClasses}" data-page-id=${JSON.stringify(page.id)}>. This page-specific visual grammar and theme are mandatory.`
+                        : `The root article must include className="page-view ${themeClass}" and data-page-id=${JSON.stringify(page.id)}. Do not add a page-genre class unless the DesignPlan asks for that visual language.`,
+                    useLegacyLayoutInstructions
+                        ? `Create a magazine-quality page-hero with exactly two direct children: <div className="page-copy"> containing page-kicker, one unique h1, and page-lead; then <div className="page-media"><img className="page-image" src="${expectedVisualPath(page)}" alt="..." /></div>. Do not put loose hero text nodes outside page-copy.`
+                        : `Use the local visual asset ${expectedVisualPath(page)} when mediaStrategy calls for an image or hero visual. If you use an image, include alt text and className="page-image"; if you use page-media, keep it responsive and secondary to the DesignPlan composition.`,
                     ...layoutInstructions,
                     "Make this page feel distinct from sibling pages through its content pattern: choose a different emphasis such as overview, culture/story, route/itinerary, product proof, gallery, timeline, metrics, or action plan. Do not reuse the same section titles or card structure from sibling pages.",
                     "Before returning, check every visible text component has an explicit readable color/background pair. Safe pairs: #071018/#f8fbff, #16090a/#fff8f2, #ff4655/#16090a, #f6b35b/#16090a, #ffd166/#061018, #ffffff or #fffaf0/#111827. Do not rely on inherited text color for page-kicker, eyebrow, hud-pill, metric, stat, table th/td, nav, CTA, or footer text.",
-                    `Use only these shared classes: ${[...ALLOWED_PAGE_CLASSES].join(", ")}.`,
-                    visualGrammar === "immersive-game"
+                    useLegacyLayoutInstructions
+                        ? `Use only these shared classes: ${[...ALLOWED_PAGE_CLASSES].join(", ")}.`
+                        : `Prefer these shared classes when useful: ${[...ALLOWED_PAGE_CLASSES].join(", ")}. Do not use inline style objects, new dependencies, or unsupported route links.`,
+                    useLegacyLayoutInstructions && visualGrammar === "immersive-game"
                         ? "Optional game structures may use game-map, game-sites, game-site, site-letter, game-lane, game-loadout, game-agent, game-rounds, game-round, game-strip, game-rail, game-slab, hud-pill, tag-list, tag, feature-list, data-table, and cta-row. Avoid metric-grid, metric, timeline-item, callout, media-panel, and quote unless the request explicitly needs them."
-                        : "Optional richer structures may use metric-grid, metric, timeline, timeline-item, callout, tag-list, tag, feature-list, media-panel, quote, steps, step, data-table, and cta-row.",
+                        : useLegacyLayoutInstructions
+                          ? "Optional richer structures may use metric-grid, metric, timeline, timeline-item, callout, tag-list, tag, feature-list, media-panel, quote, steps, step, data-table, and cta-row."
+                          : "",
                     "Write complete subject-specific copy in the user's language with concrete names, places, data points, and useful details. Do not emit navigation links or route hrefs: App.tsx owns every page link and router. No router, footer, placeholders, generic Feature cards, or duplicated sibling-page content.",
                     retryReason
                         ? `Retry only this page because its previous proposal failed: ${retryReason}`
@@ -2110,6 +2145,7 @@ export async function runParallelReactPagesAgent(
                     expectedVisualPath(page),
                     themeClass,
                     visualGrammar,
+                    useLegacyLayoutInstructions,
                 );
                 return normalizedArtifact;
             });
@@ -2357,7 +2393,8 @@ export async function runParallelReactPagesAgent(
                     }),
                     {
                         path: "src/App.css",
-                        content: options.designPlan
+                        content: options.designPlan &&
+                            options.designPlanSource !== "fallback"
                             ? formatProjectStyles({
                                   designPlan: options.designPlan,
                                   pages,

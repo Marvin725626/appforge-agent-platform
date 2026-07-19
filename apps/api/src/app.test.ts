@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { RunSchema } from "@appforge/protocol";
+import { RunSchema, type DesignPlan } from "@appforge/protocol";
 import {
   readWorkspaceFile,
   WorkspaceManager,
@@ -14,7 +14,11 @@ import {
 } from "@appforge/harness";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { buildApp, resolveExecutionContract } from "./app.js";
+import {
+  buildApp,
+  resolveExecutionContract,
+  type ExecuteRun,
+} from "./app.js";
 import { MemoryRepository } from "./memory-repository.js";
 import { PreviewManager } from "./preview-manager.js";
 import { RunRepository } from "./run-repository.js";
@@ -242,6 +246,64 @@ function createSuccessfulAgentResult(workspaceRoot: string) {
             browserPassed: true,
           },
         },
+      },
+    ],
+  };
+}
+
+function createTestDesignPlan(
+  label: string,
+  applicationType: DesignPlan["applicationType"] = "editorial",
+): DesignPlan {
+  return {
+    version: 1,
+    applicationType,
+    designIntent: {
+      audience: `${label} audience`,
+      primaryGoal: `${label} primary goal`,
+      emotionalTone: [`${label} tone`],
+      brandTraits: [`${label} trait`],
+    },
+    informationArchitecture: {
+      routes: [
+        {
+          path: "/",
+          purpose: `${label} route`,
+          primaryContent: [`${label} content`],
+          primaryActions: [`${label} action`],
+        },
+      ],
+    },
+    visualDNA: {
+      composition: `${label} composition`,
+      density: "medium",
+      surfaceStrategy: applicationType === "dashboard" ? "contained" : "mixed",
+      navigationPattern: `${label} navigation`,
+      heroPattern: `${label} hero`,
+      sectionRhythm: [`${label} rhythm`],
+      typographyCharacter: `${label} typography`,
+      shapeLanguage: `${label} shape`,
+      mediaStrategy: `${label} media`,
+      uniqueMotifs: [`${label} motif`],
+      forbiddenPatterns: [`${label} forbidden`],
+    },
+    designTokens: {
+      colorRoles: {
+        background: "#101010",
+        surface: "#202020",
+        foreground: "#ffffff",
+        mutedForeground: "#d0d0d0",
+        accent: "#ffd166",
+        accentForeground: "#101010",
+      },
+      radiusScale: [0, 4, 8],
+      spacingScale: [4, 8, 16],
+    },
+    acceptanceCriteria: [
+      {
+        id: "DESIGN-1",
+        instruction: `${label} design must apply`,
+        verification: "DesignPlan is present",
       },
     ],
   };
@@ -1409,6 +1471,113 @@ describe("POST /runs/:id/versions/:versionNumber/continue", () => {
       }),
     );
   });
+
+  it("restores the selected version DesignPlan before the next iteration", async () => {
+    const temporaryRoot = await mkdtemp(
+      path.join(os.tmpdir(), "appforge-api-"),
+    );
+    temporaryDirectories.push(temporaryRoot);
+
+    const workspaceManager = new WorkspaceManager(temporaryRoot);
+    const runRepository = new RunRepository();
+    const designPlanA = createTestDesignPlan("A", "editorial");
+    const designPlanB = createTestDesignPlan("B", "game");
+    const capturedDesignPlans: Array<DesignPlan | undefined> = [];
+    const executeRun: ExecuteRun = vi.fn(async (input) => {
+      capturedDesignPlans.push(input.designPlan);
+      await writeWorkspaceFile(
+        input.workspaceRoot,
+        "src/App.tsx",
+        `export const changed = ${JSON.stringify(input.designPlan?.visualDNA.composition)};`,
+      );
+      return {
+        ...createSuccessfulAgentResult(input.workspaceRoot),
+        designPlan: input.designPlan,
+        designPlanSource: "preserved" as const,
+      };
+    });
+    const app = buildApp(runRepository, workspaceManager, executeRun);
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/runs",
+      payload: { goal: "Create a city website" },
+    });
+    const createdRun = RunSchema.parse(createResponse.json());
+    const workspaceRoot = workspaceManager.resolve(createdRun.id);
+
+    const writeRunnableSnapshot = async (
+      versionNumber: number,
+      marker: string,
+    ) => {
+      const prefix = `versions/v${versionNumber}`;
+      await writeWorkspaceFile(
+        workspaceRoot,
+        `${prefix}/package.json`,
+        JSON.stringify({
+          scripts: { build: "vite --host 127.0.0.1" },
+          dependencies: { "@vitejs/plugin-react": "latest", vite: "latest", react: "latest", "react-dom": "latest", typescript: "latest" },
+          devDependencies: {},
+        }),
+      );
+      await writeWorkspaceFile(
+        workspaceRoot,
+        `${prefix}/index.html`,
+        '<div id="root"></div><script type="module" src="/src/main.tsx"></script>',
+      );
+      await writeWorkspaceFile(
+        workspaceRoot,
+        `${prefix}/src/main.tsx`,
+        'import React from "react"; import { createRoot } from "react-dom/client"; import { App } from "./App.js"; createRoot(document.getElementById("root")!).render(<App />);',
+      );
+      await writeWorkspaceFile(
+        workspaceRoot,
+        `${prefix}/src/App.tsx`,
+        `export function App() { return <main>${JSON.stringify(marker)}</main>; }`,
+      );
+    };
+
+    runRepository.saveVersion({
+      id: "version-1",
+      runId: createdRun.id,
+      versionNumber: 1,
+      goal: "Version A",
+      summary: "Snapshot A",
+      designPlan: designPlanA,
+      designPlanSource: "planner",
+      createdAt: "2026-07-10T00:00:00.000Z",
+    });
+    runRepository.saveVersion({
+      id: "version-2",
+      runId: createdRun.id,
+      versionNumber: 2,
+      goal: "Version B",
+      summary: "Snapshot B",
+      designPlan: designPlanB,
+      designPlanSource: "planner",
+      createdAt: "2026-07-10T00:10:00.000Z",
+    });
+    await writeRunnableSnapshot(1, "version-a");
+    await writeRunnableSnapshot(2, "version-b");
+
+    const restoreResponse = await app.inject({
+      method: "POST",
+      url: `/runs/${createdRun.id}/versions/1/continue`,
+    });
+
+    expect(restoreResponse.statusCode).toBe(200);
+    const restoredResult = await runRepository.findResultByRunId(createdRun.id);
+    expect(restoredResult?.designPlan).toEqual(designPlanA);
+    expect(restoredResult?.designPlanSource).toBe("planner");
+
+    const iterateResponse = await app.inject({
+      method: "POST",
+      url: `/runs/${createdRun.id}/iterate`,
+      payload: { prompt: "把标题改小一点" },
+    });
+
+    expect(iterateResponse.statusCode).toBe(200);
+    expect(capturedDesignPlans).toEqual([designPlanA]);
+  });
 });
 describe("POST /runs/:id/execute", () => {
   it("executes an existing run", async () => {
@@ -1685,6 +1854,42 @@ describe("POST /runs/:id/execute", () => {
         }),
       ],
     });
+  });
+
+  it("saves DesignPlan on the current result and generated RunVersion", async () => {
+    const temporaryRoot = await mkdtemp(
+      path.join(os.tmpdir(), "appforge-api-"),
+    );
+    temporaryDirectories.push(temporaryRoot);
+
+    const workspaceManager = new WorkspaceManager(temporaryRoot);
+    const runRepository = new RunRepository();
+    const designPlan = createTestDesignPlan("initial", "product");
+    const executeRun: ExecuteRun = vi.fn(async (input) => ({
+      ...createSuccessfulAgentResult(input.workspaceRoot),
+      designPlan,
+      designPlanSource: "planner" as const,
+    }));
+    const app = buildApp(runRepository, workspaceManager, executeRun);
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/runs",
+      payload: { goal: "Create a SaaS page" },
+    });
+    const createdRun = RunSchema.parse(createResponse.json());
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/runs/${createdRun.id}/execute`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const result = await runRepository.findResultByRunId(createdRun.id);
+    const versions = await runRepository.listVersions(createdRun.id);
+    expect(result?.designPlan).toEqual(designPlan);
+    expect(result?.designPlanSource).toBe("planner");
+    expect(versions.at(-1)?.designPlan).toEqual(designPlan);
+    expect(versions.at(-1)?.designPlanSource).toBe("planner");
   });
 
   it("starts a run in the background and prevents duplicate execution", async () => {

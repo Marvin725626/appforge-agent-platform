@@ -179,11 +179,13 @@ export type RunReactAppAgentCommandResult = {
 
 export type RunMetrics = {
     plannerCalls: number;
+    designPlannerCalls: number;
     codingCalls: number;
     reviewerCalls: number;
     retryCalls: number;
     fallbackPages: string[];
     plannerDurationMs: number;
+    designPlannerDurationMs: number;
     codingDurationMs: number;
     installDurationMs: number;
     buildDurationMs: number;
@@ -352,11 +354,13 @@ async function createInstallDependencyFingerprint(
 function createEmptyRunMetrics(): RunMetrics {
     return {
         plannerCalls: 0,
+        designPlannerCalls: 0,
         codingCalls: 0,
         reviewerCalls: 0,
         retryCalls: 0,
         fallbackPages: [],
         plannerDurationMs: 0,
+        designPlannerDurationMs: 0,
         codingDurationMs: 0,
         installDurationMs: 0,
         buildDurationMs: 0,
@@ -381,6 +385,7 @@ function addDuration(
     key: keyof Pick<
         RunMetrics,
         | "plannerDurationMs"
+        | "designPlannerDurationMs"
         | "codingDurationMs"
         | "installDurationMs"
         | "buildDurationMs"
@@ -411,7 +416,10 @@ function countModelProviderCalls(
     metrics: RunMetrics,
     key: keyof Pick<
         RunMetrics,
-        "plannerCalls" | "codingCalls" | "reviewerCalls"
+        | "plannerCalls"
+        | "designPlannerCalls"
+        | "codingCalls"
+        | "reviewerCalls"
     >,
 ): ModelProvider {
     return {
@@ -711,7 +719,7 @@ function explicitlyRequestsDesignPlanRefresh(request: string): boolean {
     );
 }
 
-async function createDesignPlanWithFallback(input: {
+export async function createDesignPlanWithFallback(input: {
     designPlannerAgent: DesignPlannerAgent;
     goal: string;
     requirements: readonly Requirement[];
@@ -5019,6 +5027,7 @@ export async function runReactAppAgent(
         });
     }
 
+    const designPlannerBaseProvider = plannerProvider;
     provider = countModelProviderCalls(provider, runMetrics, "codingCalls");
     parallelProvider = countModelProviderCalls(
         parallelProvider,
@@ -5029,6 +5038,11 @@ export async function runReactAppAgent(
         plannerProvider,
         runMetrics,
         "plannerCalls",
+    );
+    const designPlannerProvider = countModelProviderCalls(
+        designPlannerBaseProvider,
+        runMetrics,
+        "designPlannerCalls",
     );
     reviewerProvider = countModelProviderCalls(
         reviewerProvider,
@@ -5377,7 +5391,7 @@ export async function runReactAppAgent(
         : [];
     const designPlannerAgent = new DesignPlannerAgent({
         model: labelModelProviderStage(
-            plannerProvider,
+            designPlannerProvider,
             "Design Planner model request",
             options.signal,
             createRunProgressHeartbeat(options.onProgress, "planning"),
@@ -5405,7 +5419,7 @@ export async function runReactAppAgent(
                 !explicitlyRequestsDesignPlanRefresh(executionRequest)));
     const designPlanResult = await timeRunPhase(
         runMetrics,
-        "plannerDurationMs",
+        "designPlannerDurationMs",
         () =>
             createDesignPlanWithFallback({
                 designPlannerAgent,

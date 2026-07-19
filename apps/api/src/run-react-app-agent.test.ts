@@ -13,6 +13,7 @@ import {
     classifyNavigationRequest,
     runReactAppAgent,
 } from "./run-react-app-agent.js";
+import { createFallbackDesignPlan } from "./design-plan-utils.js";
 
 describe("runReactAppAgent", () => {
     const temporaryDirectories: string[] = [];
@@ -182,6 +183,83 @@ describe("runReactAppAgent", () => {
         expect(model.requests[1]?.messages[1]?.content).toContain(
             "The application builds successfully",
         );
+    }, 15_000);
+
+    it("records Design Planner calls separately from ordinary Planner calls", async () => {
+        const templateRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-template-"),
+        );
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-workspace-"),
+        );
+
+        temporaryDirectories.push(templateRoot, workspaceRoot);
+
+        await mkdir(path.join(templateRoot, "src"));
+        await writeFile(
+            path.join(templateRoot, "package.json"),
+            JSON.stringify({
+                scripts: {
+                    build: "node -e \"console.log('build ok')\"",
+                },
+            }),
+            "utf8",
+        );
+        await writeFile(
+            path.join(templateRoot, "src", "App.tsx"),
+            "export function App() { return null; }",
+            "utf8",
+        );
+
+        const plannerOutput = JSON.parse(PLANNER_RESPONSE.content);
+        const designPlan = createFallbackDesignPlan({
+            goal: "Create a polished product page",
+            plannerOutput,
+            routes: [{ path: "/", purpose: "Product landing page" }],
+        });
+        const model = new FakeModelProvider([
+            PLANNER_RESPONSE,
+            {
+                content: JSON.stringify(designPlan),
+            },
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.tsx",
+                    content:
+                        "export function App() { return <main><h1>Product page</h1><input aria-label=\"email\" /><button>Start</button><p>Useful product workflow details.</p></main>; }",
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "Done",
+                }),
+            },
+            APPROVED_REVIEW_RESPONSE,
+        ]);
+
+        const result = await runReactAppAgent({
+            goal: "Create a polished product page",
+            workspaceRoot,
+            templateRoot,
+            model,
+            designPlanning: true,
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        expect(result.metrics?.plannerCalls).toBe(1);
+        expect(result.metrics?.designPlannerCalls).toBe(1);
+        expect(result.metrics?.plannerDurationMs).toBeGreaterThanOrEqual(0);
+        expect(result.metrics?.designPlannerDurationMs).toBeGreaterThanOrEqual(
+            0,
+        );
+        expect(result.designPlanSource).toBe("planner");
+        expect(result.designPlan).toEqual(designPlan);
     }, 15_000);
 
     it("uses the focused edit fast path for a small button text change", async () => {

@@ -622,12 +622,12 @@ describe("runParallelReactPagesAgent", () => {
             routeRequest: true,
             maxConcurrency: 2,
             designPlan,
-            designPlanSource: "fallback",
+            designPlanSource: "planner",
         });
 
         expect(result.agent.finished).toBe(true);
         expect(result.designPlan).toEqual(designPlan);
-        expect(result.designPlanSource).toBe("fallback");
+        expect(result.designPlanSource).toBe("planner");
         expect(pagePrompts).toHaveLength(PAGE_IDS.length);
         expect(
             pagePrompts.every((prompt) =>
@@ -641,7 +641,19 @@ describe("runParallelReactPagesAgent", () => {
         ).toBe(true);
         expect(
             pagePrompts.every((prompt) =>
+                prompt.includes(
+                    `surfaceStrategy: ${designPlan.visualDNA.surfaceStrategy}`,
+                ),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.every((prompt) =>
                 prompt.includes("forbiddenPatterns: card grid"),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.every((prompt) =>
+                prompt.includes("DesignPlan source: planner"),
             ),
         ).toBe(true);
 
@@ -656,6 +668,38 @@ describe("runParallelReactPagesAgent", () => {
         expect(styles).toContain("route timeline");
         expect(styles).not.toContain("--color-ink-900");
         expect(styles).not.toContain("--radius-component");
+    });
+
+    it("keeps the legacy shared style path for fallback DesignPlan output", async () => {
+        const workspaceRoot = await createWorkspace();
+        const designPlan = createFallbackDesignPlan({
+            goal: "创建温州城市文化编辑页，不要卡片化",
+            plannerOutput: PLANNER_OUTPUT,
+            routes: PLANNER_OUTPUT.pages ?? [],
+        });
+        const provider = new PageModelProvider(({ pageId }) =>
+            artifactResponse(pageId, editorialFlowPageSource(pageId)),
+        );
+
+        const result = await runParallelReactPagesAgent({
+            goal: "创建温州城市文化编辑页，不要卡片化",
+            plannerOutput: PLANNER_OUTPUT,
+            model: provider,
+            workspaceRoot,
+            routeRequest: true,
+            maxConcurrency: 2,
+            designPlan,
+            designPlanSource: "fallback",
+        });
+
+        expect(result.agent.finished).toBe(true);
+        const styles = await readFile(
+            path.join(workspaceRoot, "src", "App.css"),
+            "utf8",
+        );
+        expect(styles).toContain("--color-ink-900");
+        expect(styles).toContain("--radius-component");
+        expect(styles).not.toContain("--project-composition");
     });
 
     it("marks invalid page model output as fallback instead of normal success", async () => {

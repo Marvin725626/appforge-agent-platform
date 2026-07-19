@@ -7,8 +7,8 @@ import { FileRunRepository } from "./file-run-repository.js";
 import { recoverInterruptedRuns } from "./recover-interrupted-runs.js";
 import {
     runReactAppAgent,
-    type RunReactAppAgentOptions,
 } from "./run-react-app-agent.js";
+import { createServerRunReactAppAgentOptions } from "./server-agent-options.js";
 import { FileMemoryRepository } from "./file-memory-repository.js";
 import { PlaywrightBrowserEvaluator } from "@appforge/harness";
 import { PreviewManager } from "./preview-manager.js";
@@ -110,85 +110,38 @@ const app = buildApp(
         workspaceRoot,
         maxRepairAttempts,
         memoryContext,
+        designPlan,
         resetWorkspace,
         signal,
         onProgress,
     }) => {
-        const agentOptions: RunReactAppAgentOptions = {
-            goal,
-            workspaceRoot,
-            templateRoot,
-            parallelCoding:
-                process.env.APPFORGE_PARALLEL_CODING?.trim().toLowerCase() !==
-                "false",
-            parallelCodingConcurrency: Number(
-                process.env.APPFORGE_PARALLEL_CODER_CONCURRENCY ?? 2,
-            ),
-            parallelCodingTimeoutMs: Number(
-                process.env.APPFORGE_PARALLEL_CODER_TIMEOUT_MS ?? 240_000,
-            ),
-            llm: {
+        const agentOptions = createServerRunReactAppAgentOptions(
+            {
+                goal,
+                workspaceRoot,
+                ...(currentRequest !== undefined ? { currentRequest } : {}),
+                ...(maxRepairAttempts !== undefined
+                    ? { maxRepairAttempts }
+                    : {}),
+                ...(memoryContext !== undefined ? { memoryContext } : {}),
+                ...(designPlan !== undefined ? { designPlan } : {}),
+                ...(resetWorkspace !== undefined ? { resetWorkspace } : {}),
+                ...(signal !== undefined ? { signal } : {}),
+                ...(onProgress !== undefined ? { onProgress } : {}),
+            },
+            {
+                templateRoot,
                 baseUrl,
                 apiKey,
                 model,
-                timeoutMs: Number(process.env.APPFORGE_LLM_TIMEOUT_MS ?? 120_000),
-                maxRetries: Number(
-                    process.env.APPFORGE_LLM_MAX_RETRIES ?? 1,
-                ),
-                stream:
-                    process.env.APPFORGE_LLM_STREAM?.trim().toLowerCase() !==
-                    "false",
-                ...(llmServiceTier === "auto" || llmServiceTier === "default"
-                    ? { serviceTier: llmServiceTier }
-                    : {}),
-                plannerTimeoutMs: Number(
-                    process.env.APPFORGE_PLANNER_TIMEOUT_MS ?? 30_000,
-                ),
-                reviewerTimeoutMs: Number(
-                    process.env.APPFORGE_REVIEWER_TIMEOUT_MS ?? 45_000,
-                ),
-                hardTimeoutMs: Number(
-                    process.env.APPFORGE_LLM_HARD_TIMEOUT_MS ?? 240_000,
-                ),
-                parallelMaxTokens: Number(
-                    process.env.APPFORGE_PARALLEL_CODER_MAX_TOKENS ?? 4_000,
-                ),
-                parallelThinking:
-                    process.env.APPFORGE_PARALLEL_CODER_THINKING === "enabled" ||
-                    process.env.APPFORGE_PARALLEL_CODER_THINKING === "auto"
-                        ? process.env.APPFORGE_PARALLEL_CODER_THINKING
-                        : "disabled",
-                maxTokens: Number(process.env.APPFORGE_LLM_MAX_TOKENS ?? 8_000),
+                ...(llmServiceTier !== undefined ? { llmServiceTier } : {}),
+                imageAssetProvider,
+                imageAssetModes,
             },
-        };
+        );
 
-        if (currentRequest !== undefined) {
-            agentOptions.currentRequest = currentRequest;
-        }
-
-        if (resetWorkspace !== undefined) {
-            agentOptions.resetWorkspace = resetWorkspace;
-        }
-
-        if (signal !== undefined) {
-            agentOptions.signal = signal;
-        }
-
-        if (onProgress !== undefined) {
-            agentOptions.onProgress = onProgress;
-        }
-
-        if (maxRepairAttempts !== undefined) {
-            agentOptions.maxRepairAttempts = maxRepairAttempts;
-        }
-
-        if (memoryContext !== undefined) {
-            agentOptions.memoryContext = memoryContext;
-        }
-
-        if (imageAssetProvider) {
-            agentOptions.imageAssetProvider = imageAssetProvider;
-            agentOptions.imageAssetModes = imageAssetModes;
+        if (designPlan !== undefined) {
+            agentOptions.designPlan = designPlan;
         }
 
         agentOptions.evaluateBrowser = async ({

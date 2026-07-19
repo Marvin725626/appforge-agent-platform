@@ -687,6 +687,10 @@ function createVersionRestoreResult(
         },
         review,
         attempts: [],
+        ...(version.designPlan ? { designPlan: version.designPlan } : {}),
+        ...(version.designPlanSource
+            ? { designPlanSource: version.designPlanSource }
+            : {}),
     };
 }
 

@@ -242,11 +242,13 @@ type ScopeViolation = {
 
 type RunMetrics = {
     plannerCalls: number;
+    designPlannerCalls?: number;
     codingCalls: number;
     reviewerCalls: number;
     retryCalls: number;
     fallbackPages: string[];
     plannerDurationMs: number;
+    designPlannerDurationMs?: number;
     codingDurationMs: number;
     installDurationMs: number;
     buildDurationMs: number;
@@ -4056,6 +4058,17 @@ export function App() {
                                                     </dd>
                                                 </div>
                                                 <div>
+                                                    <dt>
+                                                        Design Planner calls
+                                                    </dt>
+                                                    <dd>
+                                                        {
+                                                            runMetrics.designPlannerCalls ??
+                                                            0
+                                                        }
+                                                    </dd>
+                                                </div>
+                                                <div>
                                                     <dt>Coding calls</dt>
                                                     <dd>
                                                         {
@@ -4092,6 +4105,15 @@ export function App() {
                                                     <dd>
                                                         {formatDurationMs(
                                                             runMetrics.plannerDurationMs,
+                                                        )}
+                                                    </dd>
+                                                </div>
+                                                <div>
+                                                    <dt>Design Planner</dt>
+                                                    <dd>
+                                                        {formatDurationMs(
+                                                            runMetrics.designPlannerDurationMs ??
+                                                                0,
                                                         )}
                                                     </dd>
                                                 </div>
