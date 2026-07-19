@@ -12,7 +12,10 @@ import type { DesignPlan, DesignPlanSource } from "@appforge/protocol";
 
 import { executeWithWorkspaceRollback } from "./workspace-execution-transaction.js";
 import { formatDesignPlanForPrompt } from "./design-plan-utils.js";
-import { formatProjectStyles } from "./project-styles.js";
+import {
+    formatLayoutPrimitivesForPrompt,
+    formatProjectStyles,
+} from "./project-styles.js";
 
 const DEFAULT_MAX_CONCURRENCY = 2;
 const DEFAULT_PAGE_TIMEOUT_MS = 240_000;
@@ -961,7 +964,7 @@ function formatBrandLogoSvg(input: {
 
 function formatAppModule(
     pages: readonly ResolvedReactPagePlan[],
-    visualGrammar: PageVisualGrammar = "editorial",
+    visualGrammar?: PageVisualGrammar,
 ): string {
     const imports = pages
         .map(
@@ -976,7 +979,9 @@ function formatAppModule(
         )
         .join("\n");
 
-    const shellClass = `app-shell ${siteVisualGrammarClass(visualGrammar)}`;
+    const shellClass = visualGrammar
+        ? `app-shell ${siteVisualGrammarClass(visualGrammar)}`
+        : "app-shell";
 
     return `import React, { useEffect, useState } from "react";
 import { siteContent } from "./content.js";
@@ -1664,9 +1669,15 @@ function assertPageArtifact(
     }
     for (const match of content.matchAll(/className\s*=\s*["']([^"']+)["']/gu)) {
         const classes = (match[1] ?? "").split(/\s+/u).filter(Boolean);
-        const unknown = classes.find(
-            (className) => !ALLOWED_PAGE_CLASSES.has(className),
-        );
+        const unknown = classes.find((className) => {
+            if (ALLOWED_PAGE_CLASSES.has(className)) {
+                return false;
+            }
+            if (!enforceLegacyVisualGrammar && isSemanticProjectClass(className)) {
+                return false;
+            }
+            return true;
+        });
         if (unknown) {
             throw new Error(`${page.filePath} uses unsupported class ${unknown}`);
         }
@@ -1681,6 +1692,14 @@ function assertPageArtifact(
         throw new Error(`${page.filePath} must leave shared navigation and routing to App.tsx`);
     }
     assertBalancedJsxTags(page, content);
+}
+
+function isSemanticProjectClass(className: string): boolean {
+    if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+){1,5}$/u.test(className)) {
+        return false;
+    }
+    const parts = className.split("-");
+    return new Set(parts).size > 1;
 }
 
 function assertGrammarStructure(
@@ -1947,7 +1966,7 @@ export async function runParallelReactPagesAgent(
               ...(options.signal ? { signal: options.signal } : {}),
           })
         : undefined;
-    const siteVisualGrammar = useLegacyLayoutInstructions
+    const siteVisualGrammar: PageVisualGrammar | undefined = useLegacyLayoutInstructions
         ? inferPageVisualGrammar({
               goal: options.goal,
               siteTitle: siteIdentity.title,
@@ -1956,7 +1975,7 @@ export async function runParallelReactPagesAgent(
                   ? { topicEvidence: topicLookupEvidence }
                   : {}),
           })
-        : "editorial";
+        : undefined;
     const formalImageMode = options.imageAssetTool
         ? selectFormalImageMode(options.imageAssetModes)
         : undefined;
@@ -2065,10 +2084,16 @@ export async function runParallelReactPagesAgent(
                 ? fallbackLayoutInstructions
                 : formatPageLayoutInstructions(visualGrammar)
             : [
-                  "DesignPlan is the primary layout authority for this page. Build the page composition from its composition, surfaceStrategy, sectionRhythm, shapeLanguage, mediaStrategy, and uniqueMotifs.",
-                  "Do not force the legacy split-hero blueprint, exactly two hero children, fixed section order, fixed industry blueprint, or page-type class combinations unless the DesignPlan explicitly calls for them.",
-                  "You may use shared primitives such as page-hero, page-copy, page-media, editorial-flow, story-band, game-stage, dashboard-shell, product-stage, or data-table when they fit the DesignPlan, but vary the spatial silhouette by route purpose.",
+                  "Design layout constraints: DesignPlan is the primary layout authority for this page. Build the page composition from its composition, surfaceStrategy, navigationPattern, heroPattern, sectionRhythm, typographyCharacter, shapeLanguage, mediaStrategy, and uniqueMotifs.",
+                  "Hero behavior: derive the hero DOM from heroPattern and composition. Hero child count is not fixed, and the page does not need page-copy plus page-media unless the DesignPlan asks for that structure.",
+                  "Section behavior: derive section order from sectionRhythm, this route purpose, primary content, and primary actions. Sibling pages may share brand language, but must not be required to share the same hero DOM or section order.",
+                  "Forbidden patterns are hard constraints. Do not add later instructions that reintroduce forbidden grid, blueprint, or same-looking repeated section skeleton patterns.",
+                  "Use semantic project-specific class names when useful, such as city-story-rail, culture-timeline, agent-runtime-stage, trace-flow, match-hud, or operations-region. Class names must describe the component or motif and must not be random, meaningless, or duplicated boilerplate.",
               ];
+        const projectLayoutPrimitivePrompt =
+            options.designPlan && !useLegacyLayoutInstructions
+                ? formatLayoutPrimitivesForPrompt(options.designPlan)
+                : "";
         const subjectDesignBrief = formatSubjectDesignBrief({
             goal: options.goal,
             siteTitle: siteIdentity.title,
@@ -2086,6 +2111,7 @@ export async function runParallelReactPagesAgent(
                 planContext: [
                     `Planner summary: ${options.plannerOutput.summary}`,
                     designPlanPrompt,
+                    projectLayoutPrimitivePrompt,
                     options.designPlanSource
                         ? `DesignPlan source: ${options.designPlanSource}`
                         : "",
@@ -2103,7 +2129,12 @@ export async function runParallelReactPagesAgent(
                     options.designPlan
                         ? "Follow the Structured DesignPlan above. Respect its composition, surfaceStrategy, sectionRhythm, typographyCharacter, shapeLanguage, mediaStrategy, uniqueMotifs, and forbiddenPatterns. This page may have local composition, but it must not invent a conflicting visual language."
                         : "",
-                    "Keep this file compact. Do not use inline style objects; use the shared class names only. Avoid huge JSX, long repeated prose, and large arrays so the JSON response does not get truncated.",
+                    projectLayoutPrimitivePrompt
+                        ? "Use project layout primitives only when they serve the DesignPlan. Do not force every primitive into the DOM, and do not return to a fixed Hero plus three-column card layout."
+                        : "",
+                    useLegacyLayoutInstructions
+                        ? "Keep this file compact. Do not use inline style objects; use the shared class names only. Avoid huge JSX, long repeated prose, and large arrays so the JSON response does not get truncated."
+                        : "Engineering quality constraints: keep this file compact, avoid huge JSX, long repeated prose, and large arrays so the JSON response does not get truncated. Do not use inline style objects, new dependencies, unsupported route links, or side-effect imports.",
                     "Keep typography normal and readable: one h1 only, no 5rem+ headings, no huge metric numbers, no one-character-per-line labels, and no inline fontSize styles. Let shared CSS control scale.",
                     useLegacyLayoutInstructions ? subjectDesignBrief : "",
                     useLegacyLayoutInstructions
@@ -2117,7 +2148,7 @@ export async function runParallelReactPagesAgent(
                     "Before returning, check every visible text component has an explicit readable color/background pair. Safe pairs: #071018/#f8fbff, #16090a/#fff8f2, #ff4655/#16090a, #f6b35b/#16090a, #ffd166/#061018, #ffffff or #fffaf0/#111827. Do not rely on inherited text color for page-kicker, eyebrow, hud-pill, metric, stat, table th/td, nav, CTA, or footer text.",
                     useLegacyLayoutInstructions
                         ? `Use only these shared classes: ${[...ALLOWED_PAGE_CLASSES].join(", ")}.`
-                        : `Prefer these shared classes when useful: ${[...ALLOWED_PAGE_CLASSES].join(", ")}. Do not use inline style objects, new dependencies, or unsupported route links.`,
+                        : `Shared classes are optional primitives, not a whitelist: ${[...ALLOWED_PAGE_CLASSES].join(", ")}. You may add meaningful project-specific kebab-case classes for the DesignPlan; avoid random utility-like names and avoid repeating the same generic structure across pages.`,
                     useLegacyLayoutInstructions && visualGrammar === "immersive-game"
                         ? "Optional game structures may use game-map, game-sites, game-site, site-letter, game-lane, game-loadout, game-agent, game-rounds, game-round, game-strip, game-rail, game-slab, hud-pill, tag-list, tag, feature-list, data-table, and cta-row. Avoid metric-grid, metric, timeline-item, callout, media-panel, and quote unless the request explicitly needs them."
                         : useLegacyLayoutInstructions

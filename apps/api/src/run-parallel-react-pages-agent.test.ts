@@ -210,6 +210,58 @@ export function ${componentName}() {
 `;
 }
 
+function designPlanAuthorityPageSource(pageId: PageId): string {
+    const label = PAGE_LABELS[pageId];
+    const componentName = PAGE_COMPONENTS[pageId];
+    const themeClass = `page-theme-${PAGE_IDS.indexOf(pageId) + 1}`;
+    const routeMotif: Record<PageId, string> = {
+        home: "city-story-rail",
+        culture: "culture-timeline",
+        itinerary: "trace-flow",
+    };
+    const heroMotif: Record<PageId, string> = {
+        home: "opening-broadsheet",
+        culture: "archive-ledger",
+        itinerary: "route-compass",
+    };
+
+    return `import React from "react";
+
+export const pageId = ${JSON.stringify(pageId)} as const;
+
+export function ${componentName}() {
+    return (
+        <article className="page-view ${themeClass} ${routeMotif[pageId]}" data-page-id=${JSON.stringify(pageId)}>
+            <header className="${heroMotif[pageId]}" aria-label="${label} DesignPlan hero">
+                <p className="eyebrow">${label} / structured design plan</p>
+                <h1>${label} uses its own silhouette instead of the legacy split hero</h1>
+                <p className="page-lead">This route follows the preserved DesignPlan rhythm with a different spatial pattern, concrete copy, readable hierarchy, and no placeholder modules.</p>
+                <div className="operations-region">
+                    <span className="tag">river context</span>
+                    <span className="tag">street sequence</span>
+                    <span className="tag">culture anchor</span>
+                </div>
+            </header>
+            <main className="narrative-weave" aria-label="${label} route content">
+                <section className="motif-band">
+                    <h2>Start with the route-specific story</h2>
+                    <p>Each page chooses a local composition based on its route purpose, primary content, and action path while keeping the shared brand tokens readable.</p>
+                </section>
+                <section className="evidence-river">
+                    <h2>Use a different section rhythm</h2>
+                    <p>The home page can behave like an overview rail, the culture page like an archive timeline, and the itinerary page like a compact route flow.</p>
+                </section>
+                <section className="action-dock">
+                    <h2>Preserve engineering quality</h2>
+                    <p>Semantic HTML, one h1, accessible labels, readable text, and route isolation remain enforced even when the DesignPlan owns layout decisions.</p>
+                </section>
+            </main>
+        </article>
+    );
+}
+`;
+}
+
 function gamePageSource(
     pageId: PageId,
     visualPath = `/assets/${pageId}-visual.svg`,
@@ -653,12 +705,81 @@ describe("runParallelReactPagesAgent", () => {
         ).toBe(true);
         expect(
             pagePrompts.every((prompt) =>
+                prompt.includes(`heroPattern: ${designPlan.visualDNA.heroPattern}`),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.every((prompt) =>
                 prompt.includes("DesignPlan source: planner"),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.every((prompt) =>
+                prompt.includes("Available project layout primitives:"),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.every((prompt) =>
+                prompt.includes("Use project layout primitives only when they serve the DesignPlan."),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.every((prompt) =>
+                prompt.includes("Design layout constraints: DesignPlan is the primary layout authority"),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.every((prompt) =>
+                prompt.includes("Hero child count is not fixed"),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.some((prompt) =>
+                prompt.includes("Create a magazine-quality page-hero with exactly two direct children"),
+            ),
+        ).toBe(false);
+        expect(
+            pagePrompts.some((prompt) =>
+                prompt.includes("Use only these shared classes"),
+            ),
+        ).toBe(false);
+        expect(
+            pagePrompts.some((prompt) =>
+                prompt.includes("fixed three-column feature grid"),
+            ),
+        ).toBe(false);
+        expect(
+            pagePrompts.every((prompt) =>
+                prompt.includes("Sibling pages may share brand language, but must not be required to share the same hero DOM or section order."),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.every((prompt) =>
+                prompt.includes("Forbidden patterns are hard constraints."),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.every((prompt) =>
+                prompt.includes("Import only React."),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.every((prompt) =>
+                prompt.includes("Do not emit navigation links or route hrefs"),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.every((prompt) =>
+                prompt.includes("If you use an image, include alt text"),
             ),
         ).toBe(true);
 
         const styles = await readFile(
             path.join(workspaceRoot, "src", "App.css"),
+            "utf8",
+        );
+        const app = await readFile(
+            path.join(workspaceRoot, "src", "App.tsx"),
             "utf8",
         );
         expect(styles).toContain("--project-composition");
@@ -668,18 +789,87 @@ describe("runParallelReactPagesAgent", () => {
         expect(styles).toContain("route timeline");
         expect(styles).not.toContain("--color-ink-900");
         expect(styles).not.toContain("--radius-component");
+        expect(app).toContain('className="app-shell"');
+        expect(app).not.toContain("site-genre-editorial");
+    });
+
+    it("treats preserved DesignPlan as layout authority and allows semantic project classes", async () => {
+        const workspaceRoot = await createWorkspace();
+        const pagePrompts: string[] = [];
+        const designPlan = createFallbackDesignPlan({
+            goal: "Create a routed city culture site with a preserved broadsheet plan and no card grid.",
+            plannerOutput: PLANNER_OUTPUT,
+            routes: PLANNER_OUTPUT.pages ?? [],
+        });
+        const provider = new PageModelProvider(({ pageId, request }) => {
+            pagePrompts.push(
+                request.messages.map((message) => message.content).join("\n"),
+            );
+            return artifactResponse(pageId, designPlanAuthorityPageSource(pageId));
+        });
+
+        const result = await runParallelReactPagesAgent({
+            goal: "Create a routed city culture site with a preserved broadsheet plan and no card grid.",
+            plannerOutput: PLANNER_OUTPUT,
+            model: provider,
+            workspaceRoot,
+            routeRequest: true,
+            maxConcurrency: 2,
+            designPlan,
+            designPlanSource: "preserved",
+        });
+
+        expect(result.agent.finished).toBe(true);
+        expect(result.designPlanSource).toBe("preserved");
+        expect(
+            pagePrompts.every((prompt) =>
+                prompt.includes("DesignPlan source: preserved"),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.every((prompt) =>
+                prompt.includes("Available project layout primitives:"),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.every((prompt) =>
+                prompt.includes(`heroPattern: ${designPlan.visualDNA.heroPattern}`),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.some((prompt) =>
+                prompt.includes("Create a magazine-quality page-hero with exactly two direct children"),
+            ),
+        ).toBe(false);
+
+        const home = await readFile(
+            path.join(workspaceRoot, "src", "pages", "home.tsx"),
+            "utf8",
+        );
+        expect(home).toContain("city-story-rail");
+        expect(home).toContain("opening-broadsheet");
+        const app = await readFile(
+            path.join(workspaceRoot, "src", "App.tsx"),
+            "utf8",
+        );
+        expect(app).toContain('className="app-shell"');
+        expect(app).not.toContain("site-genre-editorial");
     });
 
     it("keeps the legacy shared style path for fallback DesignPlan output", async () => {
         const workspaceRoot = await createWorkspace();
+        const pagePrompts: string[] = [];
         const designPlan = createFallbackDesignPlan({
             goal: "创建温州城市文化编辑页，不要卡片化",
             plannerOutput: PLANNER_OUTPUT,
             routes: PLANNER_OUTPUT.pages ?? [],
         });
-        const provider = new PageModelProvider(({ pageId }) =>
-            artifactResponse(pageId, editorialFlowPageSource(pageId)),
-        );
+        const provider = new PageModelProvider(({ pageId, request }) => {
+            pagePrompts.push(
+                request.messages.map((message) => message.content).join("\n"),
+            );
+            return artifactResponse(pageId, editorialFlowPageSource(pageId));
+        });
 
         const result = await runParallelReactPagesAgent({
             goal: "创建温州城市文化编辑页，不要卡片化",
@@ -697,9 +887,24 @@ describe("runParallelReactPagesAgent", () => {
             path.join(workspaceRoot, "src", "App.css"),
             "utf8",
         );
+        const app = await readFile(
+            path.join(workspaceRoot, "src", "App.tsx"),
+            "utf8",
+        );
         expect(styles).toContain("--color-ink-900");
         expect(styles).toContain("--radius-component");
         expect(styles).not.toContain("--project-composition");
+        expect(app).toContain("site-genre-editorial");
+        expect(
+            pagePrompts.some((prompt) =>
+                prompt.includes("Create a magazine-quality page-hero with exactly two direct children"),
+            ),
+        ).toBe(true);
+        expect(
+            pagePrompts.some((prompt) =>
+                prompt.includes("Use only these shared classes"),
+            ),
+        ).toBe(true);
     });
 
     it("marks invalid page model output as fallback instead of normal success", async () => {
