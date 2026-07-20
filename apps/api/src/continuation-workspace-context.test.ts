@@ -178,4 +178,46 @@ describe("formatContinuationWorkspaceContext", () => {
         expect(excerpt).toContain("BUILD_ERROR_MARKER");
         expect(unsafeExcerpt).toBe("");
     });
+    it("includes available exports for a Rollup missing-export error", async () => {
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-missing-export-excerpt-"),
+        );
+        temporaryDirectories.push(workspaceRoot);
+        await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+        await writeFile(
+            path.join(workspaceRoot, "src", "App.tsx"),
+            [
+                'import { sectors } from "./content";',
+                "export function App() { return <main>{sectors.length}</main>; }",
+            ].join("\n"),
+            "utf8",
+        );
+        await writeFile(
+            path.join(workspaceRoot, "src", "content.ts"),
+            [
+                "export const briefing = {};",
+                "export const mapSites = [];",
+                "export const timeline = [];",
+            ].join("\n"),
+            "utf8",
+        );
+
+        const excerpt = await formatBuildErrorSourceExcerpt(
+            workspaceRoot,
+            [
+                'src/App.tsx (1:9): "sectors" is not exported by "src/content.ts", imported by "src/App.tsx".',
+                "src/App.tsx:1:9",
+            ].join("\n"),
+        );
+
+        expect(excerpt).toContain("Named import/export mismatch:");
+        expect(excerpt).toContain("src/App.tsx imports sectors");
+        expect(excerpt).toContain(
+            "Available named exports: briefing, mapSites, timeline.",
+        );
+        expect(excerpt).toContain(
+            "Do not alter unrelated strings or content blocks.",
+        );
+    });
+
 });

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { createFallbackDesignPlan } from "./design-plan-utils.js";
 import {
     deriveLayoutPrimitives,
+    formatDesignPlanMetadataStyles,
     formatProjectStyles,
 } from "./project-styles.js";
 
@@ -48,6 +49,22 @@ function stylesFor(plan: DesignPlan): string {
 }
 
 describe("project DesignPlan layout primitives", () => {
+    it("formats deterministic DesignPlan metadata markers independently of generated layout CSS", () => {
+        const plan = planWith("game", {
+            composition: "cinematic tactical stage",
+            surfaceStrategy: "mixed",
+            sectionRhythm: ["hero stage", "HUD strip"],
+            uniqueMotifs: ["tactical rail"],
+        });
+        const metadata = formatDesignPlanMetadataStyles(plan);
+
+        expect(metadata).toContain("appforge-design-plan-metadata:start");
+        expect(metadata).toContain("--project-composition: \"cinematic tactical stage\"");
+        expect(metadata).toContain("--surface-strategy: mixed");
+        expect(metadata).toContain("--section-rhythm: \"hero stage / HUD strip\"");
+        expect(metadata).toContain("--unique-motifs: \"tactical rail\"");
+    });
+
     it("selects editorial primitives for an open city culture plan without legacy genre or card grid skeleton", () => {
         const plan = planWith("editorial", {
             composition: "modern city magazine with editorial rhythm",

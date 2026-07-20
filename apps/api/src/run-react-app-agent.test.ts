@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
     classifyNavigationRequest,
     formatBuildErrorSourceExcerpt,
+    hasVisibleDecorativeSlashNoise,
     runReactAppAgent,
 } from "./run-react-app-agent.js";
 import { createFallbackDesignPlan } from "./design-plan-utils.js";
@@ -54,6 +55,21 @@ describe("runReactAppAgent", () => {
         );
 
         temporaryDirectories.length = 0;
+    });
+
+    it("allows concise semantic HUD identifiers but rejects punctuation-only marketing copy", () => {
+        expect(
+            hasVisibleDecorativeSlashNoise(`
+                <span>MISSION//ACTIVE</span>
+                <span>LINK::STABLE</span>
+                <span>ROUND-13</span>
+            `),
+        ).toBe(false);
+        expect(
+            hasVisibleDecorativeSlashNoise(`
+                <h2>POWER // SPEED // FUTURE</h2>
+            `),
+        ).toBe(true);
     });
 
     it.each([
@@ -187,7 +203,7 @@ describe("runReactAppAgent", () => {
         );
     }, 15_000);
 
-    it("hard-gates non-entrypoint actions before a fresh page can change the workspace", async () => {
+    it("rejects a fresh draft that never replaces App.tsx", async () => {
         const templateRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-api-template-"),
         );
@@ -253,17 +269,17 @@ export function App() {
 
         expect(result.review.accepted).toBe(false);
         expect(result.review.reason).toContain(
-            "Entrypoint-first hard gate failed",
+            "generated application is incomplete",
         );
-        expect(result.agent.errorMessage).toContain(
-            "did not write or edit src/App.tsx",
+        expect(result.review.reason).toContain(
+            "src/App.tsx still contains the AppForge starter template",
         );
         expect(
             await readFile(path.join(workspaceRoot, "src", "App.tsx"), "utf8"),
         ).toBe(starter);
-        await expect(
-            readFile(path.join(workspaceRoot, "src", "content.ts"), "utf8"),
-        ).rejects.toThrow();
+        expect(
+            await readFile(path.join(workspaceRoot, "src", "content.ts"), "utf8"),
+        ).toContain("Trace");
     }, 15_000);
 
     it("connects a partial fresh draft through an App.tsx-only integration rescue", async () => {

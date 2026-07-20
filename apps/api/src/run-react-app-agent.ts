@@ -44,6 +44,7 @@ import {
 } from "@appforge/harness";
 import { formatRepairContext } from "./format-repair-context.js";
 import { shouldRepair } from "./should-repair.js";
+import { validateRepairSourceAction } from "./validate-repair-source-action.js";
 import type {
     AgentAction,
     RunOperationStage,
@@ -78,11 +79,13 @@ import {
     evaluateDesignPlanCompliance,
     formatDesignPlanForPrompt,
 } from "./design-plan-utils.js";
+import { formatDesignPlanMetadataStyles } from "./project-styles.js";
 import { evaluateInitialGenerationCompleteness } from "./initial-generation-completeness.js";
 
 const INSTALL_COMMAND_TIMEOUT_MS = 5 * 60 * 1_000;
 const BUILD_COMMAND_TIMEOUT_MS = 2 * 60 * 1_000;
 const TYPECHECK_COMMAND_TIMEOUT_MS = 2 * 60 * 1_000;
+const DESIGN_PLAN_METADATA_MARKER = "appforge-design-plan-metadata:start";
 
 export type RunReactAppAgentOptions = {
     goal: string;
@@ -1280,6 +1283,86 @@ function extractWorkspaceSourceLocation(
     return undefined;
 }
 
+function extractMissingNamedExport(
+    stderr: string,
+): { missingExport: string; modulePath: string; importerPath: string } | undefined {
+    const match = stderr.match(
+        /"([^"]+)" is not exported by "([^"]+)", imported by "([^"]+)"/u,
+    );
+
+    if (!match?.[1] || !match[2] || !match[3]) {
+        return undefined;
+    }
+
+    return {
+        missingExport: match[1],
+        modulePath: toWorkspacePath(match[2]),
+        importerPath: toWorkspacePath(match[3]),
+    };
+}
+
+function extractNamedExports(source: string): string[] {
+    const exports = new Set<string>();
+
+    for (const match of source.matchAll(
+        /\bexport\s+(?:declare\s+)?(?:async\s+)?(?:const|let|var|function|class|type|interface|enum)\s+([A-Za-z_$][\w$]*)/gu,
+    )) {
+        if (match[1]) {
+            exports.add(match[1]);
+        }
+    }
+
+    for (const match of source.matchAll(/\bexport\s*\{([^}]+)\}/gu)) {
+        for (const item of (match[1] ?? "").split(",")) {
+            const exportedName = item
+                .trim()
+                .replace(/^type\s+/u, "")
+                .split(/\s+as\s+/u)
+                .at(-1)
+                ?.trim();
+
+            if (exportedName && /^[A-Za-z_$][\w$]*$/u.test(exportedName)) {
+                exports.add(exportedName);
+            }
+        }
+    }
+
+    return [...exports].slice(0, 40);
+}
+
+async function formatMissingExportContext(
+    workspaceRoot: string,
+    stderr: string,
+): Promise<string> {
+    const mismatch = extractMissingNamedExport(stderr);
+
+    if (!mismatch || !mismatch.modulePath.startsWith("src/")) {
+        return "";
+    }
+
+    const absolutePath = path.resolve(workspaceRoot, mismatch.modulePath);
+    const relativePath = path.relative(workspaceRoot, absolutePath);
+
+    if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+        return "";
+    }
+
+    try {
+        const source = await readFile(absolutePath, "utf8");
+        const exports = extractNamedExports(source);
+
+        return [
+            "Named import/export mismatch:",
+            `- ${mismatch.importerPath} imports ${mismatch.missingExport} from ${mismatch.modulePath}.`,
+            `- ${mismatch.modulePath} does not export ${mismatch.missingExport}.`,
+            `- Available named exports: ${exports.length > 0 ? exports.join(", ") : "none detected"}.`,
+            "Repair only this import/export contract. Do not alter unrelated strings or content blocks.",
+        ].join("\n");
+    } catch {
+        return "";
+    }
+}
+
 export async function formatBuildErrorSourceExcerpt(
     workspaceRoot: string,
     stderr: string,
@@ -1299,6 +1382,11 @@ export async function formatBuildErrorSourceExcerpt(
         const startLine = Math.max(1, location.lineNumber - 10);
         const endLine = Math.min(lines.length, location.lineNumber + 10);
 
+        const missingExportContext = await formatMissingExportContext(
+            workspaceRoot,
+            stderr,
+        );
+
         return [
             `Source: ${location.relativePath}`,
             ...lines
@@ -1310,6 +1398,9 @@ export async function formatBuildErrorSourceExcerpt(
 
                     return `${marker} ${String(currentLine).padStart(4, " ")} | ${line}`;
                 }),
+            ...(missingExportContext.length > 0
+                ? ["", missingExportContext]
+                : []),
         ].join("\n");
     } catch {
         return "";
@@ -4867,6 +4958,37 @@ function hasExplicitHorizontalPointLabelStructure(source: string): boolean {
     );
 }
 
+async function ensureDesignPlanMetadataStyles(input: {
+    workspaceRoot: string;
+    designPlan: DesignPlan;
+}): Promise<boolean> {
+    const cssPath = path.join(input.workspaceRoot, "src", "App.css");
+    let css = "";
+
+    try {
+        css = await readFile(cssPath, "utf8");
+    } catch {
+        // A generated app may omit App.css. Creating a metadata-only stylesheet
+        // is harmless and keeps DesignPlan evidence deterministic.
+    }
+
+    if (
+        css.includes(DESIGN_PLAN_METADATA_MARKER) ||
+        (css.includes("--project-composition") &&
+            css.includes("--surface-strategy"))
+    ) {
+        return false;
+    }
+
+    const metadata = formatDesignPlanMetadataStyles(input.designPlan);
+    const nextCss = css.trimEnd().length > 0
+        ? `${css.trimEnd()}\n\n${metadata}\n`
+        : `${metadata}\n`;
+
+    await writeFile(cssPath, nextCss, "utf8");
+    return true;
+}
+
 function stillHasUngovernedPointLabelSource(source: string): boolean {
     return /\b(?:A\s*(?:\/|SITE|POINT|\u70b9|\u5305\u70b9)|B\s*(?:\/|SITE|POINT|\u70b9|\u5305\u70b9)|C\s*(?:\/|SITE|POINT|\u70b9|\u5305\u70b9)|A\s*\/\s*B|A\s*\/\s*B\s*\/\s*C|ABC|abc)\b/iu.test(
         source,
@@ -4879,9 +5001,47 @@ function hasRawSlashSeparatedPointText(source: string): boolean {
     );
 }
 
-function hasVisibleDecorativeSlashNoise(source: string): boolean {
-    return /(?:["'`>][^"'`<>{}\n]{0,40})\s\/\/\s*(?:[^"'`<>{}\n]{0,20}[<"'`])|(?:["'`>][^"'`<>{}\n]{0,40})\s(?:::|--)\s*(?:[^"'`<>{}\n]{0,20}[<"'`])/u.test(
-        source,
+function extractVisibleSeparatorText(source: string): string[] {
+    const candidates: string[] = [];
+    const patterns = [
+        /["'`]([^"'`<>\n]{0,120}(?:\/\/|::|--)[^"'`<>\n]{0,120})["'`]/gu,
+        />([^<>{}\n]{0,120}(?:\/\/|::|--)[^<>{}\n]{0,120})</gu,
+    ];
+
+    for (const pattern of patterns) {
+        for (const match of source.matchAll(pattern)) {
+            const text = match[1]?.replace(/\s+/gu, " ").trim();
+            if (text) {
+                candidates.push(text);
+            }
+        }
+    }
+
+    return candidates;
+}
+
+function isSemanticHudIdentifier(text: string): boolean {
+    if (text.length > 64 || /[。！？!?，,；;]/u.test(text)) {
+        return false;
+    }
+
+    const separatorCount = text.match(/\/\/|::|--/gu)?.length ?? 0;
+    if (separatorCount === 0 || separatorCount > 3) {
+        return false;
+    }
+
+    const semanticToken = /\b(?:mission|ops|operation|sector|zone|link|status|round|phase|threat|coord|coordinate|terminal|system|version|build|node|trace|runtime|online|active|stable|locked|ready|alert|t-minus|tick)\b|(?:任务|行动|作战|战区|区域|链路|状态|回合|阶段|威胁|坐标|终端|系统|版本|节点|追踪|运行|在线|激活|稳定|锁定|就绪|警报|倒计时)/iu.test(
+        text,
+    );
+    const compactReadout = /^[\p{L}\p{N}\s+._:/-]+$/u.test(text) &&
+        text.split(/\s+/u).length <= 6;
+
+    return semanticToken && compactReadout;
+}
+
+export function hasVisibleDecorativeSlashNoise(source: string): boolean {
+    return extractVisibleSeparatorText(source).some(
+        (text) => !isSemanticHudIdentifier(text),
     );
 }
 
@@ -4924,7 +5084,7 @@ async function enforceFocusedVisualSemanticReview(input: {
 
     if (hasVisibleDecorativeSlashNoise(source)) {
         failureReasons.push(
-            "the source contains visible decorative separator punctuation such as //, ::, or -- in UI copy instead of using CSS decoration",
+            "the source contains repeated meaningless separator punctuation such as //, ::, or -- in ordinary UI copy instead of using CSS decoration",
         );
     }
 
@@ -4937,7 +5097,7 @@ async function enforceFocusedVisualSemanticReview(input: {
         accepted: false,
         reason: [
             `Rejected because ${failureReasons.join("; ")}.`,
-            "Tactical/game point labels must be separate horizontal chips or labels, and visual separators must be CSS, not literal punctuation noise.",
+            "Tactical/game point labels must be separate horizontal chips or labels. Concise semantic HUD identifiers such as MISSION//ACTIVE, LINK::STABLE, or ROUND-13 are allowed; repeated decorative punctuation in ordinary headings or prose is not.",
             input.review.reason,
         ].join(" "),
     };
@@ -5822,6 +5982,43 @@ export async function runReactAppAgent(
             | undefined;
         let agent!: RunCodingAgentLoopResult;
         const codingStartedAt = Date.now();
+        const validateAttemptAction = async (action: AgentAction) => {
+            if (
+                focusedEditRequest &&
+                focusedEditScope &&
+                beforeWorkspaceSnapshot
+            ) {
+                const focusedValidation =
+                    await validateFocusedActionWithRecording(action);
+
+                if (focusedValidation) {
+                    return focusedValidation;
+                }
+            }
+
+            if (typecheckRepairAttempt) {
+                const typecheckValidation =
+                    validateTypecheckRepairAction(action);
+
+                if (typecheckValidation) {
+                    return typecheckValidation;
+                }
+            }
+
+            if (kind === "repair") {
+                return validateRepairSourceAction(
+                    options.workspaceRoot,
+                    action,
+                );
+            }
+
+            return undefined;
+        };
+        const shouldValidateAttemptActions =
+            kind === "repair" ||
+            (focusedEditRequest !== undefined &&
+                focusedEditScope !== undefined &&
+                beforeWorkspaceSnapshot !== undefined);
 
         try {
             if (useParallelCodingAgents && kind === "initial") {
@@ -5881,13 +6078,8 @@ export async function runReactAppAgent(
                             "After src/App.tsx exists, write src/App.css only if needed, then finish. Do not create src/content.ts, do not request images, do not run commands, and do not spend steps polishing optional details before the entrypoint is complete.",
                         ].join("\n\n"),
                         ...(options.signal ? { signal: options.signal } : {}),
-                        ...(focusedEditRequest &&
-                        focusedEditScope &&
-                        beforeWorkspaceSnapshot
-                            ? {
-                                  validateAction:
-                                      validateFocusedActionWithRecording,
-                              }
+                        ...(shouldValidateAttemptActions
+                            ? { validateAction: validateAttemptAction }
                             : {}),
                     });
                 }
@@ -5916,16 +6108,9 @@ export async function runReactAppAgent(
                               imageAssetModes: activeImageAssetModes,
                           }
                         : {}),
-                    ...(typecheckRepairAttempt
-                        ? { validateAction: validateTypecheckRepairAction }
-                        : {}),
                     ...(options.signal ? { signal: options.signal } : {}),
-                    ...(focusedEditRequest &&
-                    focusedEditScope &&
-                    beforeWorkspaceSnapshot
-                        ? {
-                              validateAction: validateFocusedActionWithRecording,
-                          }
+                    ...(shouldValidateAttemptActions
+                        ? { validateAction: validateAttemptAction }
                         : {}),
                 });
             }
@@ -6137,6 +6322,17 @@ export async function runReactAppAgent(
                     ? { parallelWorkstreams }
                     : {}),
             };
+        }
+
+        if (
+            resolvedDesignPlan &&
+            resolvedDesignPlanSource &&
+            resolvedDesignPlanSource !== "fallback"
+        ) {
+            await ensureDesignPlanMetadataStyles({
+                workspaceRoot: options.workspaceRoot,
+                designPlan: resolvedDesignPlan,
+            });
         }
 
         const agentModifiedFiles = listModifiedFilesFromAgent(agent);

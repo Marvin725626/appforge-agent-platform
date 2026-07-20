@@ -11,8 +11,9 @@ export type ReactSourceAutofixResult = {
 
 export function escapeInvalidJsxTextGreaterThan(source: string): string {
     return source.replace(
-        />([^<{}]*>[^<{}]*)</gu,
-        (_match, text: string) => `>${text.replace(/>/gu, "&gt;")}<`,
+        /(<\/?[A-Za-z][^<>]*>)([^<{}]*>[^<{}]*)(?=<)/gu,
+        (_match, tag: string, text: string) =>
+            `${tag}${text.replace(/>/gu, "&gt;")}`,
     );
 }
 

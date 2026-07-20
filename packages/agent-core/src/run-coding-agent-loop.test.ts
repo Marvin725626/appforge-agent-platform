@@ -499,110 +499,6 @@ describe("runCodingAgentLoop", () => {
         );
     });
 
-    it("hard-gates images and content until entrypoint-first writes App.tsx", async () => {
-        const workspaceRoot = await mkdtemp(
-            path.join(os.tmpdir(), "appforge-entrypoint-guard-loop-"),
-        );
-
-        temporaryDirectories.push(workspaceRoot);
-
-        const imageData = Uint8Array.from([137, 80, 78, 71]);
-        const imageAssetTool = new ImageAssetTool({
-            workspaceRoot,
-            provider: new FakeImageAssetProvider({
-                data: imageData,
-                mediaType: "image/png",
-                source: "fake://tactical-hero",
-            }),
-        });
-        const model = new FakeModelProvider([
-            {
-                content: JSON.stringify({
-                    type: "get_image",
-                    query: "tactical hero",
-                    mode: "generate",
-                    altText: "战术主视觉",
-                    outputPath: "public/assets/tactical-hero.png",
-                }),
-            },
-            {
-                content: JSON.stringify({
-                    type: "write_file",
-                    path: "src/content.ts",
-                    content: "export const title = '不应先写';",
-                }),
-            },
-            {
-                content: JSON.stringify({
-                    type: "write_file",
-                    path: "src/App.tsx",
-                    content:
-                        "export function App(){return <main><h1>战术行动中心</h1></main>}",
-                }),
-            },
-            {
-                content: JSON.stringify({
-                    type: "get_image",
-                    query: "tactical hero",
-                    mode: "generate",
-                    altText: "战术主视觉",
-                    outputPath: "public/assets/tactical-hero.png",
-                }),
-            },
-            {
-                content: JSON.stringify({
-                    type: "finish",
-                    summary: "完成入口与视觉资源",
-                }),
-            },
-        ]);
-
-        const result = await runCodingAgentLoop({
-            goal: "创建一个沉浸式战术游戏专题网站",
-            model,
-            workspaceRoot,
-            maxSteps: 3,
-            requireWorkspaceChange: true,
-            entrypointFirst: true,
-            imageAssetTool,
-            imageAssetModes: ["generate"],
-        });
-
-        expect(result.finished).toBe(true);
-        expect(result.stopReason).toBe("finish");
-        expect(result.steps.slice(0, 2).every((step) =>
-            step.execution.changed === false &&
-            step.execution.message.startsWith(
-                "Entrypoint-first action rejected:",
-            ),
-        )).toBe(true);
-        await expect(
-            readFile(path.join(workspaceRoot, "src", "content.ts"), "utf8"),
-        ).rejects.toThrow();
-        await expect(
-            readFile(path.join(workspaceRoot, "src", "App.tsx"), "utf8"),
-        ).resolves.toContain("战术行动中心");
-        await expect(
-            readFile(
-                path.join(
-                    workspaceRoot,
-                    "public",
-                    "assets",
-                    "tactical-hero.png",
-                ),
-            ),
-        ).resolves.toEqual(Buffer.from(imageData));
-
-        const firstSchema = model.requests[0]?.responseFormat;
-        const fourthSchema = model.requests[3]?.responseFormat;
-        expect(JSON.stringify(firstSchema)).toContain('"const":"src/App.tsx"');
-        expect(JSON.stringify(firstSchema)).not.toContain('"const":"get_image"');
-        expect(JSON.stringify(fourthSchema)).toContain('"const":"get_image"');
-        expect(model.requests[1]?.messages[1]?.content).toContain(
-            "Entrypoint-first action rejected:",
-        );
-    });
-
     it("keeps generated module exports and CSS classes in compact stage context", async () => {
         const workspaceRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-loop-stage-metadata-"),
@@ -795,5 +691,71 @@ describe("runCodingAgentLoop", () => {
         await expect(readFile(appPath, "utf8")).resolves.toContain(
             "Updated",
         );
+    });
+});
+
+describe("retryable action validation", () => {
+    it("feeds a retryable validation failure back to the repair model", async () => {
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-loop-retryable-validation-"),
+        );
+
+        const model = new FakeModelProvider([
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/content.ts",
+                    content: 'export const roster = { kicker: "BROKEN",UT" };',
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/content.ts",
+                    content: 'export const roster = { kicker: "FIXED" };',
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "Repaired source",
+                }),
+            },
+        ]);
+
+        const result = await runCodingAgentLoop({
+            goal: "Repair the generated app",
+            model,
+            workspaceRoot,
+            maxSteps: 4,
+            mode: "repair",
+            requireWorkspaceChange: true,
+            validateAction: (action) =>
+                action.type === "write_file" &&
+                action.content.includes('"BROKEN",UT"')
+                    ? {
+                          ok: false,
+                          changed: false,
+                          retryable: true,
+                          message: "Unterminated string literal",
+                      }
+                    : undefined,
+        });
+
+        const writtenContent = await readFile(
+            path.join(workspaceRoot, "src", "content.ts"),
+            "utf8",
+        );
+
+        expect(result.finished).toBe(true);
+        expect(result.stopReason).toBe("finish");
+        expect(result.steps).toHaveLength(3);
+        expect(result.steps[0]?.execution.retryable).toBe(true);
+        expect(model.requests[1]?.messages[1]?.content).toContain(
+            "Retryable repair action rejected:",
+        );
+        expect(writtenContent).toContain("FIXED");
+
+        await rm(workspaceRoot, { recursive: true, force: true });
     });
 });
