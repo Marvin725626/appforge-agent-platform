@@ -38,3 +38,29 @@ Thumbs.db
 # Test and browser output
 test-results/
 playwright-report/
+
+# Local AppForge backups
+.appforge-local-backup/
+
+# Temporary repair packages and reports
+*.zip
+*.patch
+/appforge-*-report.md
+/appforge-v3-clean-stale-repair-files.ps1
+
+# Raw local run diagnostics
+/latest-*-run-raw.json
+
+# Local AppForge backups
+.appforge-local-backup/
+
+# Temporary repair packages and reports
+*.zip
+*.patch
+/appforge-*-report.md
+/appforge-v3-clean-stale-repair-files.ps1
+
+# Raw local run diagnostics
+/latest-*-run-raw.json
+
+.appforge-local-backup/
