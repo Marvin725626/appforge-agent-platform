@@ -69,7 +69,7 @@ describe("DesignPlannerAgent", () => {
         });
 
         expect(plan.visualDNA.heroPattern).toBe("angled stage");
-        expect(provider.requests[0]?.stream).toBe(false);
+        expect(provider.requests[0]?.stream).toBe(true);
         expect(provider.requests[0]?.responseFormat).toMatchObject({
             type: "json_schema",
             name: "DesignPlan",

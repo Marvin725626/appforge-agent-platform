@@ -111,11 +111,21 @@ describe("AgentActionSchema", () => {
     expect(action.type).toBe("write_file");
   });
 
-  it("rejects an oversized write_file action", () => {
+  it("accepts a complete generated App.tsx larger than the old 6000-character limit", () => {
     const result = AgentActionSchema.safeParse({
       type: "write_file",
       path: "src/App.tsx",
-      content: "x".repeat(6001),
+      content: "x".repeat(12_000),
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a write_file action above the bounded protocol limit", () => {
+    const result = AgentActionSchema.safeParse({
+      type: "write_file",
+      path: "src/App.tsx",
+      content: "x".repeat(40_001),
     });
 
     expect(result.success).toBe(false);

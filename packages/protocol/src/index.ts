@@ -1,5 +1,8 @@
 export const PROTOCOL_VERSION = "0.1.0";
-export { AgentActionSchema } from "./agent-action.js";
+export {
+    AgentActionSchema,
+    MAX_WRITE_FILE_CONTENT_LENGTH,
+} from "./agent-action.js";
 export {
     CreateRunInputSchema,
     RunSchema,

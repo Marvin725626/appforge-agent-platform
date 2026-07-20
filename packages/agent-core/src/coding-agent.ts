@@ -1,15 +1,22 @@
-import type { AgentAction } from "@appforge/protocol";
+import {
+    MAX_WRITE_FILE_CONTENT_LENGTH,
+    type AgentAction,
+} from "@appforge/protocol";
 
 import type { ImageAssetMode } from "./image-asset-provider.js";
 import type { ModelProvider } from "./model-provider.js";
 import { parseAgentAction } from "./parse-agent-action.js";
 import { completeStructuredOutput } from "./complete-structured-output.js";
-import { AgentActionJsonSchema } from "./structured-output-schemas.js";
+import {
+    AgentActionJsonSchema,
+    EntrypointAgentActionJsonSchema,
+} from "./structured-output-schemas.js";
 
 export type CodingAgentOptions = {
     model: ModelProvider;
     imageToolsEnabled?: boolean;
     imageToolModes?: ImageAssetMode[];
+    entrypointFirst?: boolean;
 };
 
 function isLikelyComplexPageRequest(text: string): boolean {
@@ -119,6 +126,9 @@ export class CodingAgent {
         const routeShellFirst = context.includes(
             "Route-shell-first execution order:",
         );
+        const entrypointFirst =
+            this.options.entrypointFirst === true ||
+            context.includes("Entrypoint-first execution order:");
         const initialGeneration = context.includes(
             "Workspace execution mode: initial generation.",
         );
@@ -180,7 +190,7 @@ export class CodingAgent {
                                 "If no external image asset is available, create a reliable local visual treatment with CSS gradients, inline SVG, geometric illustration, or data-driven visual panels; never finish a visual page as a sparse text-only layout.",
                                 "Dashboards, portals, and embedded tools may instead use a coherent app shell with product identity, task-appropriate navigation, a summary header or overview, at least three meaningful functional modules, and an appropriate utility, status, or footer treatment. Do not force a marketing hero or marketing footer onto a product interface.",
                                 "Write real subject-specific content or task-relevant data and controls; never substitute lorem ipsum, generic Feature 1 cards, empty shells, repeated filler, or placeholder copy.",
-                                ...(complexPageRequest && !routeShellFirst
+                                ...(complexPageRequest && !routeShellFirst && !entrypointFirst
                                     ? [
                                           "For complex pages, homepages, dashboards, or pages with many sections, batch the work across multiple write_file actions instead of one huge App.tsx.",
                                           "Recommended complex-page batch: first write src/content.ts for arrays and page copy, then write src/App.css for styling, then write a compact src/App.tsx that imports ./content.js and ./App.css.",
@@ -194,6 +204,15 @@ export class CodingAgent {
                                               ? "Your first implementation action must be a write_file for src/App.tsx that replaces the starter with real URL targets, route-specific rendering, and popstate or hashchange handling."
                                               : "Your first implementation action must be an edit_file for src/App.tsx that connects real URL targets, route-specific rendering, and popstate or hashchange handling using the supplied current source.",
                                           "Do not start with content.ts, App.css, images, or visual polish. After the route shell exists, add complete substantive route-specific content and polished responsive CSS before finishing.",
+                                      ]
+                                    : entrypointFirst
+                                    ? [
+                                          "This request uses entrypoint-first execution.",
+                                          initialGeneration
+                                              ? "Your first implementation action must be a write_file for src/App.tsx that replaces the starter with a compact, runnable, subject-specific page shell."
+                                              : "Your first implementation action must write_file or edit_file src/App.tsx so the rendered entrypoint is complete and no starter content remains.",
+                                          "Do not start with content.ts, App.css, images, or visual polish. Put the minimum real subject content inline in App.tsx first so the page is runnable immediately. Import only files that already exist.",
+                                          "After src/App.tsx exists, add or refine App.css, content.ts, or local assets only when action budget remains. Never postpone the entrypoint until the end of the attempt.",
                                       ]
                                     : complexPageRequest
                                     ? [
@@ -288,15 +307,23 @@ export class CodingAgent {
             },
             parse: parseAgentAction,
             outputName: "AgentAction",
-            schema: AgentActionJsonSchema,
+            schema: entrypointFirst
+                ? EntrypointAgentActionJsonSchema
+                : AgentActionJsonSchema,
             maxAttempts: 2,
             invalidResponseInstruction: [
-                "For AgentAction correction, do not repeat a huge src/App.tsx response.",
-                "write_file content over 6000 characters is invalid and will be rejected.",
-                "If the previous response was too large, invalid, or truncated, switch to one small write_file action instead and do not continue the same large JSON.",
-                "If you need to continue a long file, return one append_file action with the next small chunk.",
+                "For AgentAction correction, do not repeat a huge src/App.tsx response blindly; return one complete, syntactically valid JSON action.",
+                `write_file content over ${MAX_WRITE_FILE_CONTENT_LENGTH} characters is invalid and must be split into smaller files.`,
+                "If the previous response was too large, invalid, or truncated, return a smaller complete action instead of repeating the same oversized JSON.",
+                ...(entrypointFirst
+                    ? [
+                          "Entrypoint-first schema does not allow append_file. Return one complete write_file or edit_file action for src/App.tsx.",
+                      ]
+                    : [
+                          "If you need to continue a long file, return one append_file action with the next small chunk.",
+                      ]),
                 "For continuation fixes, prefer one small edit_file action with exact oldText/newText.",
-                ...(complexPageRequest && !routeShellFirst
+                ...(complexPageRequest && !routeShellFirst && !entrypointFirst
                     ? [
                           "For complex pages, the next corrected action must be src/content.ts or src/App.css unless both have already been written successfully.",
                       ]
@@ -306,7 +333,18 @@ export class CodingAgent {
                           "For this route-shell-first request, the corrected action must edit src/App.tsx before content or CSS work.",
                       ]
                     : []),
-                "Keep the corrected write_file content under 3000 characters; the platform will call you again for the next small step.",
+                ...(entrypointFirst
+                    ? [
+                          "For this entrypoint-first request, the corrected action must write_file or edit_file src/App.tsx before content, CSS, or image work.",
+                      ]
+                    : []),
+                ...(entrypointFirst
+                    ? [
+                          `A complete src/App.tsx write may use up to ${MAX_WRITE_FILE_CONTENT_LENGTH} characters. Do not truncate valid JSX merely to meet an artificial 3000-character target.`,
+                      ]
+                    : [
+                          "Prefer a compact write_file action and split very large implementations across coherent files.",
+                      ]),
             ].join(" "),
         });
     }

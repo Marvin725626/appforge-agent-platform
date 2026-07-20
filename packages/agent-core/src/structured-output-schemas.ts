@@ -1,3 +1,5 @@
+import { MAX_WRITE_FILE_CONTENT_LENGTH } from "@appforge/protocol";
+
 import type { JsonSchemaValue } from "./model-provider.js";
 
 const stringSchema = (maxLength?: number): JsonSchemaValue => ({
@@ -245,13 +247,50 @@ const actionBase = (
         ["type", ...required],
     );
 
+export const EntrypointAgentActionJsonSchema: JsonSchemaValue = {
+    anyOf: [
+        actionBase(
+            "write_file",
+            {
+                path: { type: "string", const: "src/App.tsx" },
+                content: {
+                    type: "string",
+                    minLength: 1,
+                    maxLength: MAX_WRITE_FILE_CONTENT_LENGTH,
+                },
+            },
+            ["path", "content"],
+        ),
+        actionBase(
+            "edit_file",
+            {
+                path: { type: "string", const: "src/App.tsx" },
+                oldText: { type: "string", minLength: 1, maxLength: 6000 },
+                newText: { type: "string", maxLength: 6000 },
+                replaceAll: { type: "boolean" },
+            },
+            ["path", "oldText", "newText"],
+        ),
+        actionBase(
+            "finish",
+            {
+                summary: stringSchema(),
+            },
+            ["summary"],
+        ),
+    ],
+};
+
 export const AgentActionJsonSchema: JsonSchemaValue = {
     anyOf: [
         actionBase(
             "write_file",
             {
                 path: stringSchema(),
-                content: { type: "string", maxLength: 6000 },
+                content: {
+                    type: "string",
+                    maxLength: MAX_WRITE_FILE_CONTENT_LENGTH,
+                },
             },
             ["path", "content"],
         ),
@@ -309,6 +348,15 @@ export const AgentActionJsonSchema: JsonSchemaValue = {
         ),
     ],
 };
+
+export const ParallelFileArtifactJsonSchema: JsonSchemaValue = objectSchema(
+    {
+        path: stringSchema(500),
+        content: { type: "string", minLength: 1, maxLength: 8000 },
+        summary: stringSchema(500),
+    },
+    ["path", "content", "summary"],
+);
 
 export const ReviewerOutputJsonSchema: JsonSchemaValue = objectSchema(
     {

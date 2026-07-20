@@ -1995,7 +1995,7 @@ export async function runParallelReactPagesAgent(
     }));
     const artifacts = new Map<string, ParallelFileArtifact>();
     const deadlines = new Map<string, number>();
-    let hardDeadlineFailed = false;
+    const hardDeadlinePageIds = new Set<string>();
 
     const generatePage = async (page: ResolvedReactPagePlan): Promise<void> => {
         options.signal?.throwIfAborted();
@@ -2200,7 +2200,7 @@ export async function runParallelReactPagesAgent(
                     timeoutMs,
                 );
                 status.errorMessage = timeoutError.message;
-                hardDeadlineFailed = true;
+                hardDeadlinePageIds.add(page.id);
                 status.status = "failed";
                 artifacts.delete(page.id);
             } else {
@@ -2215,16 +2215,10 @@ export async function runParallelReactPagesAgent(
 
     try {
         await runWithConcurrency(pages, maxConcurrency, generatePage);
-        if (hardDeadlineFailed) {
-            return createFailureResult(
-                statuses,
-                "Page-per-API generation failed before atomic merge because at least one page hit its hard generation deadline.",
-            );
-        }
         const failedPages = pages.filter(
             (page) =>
                 statuses.find((status) => status.id === page.id)?.status ===
-                "failed",
+                    "failed" && !hardDeadlinePageIds.has(page.id),
         );
         if (failedPages.length > 0) {
             await runWithConcurrency(

@@ -62,7 +62,7 @@ describe("PlannerAgent", () => {
         expect(plan.summary).toBe("Build a task application");
         expect(plan.steps).toHaveLength(1);
         expect(plan.steps[0]?.id).toBe("step-1");
-        expect(provider.requests[0]?.stream).toBe(false);
+        expect(provider.requests[0]?.stream).toBe(true);
         expect(provider.requests[0]?.responseFormat).toMatchObject({
             type: "json_schema",
             name: "PlannerOutput",

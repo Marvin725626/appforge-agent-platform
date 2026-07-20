@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { completeStructuredOutput } from "./complete-structured-output.js";
 import type { ModelProvider } from "./model-provider.js";
+import { ParallelFileArtifactJsonSchema } from "./structured-output-schemas.js";
 
 const PARALLEL_FILE_CONTENT_TARGET_CHARACTERS = 5_500;
 const PARALLEL_FILE_CONTENT_MAX_CHARACTERS = 8_000;
@@ -95,6 +96,7 @@ export class ParallelFileAgent {
                 };
             },
             outputName: `ParallelFileArtifact(${expectedPath})`,
+            schema: ParallelFileArtifactJsonSchema,
             maxAttempts: this.options.maxAttempts ?? 2,
             invalidResponseInstruction: [
                 `Return only the complete file artifact for ${expectedPath}.`,

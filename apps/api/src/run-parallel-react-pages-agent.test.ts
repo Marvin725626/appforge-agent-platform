@@ -930,6 +930,52 @@ describe("runParallelReactPagesAgent", () => {
         );
     });
 
+    it("atomically writes local fallback pages when a page hits its hard deadline", async () => {
+        const workspaceRoot = await createWorkspace();
+        const provider = new PageModelProvider(({ request }) =>
+            new Promise<ModelResponse>((_resolve, reject) => {
+                const rejectForAbort = () =>
+                    reject(
+                        request.signal?.reason ??
+                            new DOMException("Timed out", "AbortError"),
+                    );
+                if (request.signal?.aborted) {
+                    rejectForAbort();
+                    return;
+                }
+                request.signal?.addEventListener("abort", rejectForAbort, {
+                    once: true,
+                });
+            }),
+        );
+
+        const result = await runParallelReactPagesAgent({
+            goal: "创建温州网站，包括首页、文化和行程页面，并且可以跳转",
+            plannerOutput: PLANNER_OUTPUT,
+            model: provider,
+            workspaceRoot,
+            routeRequest: true,
+            maxConcurrency: 2,
+            workstreamTimeoutMs: 25,
+        });
+
+        expect(result.agent).toMatchObject({
+            finished: true,
+            stopReason: "finish",
+        });
+        expect(
+            result.workstreams.every(
+                (workstream) => workstream.status === "fallback",
+            ),
+        ).toBe(true);
+        expect(PAGE_IDS.map((pageId) => provider.count(pageId))).toEqual([
+            1, 1, 1,
+        ]);
+        expect(
+            await readFile(path.join(workspaceRoot, "src", "App.tsx"), "utf8"),
+        ).toContain("siteContent");
+    });
+
     it("uses formal image assets instead of SVG placeholders when the image tool is configured", async () => {
         const workspaceRoot = await createWorkspace();
         const imageProvider = new FakeImageAssetProvider(

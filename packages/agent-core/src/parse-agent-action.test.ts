@@ -15,6 +15,19 @@ describe("parseAgentAction", () => {
         expect(action.type).toBe("write_file");
     });
 
+
+    it("accepts a complete App.tsx action larger than 6000 characters", () => {
+        const action = parseAgentAction(
+            JSON.stringify({
+                type: "write_file",
+                path: "src/App.tsx",
+                content: "x".repeat(12_000),
+            }),
+        );
+
+        expect(action.type).toBe("write_file");
+    });
+
     it("accepts legacy action and args output", () => {
         expect(
             parseAgentAction(
@@ -79,7 +92,15 @@ describe("parseAgentAction", () => {
         ).toThrow("Model JSON did not match AgentAction schema");
     });
 
-    it("includes a preview when the action schema is invalid", () => {
+    it("includes validation issues and a preview when the action schema is invalid", () => {
+        expect(() =>
+            parseAgentAction(
+                JSON.stringify({
+                    action: "write_file",
+                }),
+            ),
+        ).toThrow("Validation issues");
+
         expect(() =>
             parseAgentAction(
                 JSON.stringify({

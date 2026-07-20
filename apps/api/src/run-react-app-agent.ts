@@ -78,6 +78,7 @@ import {
     evaluateDesignPlanCompliance,
     formatDesignPlanForPrompt,
 } from "./design-plan-utils.js";
+import { evaluateInitialGenerationCompleteness } from "./initial-generation-completeness.js";
 
 const INSTALL_COMMAND_TIMEOUT_MS = 5 * 60 * 1_000;
 const BUILD_COMMAND_TIMEOUT_MS = 2 * 60 * 1_000;
@@ -1248,11 +1249,12 @@ function extractWorkspaceSourceLocation(
     stderr: string,
 ): { relativePath: string; lineNumber: number } | undefined {
     const sourceLocationPattern =
-        /(src[\\/][^:\r\n]+?\.(?:tsx?|jsx?|css|scss)):(\d+):\d+/giu;
+        /(src[\\/][^(:\r\n]+?\.(?:tsx?|jsx?|css|scss))(?::(\d+):\d+|\((\d+),\d+\))/giu;
 
     for (const match of stderr.matchAll(sourceLocationPattern)) {
         const candidate = match[1];
-        const lineNumber = match[2] ? Number(match[2]) : undefined;
+        const lineNumberText = match[2] ?? match[3];
+        const lineNumber = lineNumberText ? Number(lineNumberText) : undefined;
 
         if (!candidate || !lineNumber || !Number.isInteger(lineNumber)) {
             continue;
@@ -1312,6 +1314,68 @@ export async function formatBuildErrorSourceExcerpt(
     } catch {
         return "";
     }
+}
+
+function formatCommandDiagnostics(
+    command: RunReactAppAgentCommandResult | undefined,
+): string {
+    if (!command) {
+        return "";
+    }
+
+    return [command.stderr.trim(), command.stdout.trim()]
+        .filter((part) => part.length > 0)
+        .join("\n");
+}
+
+function isTypecheckRepairContext(context: string): boolean {
+    return context.includes("Typecheck diagnostics:");
+}
+
+function validateEntrypointIntegrationAction(action: AgentAction) {
+    if (action.type === "finish") {
+        return undefined;
+    }
+
+    if (
+        (action.type === "write_file" || action.type === "edit_file") &&
+        action.path.replaceAll("\\", "/") === "src/App.tsx"
+    ) {
+        return undefined;
+    }
+
+    return {
+        ok: true,
+        changed: false,
+        message: [
+            "Skipped unrelated action during entrypoint integration rescue.",
+            "The only allowed workspace-changing action is write_file or edit_file for src/App.tsx.",
+            "Reuse existing content, styles, and assets; connect the rendered entrypoint first, then return finish.",
+        ].join(" "),
+    };
+}
+
+function validateTypecheckRepairAction(action: AgentAction) {
+    if (action.type === "finish") {
+        return undefined;
+    }
+
+    if (
+        action.type === "edit_file" &&
+        /^src\/.*\.(?:ts|tsx|js|jsx)$/iu.test(action.path)
+    ) {
+        return undefined;
+    }
+
+    return {
+        ok: true,
+        changed: false,
+        message: [
+            "Skipped unrelated action during compiler repair.",
+            "Fix the exact TypeScript diagnostic with one focused edit_file action in the reported source or its directly imported local data module, then return finish.",
+            "Do not generate images, run commands, append files, or rewrite complete files during a typecheck-only repair.",
+        ].join(" "),
+    };
 }
 
 export async function formatContinuationWorkspaceContext(
@@ -5195,6 +5259,21 @@ export async function runReactAppAgent(
         options.signal?.throwIfAborted();
     }
 
+    const requiresInitialGenerationCompleteness =
+        options.resetWorkspace !== false;
+    const baselineAppSource = requiresInitialGenerationCompleteness
+        ? await readFile(
+              path.join(options.workspaceRoot, "src", "App.tsx"),
+              "utf8",
+          ).catch(() => undefined)
+        : undefined;
+    const baselineContentSource = requiresInitialGenerationCompleteness
+        ? await readFile(
+              path.join(options.workspaceRoot, "src", "content.ts"),
+              "utf8",
+          ).catch(() => undefined)
+        : undefined;
+
     if (options.resetWorkspace === false) {
         beforeWorkspaceSnapshot = await createWorkspaceSnapshot(
             options.workspaceRoot,
@@ -5706,14 +5785,21 @@ export async function runReactAppAgent(
             options.onProgress,
             kind === "repair" ? "repairing" : "coding",
         );
-        const maxSteps = focusedEditRequest
+        const typecheckRepairAttempt =
+            kind === "repair" && isTypecheckRepairContext(context);
+        const attemptImageAssetTool = typecheckRepairAttempt
+            ? undefined
+            : activeImageAssetTool;
+        const maxSteps = typecheckRepairAttempt
             ? 2
-            : chooseAgentMaxSteps({
-                  kind,
-                  hasImageAssetTool: activeImageAssetTool !== undefined,
-                  complexPageRequest,
-                  routeRequest: navigationRequestKind === "routes",
-              });
+            : focusedEditRequest
+              ? 2
+              : chooseAgentMaxSteps({
+                    kind,
+                    hasImageAssetTool: attemptImageAssetTool !== undefined,
+                    complexPageRequest,
+                    routeRequest: navigationRequestKind === "routes",
+                });
 
         const codingModel = labelModelProviderStage(
             useParallelCodingAgents && kind === "initial"
@@ -5784,20 +5870,16 @@ export async function runReactAppAgent(
                         goal: executionRequest,
                         model: fallbackModel,
                         workspaceRoot: options.workspaceRoot,
-                        maxSteps,
+                        maxSteps: Math.min(maxSteps, 4),
                         requireWorkspaceChange: true,
-                        mode: "coding",
+                        mode: "repair",
+                        entrypointFirst: true,
                         context: [
                             context,
-                            "Workspace execution mode: initial generation. The parallel page-per-API path failed before producing any draft, so this fallback must prioritize producing a complete runnable webpage draft over perfect visual sophistication.",
-                            "Use the stable compact path: write src/App.css for the visual system, write src/App.tsx for the React page, then finish. Avoid huge JSON content, giant inline style objects, and oversized files.",
+                            "Workspace execution mode: compact initial-generation rescue. The parallel page-per-API path failed before producing a draft.",
+                            "The first action must write a compact, complete src/App.tsx that replaces the starter and renders the requested page. Keep subject data inline when necessary so the entrypoint is runnable immediately.",
+                            "After src/App.tsx exists, write src/App.css only if needed, then finish. Do not create src/content.ts, do not request images, do not run commands, and do not spend steps polishing optional details before the entrypoint is complete.",
                         ].join("\n\n"),
-                        ...(activeImageAssetTool
-                            ? { imageAssetTool: activeImageAssetTool }
-                            : {}),
-                        ...(activeImageAssetTool
-                            ? { imageAssetModes: activeImageAssetModes }
-                            : {}),
                         ...(options.signal ? { signal: options.signal } : {}),
                         ...(focusedEditRequest &&
                         focusedEditScope &&
@@ -5817,19 +5899,25 @@ export async function runReactAppAgent(
                     maxSteps,
                     requireWorkspaceChange: true,
                     mode: kind === "repair" ? "repair" : "coding",
+                    ...(kind === "initial"
+                        ? { entrypointFirst: true }
+                        : {}),
                     context: [
                         context,
                         kind === "initial"
                             ? "Workspace execution mode: initial generation. Replace the starter with the requested application; use write_file when establishing src/App.tsx because no exact existing source is supplied."
                             : "Workspace execution mode: existing draft. Preserve working code and use focused edits when exact current source is supplied.",
                     ].join("\n\n"),
-                    ...(activeImageAssetTool
-                        ? { imageAssetTool: activeImageAssetTool }
+                    ...(attemptImageAssetTool
+                        ? { imageAssetTool: attemptImageAssetTool }
                         : {}),
-                    ...(activeImageAssetTool
+                    ...(attemptImageAssetTool
                         ? {
                               imageAssetModes: activeImageAssetModes,
                           }
+                        : {}),
+                    ...(typecheckRepairAttempt
+                        ? { validateAction: validateTypecheckRepairAction }
                         : {}),
                     ...(options.signal ? { signal: options.signal } : {}),
                     ...(focusedEditRequest &&
@@ -5915,6 +6003,141 @@ export async function runReactAppAgent(
             options.workspaceRoot,
             options.signal,
         );
+
+        let initialGenerationCompleteness =
+            requiresInitialGenerationCompleteness
+                ? await evaluateInitialGenerationCompleteness({
+                      workspaceRoot: options.workspaceRoot,
+                      ...(baselineAppSource !== undefined
+                          ? { baselineAppSource }
+                          : {}),
+                      ...(baselineContentSource !== undefined
+                          ? { baselineContentSource }
+                          : {}),
+                      requireVisiblePageStructure:
+                          isFreshPageGenerationRequest(executionRequest),
+                  })
+                : undefined;
+
+        if (
+            kind === "initial" &&
+            madeWorkspaceProgress &&
+            initialGenerationCompleteness?.passed === false
+        ) {
+            const completenessSummary = initialGenerationCompleteness.checks
+                .filter((check) => !check.passed)
+                .map((check) => check.name)
+                .join(" ");
+            const integrationModel = labelModelProviderStage(
+                provider,
+                "initial App.tsx integration rescue model request",
+                options.signal,
+                createRunProgressHeartbeat(options.onProgress, "coding"),
+                options.llm.hardTimeoutMs ?? 240_000,
+            );
+            const currentWorkspaceContext =
+                await formatContinuationWorkspaceContext(
+                    options.workspaceRoot,
+                    executionRequest,
+                );
+            const integrationAgent = await runCodingAgentLoop({
+                goal: executionRequest,
+                model: integrationModel,
+                workspaceRoot: options.workspaceRoot,
+                maxSteps: 3,
+                requireWorkspaceChange: true,
+                mode: "repair",
+                entrypointFirst: true,
+                context: [
+                    "Initial application integration rescue:",
+                    "A previous generation wrote partial content, styles, or assets but did not connect a complete rendered entrypoint.",
+                    `Failed completeness checks: ${completenessSummary}`,
+                    "Only complete src/App.tsx now. The first action must write_file or edit_file src/App.tsx. Reuse the existing src/content.ts, src/App.css, and local assets instead of regenerating them.",
+                    "Import ./App.css when it exists. If src/content.ts exists, import and actually render at least one exported binding. Render one non-starter h1 inside main, section, or article. Remove all AppForge Starter content.",
+                    "Do not call get_image, do not run commands, do not modify src/content.ts or src/App.css, and do not create additional files. After the entrypoint is connected, return finish.",
+                    currentWorkspaceContext,
+                ].join("\n\n"),
+                validateAction: validateEntrypointIntegrationAction,
+                ...(options.signal ? { signal: options.signal } : {}),
+            });
+
+            agent = {
+                steps: [...agent.steps, ...integrationAgent.steps],
+                finished: integrationAgent.finished,
+                ...(integrationAgent.stopReason
+                    ? { stopReason: integrationAgent.stopReason }
+                    : {}),
+                ...(integrationAgent.errorMessage
+                    ? { errorMessage: integrationAgent.errorMessage }
+                    : {}),
+            };
+
+            await autofixReactSource(
+                options.workspaceRoot,
+                options.signal,
+            );
+            initialGenerationCompleteness =
+                await evaluateInitialGenerationCompleteness({
+                    workspaceRoot: options.workspaceRoot,
+                    ...(baselineAppSource !== undefined
+                        ? { baselineAppSource }
+                        : {}),
+                    ...(baselineContentSource !== undefined
+                        ? { baselineContentSource }
+                        : {}),
+                    requireVisiblePageStructure:
+                        isFreshPageGenerationRequest(executionRequest),
+                });
+        }
+
+        if (initialGenerationCompleteness?.passed === false) {
+            const completenessSummary = initialGenerationCompleteness.checks
+                .filter((check) => !check.passed)
+                .map((check) => check.name)
+                .join(" ");
+            const skippedCommand: RunReactAppAgentCommandResult = {
+                exitCode: 1,
+                stdout: "",
+                stderr: [
+                    "Skipped because the initial generation completeness gate failed.",
+                    completenessSummary,
+                ]
+                    .filter(Boolean)
+                    .join(" "),
+            };
+            const review = reviewReactAppAgentResult({
+                agent: {
+                    ...agent,
+                    madeProgress: madeWorkspaceProgress,
+                },
+                install: skippedCommand,
+                build: skippedCommand,
+                eval: initialGenerationCompleteness,
+            });
+
+            return {
+                kind,
+                agent,
+                install: skippedCommand,
+                build: skippedCommand,
+                eval: initialGenerationCompleteness,
+                review: {
+                    ...review,
+                    accepted: false,
+                    reason: [
+                        "Rejected because the generated application is incomplete.",
+                        completenessSummary,
+                        review.reason,
+                    ]
+                        .filter(Boolean)
+                        .join(" "),
+                },
+                metrics: cloneRunMetrics(runMetrics),
+                ...(parallelWorkstreams
+                    ? { parallelWorkstreams }
+                    : {}),
+            };
+        }
 
         const agentModifiedFiles = listModifiedFilesFromAgent(agent);
         const dependencyManifestChanged = agentModifiedFiles.some(
@@ -6172,6 +6395,39 @@ export async function runReactAppAgent(
             }
         }
 
+        const deterministicRepairCompletion =
+            kind === "repair" &&
+            !agent.finished &&
+            agentMadeWorkspaceProgress(agent) &&
+            install.exitCode === 0 &&
+            build.exitCode === 0 &&
+            (typecheck?.exitCode ?? 0) === 0 &&
+            evalResult.passed &&
+            (!options.evaluateBrowser || browserEval?.passed === true);
+
+        if (deterministicRepairCompletion) {
+            agent = {
+                steps: [
+                    ...agent.steps,
+                    {
+                        action: {
+                            type: "finish",
+                            summary:
+                                "Repair completed after typecheck, build, static evaluation, and browser runtime gates passed.",
+                        },
+                        execution: {
+                            ok: true,
+                            changed: false,
+                            message:
+                                "Platform finalized the repair because all deterministic quality gates passed.",
+                        },
+                    },
+                ],
+                finished: true,
+                stopReason: "finish_after_max_steps",
+            };
+        }
+
         const baseDeterministicReview = reviewReactAppAgentResult({
             agent: {
                 ...agent,
@@ -6282,8 +6538,15 @@ export async function runReactAppAgent(
         })
         ){
         options.signal?.throwIfAborted();
+        const compilerDiagnostics =
+            latestAttempt.typecheck && latestAttempt.typecheck.exitCode !== 0
+                ? formatCommandDiagnostics(latestAttempt.typecheck)
+                : formatCommandDiagnostics(latestAttempt.build);
         const repairContext = formatRepairContext({
             build: latestAttempt.build,
+            ...(latestAttempt.typecheck
+                ? { typecheck: latestAttempt.typecheck }
+                : {}),
             eval: latestAttempt.eval,
             ...(latestAttempt.browserEval
                 ? { browserEval: latestAttempt.browserEval }
@@ -6291,7 +6554,7 @@ export async function runReactAppAgent(
             review: latestAttempt.review,
             sourceExcerpt: await formatBuildErrorSourceExcerpt(
                 options.workspaceRoot,
-                latestAttempt.build.stderr,
+                compilerDiagnostics,
             ),
         });
         const latestWorkspaceContext =

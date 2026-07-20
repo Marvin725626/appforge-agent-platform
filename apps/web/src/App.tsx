@@ -1016,6 +1016,15 @@ function hasSuccessfulWorkspaceChange(
     );
 }
 
+function runWorkspaceWasRolledBack(run: Run): boolean {
+    return (
+        run.status === "failed" &&
+        /rolled back|workspace (?:was )?restored|已回滚/iu.test(
+            run.errorMessage ?? "",
+        )
+    );
+}
+
 function isTerminalRunWithoutGeneratedOutput(input: {
     run: Run;
     result: ReactAppAgentResult | null | undefined;
@@ -1024,7 +1033,8 @@ function isTerminalRunWithoutGeneratedOutput(input: {
     return (
         TERMINAL_RUN_STATUSES_WITHOUT_OUTPUT.has(input.run.status) &&
         input.versions.length === 0 &&
-        !hasSuccessfulWorkspaceChange(input.result)
+        (runWorkspaceWasRolledBack(input.run) ||
+            !hasSuccessfulWorkspaceChange(input.result))
     );
 }
 

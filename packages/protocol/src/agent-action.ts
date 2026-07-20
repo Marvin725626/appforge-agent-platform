@@ -1,11 +1,13 @@
 import { z } from "zod";
 
+export const MAX_WRITE_FILE_CONTENT_LENGTH = 40_000;
+
 const WriteFileActionSchema = z.object({
   type: z.literal("write_file"),
   path: z.string().min(1),
   content: z.string().max(
-      6000,
-      "write_file content is too large; split complex pages into smaller files such as src/content.ts, src/App.css, and src/App.tsx",
+      MAX_WRITE_FILE_CONTENT_LENGTH,
+      `write_file content is too large; keep it under ${MAX_WRITE_FILE_CONTENT_LENGTH} characters or split the implementation into smaller files`,
   ),
 });
 

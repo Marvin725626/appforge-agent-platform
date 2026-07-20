@@ -31,6 +31,12 @@ describe("ParallelFileAgent", () => {
         expect(model.requests[0]?.messages[1]?.content).toContain(
             "创建一个介绍温州的多页面网站",
         );
+        expect(model.requests[0]?.stream).toBe(true);
+        expect(model.requests[0]?.thinking).toEqual({ type: "disabled" });
+        expect(model.requests[0]?.responseFormat).toMatchObject({
+            type: "json_schema",
+            strict: true,
+        });
     });
 
     it("rejects a foreign path and accepts a corrected owned file", async () => {

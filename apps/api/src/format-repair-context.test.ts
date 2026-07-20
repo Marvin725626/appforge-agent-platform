@@ -112,7 +112,7 @@ describe("formatRepairContext", () => {
             sourceExcerpt: ">   10 | </footer>",
         });
 
-        expect(context).toContain("Relevant source near build error:");
+        expect(context).toContain("Relevant source near compiler error:");
         expect(context).toContain(">   10 | </footer>");
     });
 
@@ -162,4 +162,47 @@ describe("formatRepairContext", () => {
         expect(context).toContain("Reviewer issues to fix:");
         expect(context).toContain("- Rejected because browser eval failed.");
     });
+    it("includes exact typecheck diagnostics and compiler repair constraints", () => {
+        const context = formatRepairContext({
+            build: {
+                exitCode: 0,
+                stdout: "build ok",
+                stderr: "",
+            },
+            typecheck: {
+                exitCode: 2,
+                stdout:
+                    "src/App.tsx(59,186): error TS2339: Property 'loadout' does not exist.",
+                stderr: "",
+            },
+            eval: {
+                passed: false,
+                checks: [
+                    {
+                        name: "TypeScript typecheck passes",
+                        passed: false,
+                    },
+                ],
+            },
+            review: {
+                accepted: false,
+                reason: "Rejected because typecheck failed.",
+                checks: {
+                    agentFinished: true,
+                    installPassed: true,
+                    buildPassed: true,
+                    evalPassed: false,
+                    typecheckPassed: false,
+                },
+            },
+            sourceExcerpt: ">   59 | <strong>{op.loadout}</strong>",
+        });
+
+        expect(context).toContain("Typecheck exit code: 2");
+        expect(context).toContain("Typecheck repair constraints:");
+        expect(context).toContain("Typecheck diagnostics:");
+        expect(context).toContain("TS2339");
+        expect(context).toContain("Relevant source near compiler error:");
+    });
+
 });

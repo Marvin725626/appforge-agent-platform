@@ -38,7 +38,7 @@ describe("ReviewerAgent", () => {
             reason: "The task list is missing.",
             issues: ["Tasks cannot be displayed"],
         });
-        expect(provider.requests[0]?.stream).toBe(false);
+        expect(provider.requests[0]?.stream).toBe(true);
         expect(provider.requests[0]?.responseFormat).toMatchObject({
             type: "json_schema",
             name: "ReviewerOutput",

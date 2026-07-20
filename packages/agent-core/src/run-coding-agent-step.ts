@@ -16,6 +16,7 @@ export type RunCodingAgentStepOptions = {
     imageAssetTool?: ImageAssetTool;
     imageAssetModes?: ImageAssetMode[];
     mode?: CodingAgentStepMode;
+    entrypointFirst?: boolean;
     signal?: AbortSignal;
     validateAction?: (
         action: AgentAction,
@@ -46,6 +47,9 @@ export async function runCodingAgentStep(
             options.imageAssetTool !== undefined,
         ...(options.imageAssetModes
             ? { imageToolModes: options.imageAssetModes }
+            : {}),
+        ...(options.entrypointFirst
+            ? { entrypointFirst: true }
             : {}),
     };
     const agent =

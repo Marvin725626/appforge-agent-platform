@@ -69,8 +69,24 @@ export function parseAgentAction(text:string):AgentAction{
     );
 
     if (!result.success) {
+        const issues = result.error.issues
+            .slice(0, 5)
+            .map((issue) => {
+                const path = issue.path.length > 0
+                    ? issue.path.join(".")
+                    : "<root>";
+                return `${path}: ${issue.message}`;
+            })
+            .join("; ");
+
         throw new Error(
-            `Model JSON did not match AgentAction schema. Output preview: ${previewModelOutput(text)}`,
+            [
+                "Model JSON did not match AgentAction schema.",
+                issues.length > 0 ? `Validation issues: ${issues}.` : "",
+                `Output preview: ${previewModelOutput(text)}`,
+            ]
+                .filter(Boolean)
+                .join(" "),
             {
                 cause: result.error,
             },

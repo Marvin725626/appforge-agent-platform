@@ -4,11 +4,16 @@ import type { ImageAssetMode } from "./image-asset-provider.js";
 import type { ModelProvider } from "./model-provider.js";
 import { parseAgentAction } from "./parse-agent-action.js";
 import { completeStructuredOutput } from "./complete-structured-output.js";
+import {
+    AgentActionJsonSchema,
+    EntrypointAgentActionJsonSchema,
+} from "./structured-output-schemas.js";
 
 export type RepairAgentOptions = {
     model: ModelProvider;
     imageToolsEnabled?: boolean;
     imageToolModes?: ImageAssetMode[];
+    entrypointFirst?: boolean;
 };
 
 export class RepairAgent {
@@ -37,9 +42,14 @@ export class RepairAgent {
                             'For write_file, use: {"type":"write_file","path":"src/App.tsx","content":"..."}',
                             'For continuing a long file, use append_file: {"type":"append_file","path":"src/content.ts","content":"..."}',
                             'For small changes, prefer edit_file: {"type":"edit_file","path":"src/App.tsx","oldText":"exact existing text","newText":"replacement text"}.',
-                            'For get_image, use: {"type":"get_image","query":"...","mode":"generate","altText":"...","outputPath":"public/assets/image.jpg"}',
                             'For finish, use: {"type":"finish","summary":"..."}',
                             "Repair only the specific build, eval, browser, or reviewer issues in the context.",
+                            ...(this.options.entrypointFirst
+                                ? [
+                                      "This is an entrypoint integration repair. The first workspace-changing action must write_file or edit_file src/App.tsx.",
+                                      "Do not start with content.ts, App.css, images, commands, or optional polish. Reuse existing files and make the rendered entrypoint complete first.",
+                                  ]
+                                : []),
                             "When the repair context includes a failed action and execution result, do not repeat that action unchanged. For 'Edit target not found', copy oldText exactly from the latest target file source included in context or use a smaller safe edit.",
                             "Preserve the current app content, layout, language, and working features unless the issue explicitly requires changing them.",
                             "Prefer the smallest coherent edit. Do not replace the app with a starter or unrelated design.",
@@ -57,6 +67,7 @@ export class RepairAgent {
                             "If the current app already satisfies the issue, return finish.",
                             ...(imageToolModes.length > 0
                                 ? [
+                                      'For get_image, use: {"type":"get_image","query":"...","mode":"generate","altText":"...","outputPath":"public/assets/image.jpg"}',
                                       `Available image modes: ${imageToolModes.join(", ")}.`,
                                       "Image outputPath must be inside public/assets.",
                                       'Reference saved assets in React as "/assets/filename.ext".',
@@ -76,6 +87,9 @@ export class RepairAgent {
             },
             parse: parseAgentAction,
             outputName: "AgentAction",
+            schema: this.options.entrypointFirst
+                ? EntrypointAgentActionJsonSchema
+                : AgentActionJsonSchema,
             maxAttempts: 3,
             invalidResponseInstruction: [
                 "For Repair AgentAction correction, do not repeat a huge src/App.tsx response.",
@@ -83,7 +97,13 @@ export class RepairAgent {
                 "If a file needs more content, return one append_file action with a small chunk.",
                 "Return one small corrected JSON action only.",
                 "For continuation or navigation fixes, prefer edit_file with exact oldText/newText.",
-                "If the previous response was too large or invalid, repair a smaller file such as src/content.ts or src/App.css when possible.",
+                ...(this.options.entrypointFirst
+                    ? [
+                          "For this entrypoint integration repair, the corrected action must write_file or edit_file src/App.tsx.",
+                      ]
+                    : [
+                          "If the previous response was too large or invalid, repair a smaller file such as src/content.ts or src/App.css when possible.",
+                      ]),
                 "Keep the corrected write_file content under 3000 characters.",
             ].join(" "),
         });

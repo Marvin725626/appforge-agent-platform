@@ -103,7 +103,7 @@ describe("completeStructuredOutput", () => {
         );
     });
 
-    it("uses strict json_schema and disables streaming when a schema is provided", async () => {
+    it("uses strict json_schema, enables streaming, and disables thinking when a schema is provided", async () => {
         const provider = new FakeModelProvider({
             content: JSON.stringify({
                 accepted: true,
@@ -132,7 +132,8 @@ describe("completeStructuredOutput", () => {
             outputName: "ReviewerOutput",
         });
 
-        expect(provider.requests[0]?.stream).toBe(false);
+        expect(provider.requests[0]?.stream).toBe(true);
+        expect(provider.requests[0]?.thinking).toEqual({ type: "disabled" });
         expect(provider.requests[0]?.responseFormat).toEqual({
             type: "json_schema",
             name: "ReviewerOutput",

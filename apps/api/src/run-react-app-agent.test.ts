@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
     classifyNavigationRequest,
+    formatBuildErrorSourceExcerpt,
     runReactAppAgent,
 } from "./run-react-app-agent.js";
 import { createFallbackDesignPlan } from "./design-plan-utils.js";
@@ -184,6 +185,206 @@ describe("runReactAppAgent", () => {
         expect(model.requests[1]?.messages[1]?.content).toContain(
             "The application builds successfully",
         );
+    }, 15_000);
+
+    it("hard-gates non-entrypoint actions before a fresh page can change the workspace", async () => {
+        const templateRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-template-"),
+        );
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-workspace-"),
+        );
+        temporaryDirectories.push(templateRoot, workspaceRoot);
+        await mkdir(path.join(templateRoot, "src"));
+        await writeFile(
+            path.join(templateRoot, "package.json"),
+            JSON.stringify({ scripts: { build: "node -e \"console.log('build ok')\"" } }),
+            "utf8",
+        );
+        const starter = `import React from "react";
+export function App() {
+  return <main><p>AppForge Starter</p><h1>React task app workspace</h1></main>;
+}`;
+        await writeFile(
+            path.join(templateRoot, "src", "App.tsx"),
+            starter,
+            "utf8",
+        );
+
+        const model = new FakeModelProvider([
+            PLANNER_RESPONSE,
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/content.ts",
+                    content: "export const features = [{ title: 'Trace' }];",
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "get_image",
+                    query: "tactical hero",
+                    mode: "generate",
+                    altText: "战术主视觉",
+                    outputPath: "public/assets/hero.png",
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.css",
+                    content: "main { min-height: 100vh; }",
+                }),
+            },
+        ]);
+
+        const result = await runReactAppAgent({
+            goal: "Create an immersive tactical game website",
+            workspaceRoot,
+            templateRoot,
+            model,
+            maxRepairAttempts: 0,
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        expect(result.review.accepted).toBe(false);
+        expect(result.review.reason).toContain(
+            "Entrypoint-first hard gate failed",
+        );
+        expect(result.agent.errorMessage).toContain(
+            "did not write or edit src/App.tsx",
+        );
+        expect(
+            await readFile(path.join(workspaceRoot, "src", "App.tsx"), "utf8"),
+        ).toBe(starter);
+        await expect(
+            readFile(path.join(workspaceRoot, "src", "content.ts"), "utf8"),
+        ).rejects.toThrow();
+    }, 15_000);
+
+    it("connects a partial fresh draft through an App.tsx-only integration rescue", async () => {
+        const templateRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-template-"),
+        );
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-workspace-"),
+        );
+        temporaryDirectories.push(templateRoot, workspaceRoot);
+        await mkdir(path.join(templateRoot, "src"));
+        await writeFile(
+            path.join(templateRoot, "package.json"),
+            JSON.stringify({
+                scripts: {
+                    build: "node -e \"console.log('build ok')\"",
+                },
+            }),
+            "utf8",
+        );
+        await writeFile(
+            path.join(templateRoot, "src", "App.tsx"),
+            `import React from "react";
+export function App() {
+  return <main><p>AppForge Starter</p><h1>React task app workspace</h1></main>;
+}`,
+            "utf8",
+        );
+        await writeFile(
+            path.join(templateRoot, "src", "App.css"),
+            "main { min-height: 100vh; }",
+            "utf8",
+        );
+        await writeFile(
+            path.join(templateRoot, "src", "content.ts"),
+            "export const features = [{ title: '战区地图' }, { title: '干员编成' }];",
+            "utf8",
+        );
+
+        const integratedApp = `import React from "react";
+import "./App.css";
+import { features } from "./content.js";
+
+export function App() {
+  return (
+    <main>
+      <h1>战术行动中心</h1>
+      <section aria-label="战术功能">
+        {features.map((feature) => <article key={feature.title}><h2>{feature.title}</h2></article>)}
+      </section>
+    </main>
+  );
+}`;
+        const model = new FakeModelProvider([
+            PLANNER_RESPONSE,
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.tsx",
+                    content: 'import React from "react";\nexport function App() {\n  return <main><p>AppForge Starter</p><h1>React task app workspace</h1><p>attempted generation</p></main>;\n}',
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "Attempted initial shell",
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/content.ts",
+                    content: "export const features = [{ title: '不应覆盖' }];",
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.tsx",
+                    content: integratedApp,
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "Connected the generated content to App.tsx",
+                }),
+            },
+        ]);
+
+        const result = await runReactAppAgent({
+            goal: "创建一个沉浸式战术游戏专题网站",
+            workspaceRoot,
+            templateRoot,
+            model,
+            maxRepairAttempts: 0,
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        expect(result.review.reason).not.toContain(
+            "generated application is incomplete",
+        );
+        expect(result.agent.finished).toBe(true);
+        expect(result.agent.steps.some((step) =>
+            step.action.type === "write_file" &&
+            step.action.path === "src/App.tsx",
+        )).toBe(true);
+        expect(
+            await readFile(path.join(workspaceRoot, "src", "App.tsx"), "utf8"),
+        ).toContain("战术行动中心");
+        expect(
+            await readFile(path.join(workspaceRoot, "src", "content.ts"), "utf8"),
+        ).toContain("战区地图");
+        expect(
+            await readFile(path.join(workspaceRoot, "src", "content.ts"), "utf8"),
+        ).not.toContain("不应覆盖");
+        expect(result.build.exitCode).toBe(0);
     }, 15_000);
 
     it("records Design Planner calls separately from ordinary Planner calls", async () => {
@@ -927,7 +1128,7 @@ describe("runReactAppAgent", () => {
                     type: "write_file",
                     path: "src/App.tsx",
                     content:
-                        "import './App.css'; export function App() { const tasks = ['Learn']; return <main className=\"app\"><h1>Complete task homepage</h1><input /><button>Add</button>{tasks.map((task) => <p key={task}>{task}</p>)}</main>; }",
+                        "import { title } from './content'; import './App.css'; export function App() { const tasks = ['Learn']; return <main className=\"app\"><h1>{title}</h1><input /><button>Add</button>{tasks.map((task) => <p key={task}>{task}</p>)}</main>; }",
                 }),
             },
             {
@@ -3351,9 +3552,10 @@ describe("runReactAppAgent", () => {
             },
             {
                 content: JSON.stringify({
-                    type: "write_file",
+                    type: "edit_file",
                     path: "src/App.tsx",
-                    content: fixedApp,
+                    oldText: brokenApp,
+                    newText: fixedApp,
                 }),
             },
             {
@@ -3401,7 +3603,37 @@ describe("runReactAppAgent", () => {
         expect(result.attempts[0]?.eval.passed).toBe(false);
         expect(result.attempts[0]?.review.reason).toContain("typecheck failed");
         expect(result.attempts[1]?.typecheck?.exitCode).toBe(0);
+        const repairRequest = model.requests[3]?.messages[1]?.content ?? "";
+        expect(repairRequest).toContain("Typecheck diagnostics:");
+        expect(repairRequest).toContain("TS2304");
+        expect(repairRequest).toContain("Relevant source near compiler error:");
     }, 20_000);
+
+    it("locates standard tsc parenthesized diagnostics for repair source excerpts", async () => {
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-tsc-location-"),
+        );
+        temporaryDirectories.push(workspaceRoot);
+        await mkdir(path.join(workspaceRoot, "src"));
+        await writeFile(
+            path.join(workspaceRoot, "src", "App.tsx"),
+            [
+                "export function App() {",
+                "  const op = { signature: '静默之刃' };",
+                "  return <main>{op.loadout}</main>;",
+                "}",
+            ].join("\n"),
+            "utf8",
+        );
+
+        const excerpt = await formatBuildErrorSourceExcerpt(
+            workspaceRoot,
+            "src/App.tsx(3,20): error TS2339: Property 'loadout' does not exist.",
+        );
+
+        expect(excerpt).toContain("Source: src/App.tsx");
+        expect(excerpt).toContain(">    3 |   return <main>{op.loadout}</main>;");
+    });
 
     it("keeps repairing until review passes or max repair attempts is reached", async () => {
         const templateRoot = await mkdtemp(

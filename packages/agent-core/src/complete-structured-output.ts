@@ -56,7 +56,16 @@ export async function completeStructuredOutput<T>(
                       strict: true,
                   }
                 : "json_object"),
-        stream: options.request.stream ?? false,
+        // Structured outputs are accumulated and parsed only after the stream
+        // completes, so streaming does not weaken JSON-schema validation. Keep
+        // response activity visible to the idle-timeout watchdog; providers that
+        // reject streaming are downgraded by OpenAICompatibleProvider.
+        stream: options.request.stream ?? true,
+        ...(options.request.thinking
+            ? { thinking: options.request.thinking }
+            : options.schema
+              ? { thinking: { type: "disabled" as const } }
+              : {}),
     };
     let lastError: unknown;
     let lastOutput = "";

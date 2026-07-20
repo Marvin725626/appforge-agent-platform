@@ -29,7 +29,7 @@ describe("CodingAgent", () => {
             path: "src/App.tsx",
             content: "export default function App() {}",
         });
-        expect(provider.requests[0]?.stream).toBe(false);
+        expect(provider.requests[0]?.stream).toBe(true);
         expect(provider.requests[0]?.responseFormat).toMatchObject({
             type: "json_schema",
             name: "AgentAction",
@@ -506,6 +506,47 @@ describe("CodingAgent", () => {
         );
         expect(systemPrompt).not.toContain(
             "For an explicitly minimal page or a small non-page app request",
+        );
+    });
+
+
+
+    it("prioritizes a runnable App.tsx for entrypoint-first initial generation", async () => {
+        const provider = new FakeModelProvider({
+            content: JSON.stringify({
+                type: "write_file",
+                path: "src/App.tsx",
+                content: "export function App(){return <main><h1>战术行动</h1></main>}",
+            }),
+        });
+        const agent = new CodingAgent({
+            model: provider,
+            entrypointFirst: true,
+            imageToolsEnabled: true,
+        });
+
+        await agent.decideNextAction(
+            "创建一个沉浸式战术游戏专题网站",
+            "Workspace execution mode: initial generation.",
+        );
+
+        const systemPrompt =
+            provider.requests[0]?.messages[0]?.content ?? "";
+
+        expect(systemPrompt).toContain(
+            "This request uses entrypoint-first execution.",
+        );
+        expect(systemPrompt).toContain(
+            "first implementation action must be a write_file for src/App.tsx",
+        );
+        expect(systemPrompt).toContain(
+            "Do not start with content.ts, App.css, images, or visual polish.",
+        );
+        expect(systemPrompt).not.toContain(
+            "Preferred action order: get_image",
+        );
+        expect(systemPrompt).not.toContain(
+            "If src/content.ts and src/App.css have not already been written",
         );
     });
 
