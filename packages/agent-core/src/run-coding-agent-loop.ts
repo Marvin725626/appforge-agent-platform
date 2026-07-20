@@ -297,6 +297,30 @@ function actionChangesWorkspace(step: RunCodingAgentStepResult): boolean {
     );
 }
 
+const ENTRYPOINT_GUARD_REJECTION_PREFIX =
+    "Entrypoint-first action rejected:";
+const MAX_ENTRYPOINT_GUARD_REJECTIONS = 3;
+
+function normaliseActionPath(value: string): string {
+    return value.replaceAll("\\", "/");
+}
+
+function isEntrypointWriteAction(
+    action: RunCodingAgentStepResult["action"],
+): boolean {
+    return (
+        (action.type === "write_file" || action.type === "edit_file") &&
+        normaliseActionPath(action.path) === "src/App.tsx"
+    );
+}
+
+function stepEstablishesEntrypoint(
+    step: RunCodingAgentStepResult,
+): boolean {
+    return actionChangesWorkspace(step) && isEntrypointWriteAction(step.action);
+}
+
+
 function requiresDraftChange(goal: string, context: string): boolean {
     return /Iteration request:|Continuation repair request:|Newest human feedback|Human repair feedback|Repair request:/u.test(
         `${goal}\n${context}`,
@@ -392,6 +416,7 @@ export async function runCodingAgentLoop(
     const steps: RunCodingAgentStepResult[] = [];
     const baseContext = options.context ?? "";
     const loopFeedback: string[] = [];
+    let entrypointGuardRejections = 0;
     const explicitlyRequiresWorkspaceChange =
         options.requireWorkspaceChange === true;
     const mustChangeDraft =
@@ -412,6 +437,9 @@ export async function runCodingAgentLoop(
         options.signal?.throwIfAborted();
         const remainingSteps = options.maxSteps - index;
         const hasChangedWorkspace = steps.some(actionChangesWorkspace);
+        const entrypointPending =
+            options.entrypointFirst === true &&
+            !steps.some(stepEstablishesEntrypoint);
         const stepBudgetContext = [
             "Agent loop status:",
             `You have ${remainingSteps} action step(s) remaining in this attempt.`,
@@ -439,23 +467,43 @@ export async function runCodingAgentLoop(
                 model: options.model,
                 workspaceRoot: options.workspaceRoot,
                 ...(options.mode ? { mode: options.mode } : {}),
-                ...(options.entrypointFirst
+                ...(entrypointPending
                     ? { entrypointFirst: true }
                     : {}),
-                context: formatCurrentContext(stepBudgetContext),
-                ...(options.imageAssetTool
+                context: formatCurrentContext(
+                    stepBudgetContext,
+                    entrypointPending
+                        ? [
+                              "Entrypoint-first hard gate is active.",
+                              "The only valid action is write_file or edit_file for src/App.tsx.",
+                              "Image, content, CSS, command, read, and finish actions are rejected until src/App.tsx changes successfully.",
+                          ].join("\n")
+                        : "",
+                ),
+                ...(!entrypointPending && options.imageAssetTool
                     ? {
                           imageAssetTool:
                               options.imageAssetTool,
                       }
                     : {}),
-                ...(options.imageAssetModes
+                ...(!entrypointPending && options.imageAssetModes
                     ? { imageAssetModes: options.imageAssetModes }
                     : {}),
                 ...(options.signal ? { signal: options.signal } : {}),
-                ...(options.validateAction
-                    ? { validateAction: options.validateAction }
-                    : {}),
+                validateAction: async (action) => {
+                    if (entrypointPending && !isEntrypointWriteAction(action)) {
+                        return {
+                            ok: true,
+                            changed: false,
+                            message: [
+                                ENTRYPOINT_GUARD_REJECTION_PREFIX,
+                                "Before any other action, write or edit src/App.tsx so it replaces the starter and renders a subject-specific h1 inside semantic page content.",
+                            ].join(" "),
+                        };
+                    }
+
+                    return options.validateAction?.(action);
+                },
             });
         } catch (error) {
             if (options.signal?.aborted) {
@@ -470,6 +518,40 @@ export async function runCodingAgentLoop(
                         ? error.message
                         : "Agent model request failed",
             };
+        }
+
+        if (
+            step.execution.changed === false &&
+            step.execution.message.startsWith(
+                ENTRYPOINT_GUARD_REJECTION_PREFIX,
+            )
+        ) {
+            steps.push(step);
+            entrypointGuardRejections += 1;
+            const feedback = [
+                step.execution.message,
+                `Rejected entrypoint-first action ${entrypointGuardRejections}/${MAX_ENTRYPOINT_GUARD_REJECTIONS}.`,
+                'Return exactly one write_file or edit_file action whose path is "src/App.tsx".',
+            ].join("\n");
+            loopFeedback.push(feedback);
+
+            if (
+                entrypointGuardRejections >=
+                MAX_ENTRYPOINT_GUARD_REJECTIONS
+            ) {
+                return {
+                    steps,
+                    finished: false,
+                    stopReason: "action_failed",
+                    errorMessage: [
+                        "Entrypoint-first hard gate failed.",
+                        `The model returned ${entrypointGuardRejections} action(s) that did not write or edit src/App.tsx.`,
+                    ].join(" "),
+                };
+            }
+
+            index -= 1;
+            continue;
         }
 
         if (
@@ -502,17 +584,6 @@ export async function runCodingAgentLoop(
         }
 
         if (!step.execution.ok) {
-            if (step.execution.retryable === true && remainingSteps > 1) {
-                loopFeedback.push(
-                    [
-                        "Retryable repair action rejected:",
-                        step.execution.message,
-                        "Return one corrected action that addresses the validation error.",
-                    ].join("\n"),
-                );
-                continue;
-            }
-
             return {
                 steps,
                 finished: false,

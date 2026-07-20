@@ -5,56 +5,9 @@ import {
     decideReviewDisposition,
     normalizeStepLimitOnlyReview,
     reviewReactAppAgentResult,
-    shouldRollbackRejectedWorkspace,
 } from "./review-react-app-agent.js";
 
 describe("reviewReactAppAgentResult", () => {
-    it("preserves a runnable draft when only visual reviewer feedback rejects it", () => {
-        expect(
-            shouldRollbackRejectedWorkspace({
-                accepted: false,
-                reason: "LLM reviewer rejected: Reduce decorative punctuation.",
-                checks: {
-                    agentFinished: true,
-                    installPassed: true,
-                    buildPassed: true,
-                    typecheckPassed: true,
-                    evalPassed: true,
-                    browserPassed: true,
-                },
-            }),
-        ).toBe(false);
-    });
-
-    it("rolls back a rejected draft when a runtime gate or must requirement fails", () => {
-        expect(
-            shouldRollbackRejectedWorkspace({
-                accepted: false,
-                reason: "Rejected because npm build failed.",
-                checks: {
-                    agentFinished: true,
-                    installPassed: true,
-                    buildPassed: false,
-                    evalPassed: true,
-                },
-            }),
-        ).toBe(true);
-        expect(
-            shouldRollbackRejectedWorkspace({
-                accepted: false,
-                reason: "Rejected because 1 required requirement(s) failed or were unverified: REQ-1.",
-                checks: {
-                    agentFinished: true,
-                    installPassed: true,
-                    buildPassed: true,
-                    typecheckPassed: true,
-                    evalPassed: true,
-                    browserPassed: true,
-                },
-            }),
-        ).toBe(true);
-    });
-
     it("accepts a finished agent result with successful install, build, and eval", () => {
         const review = reviewReactAppAgentResult({
             agent: {

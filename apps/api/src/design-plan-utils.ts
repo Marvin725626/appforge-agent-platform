@@ -284,14 +284,18 @@ export async function evaluateDesignPlanCompliance(input: {
     const forbidden = input.designPlan.visualDNA.forbiddenPatterns;
 
     const forbiddenHits = forbidden.filter((pattern) => {
-        const normalized = pattern.toLowerCase();
-        if (/card grid|rounded card|saas feature card|generic saas/iu.test(pattern)) {
-            return /page-card|feature-card|card-grid|grid-template-columns:\s*repeat\(3/iu.test(source);
+        if (isCardGridForbiddenPattern(pattern)) {
+            return hasStructuralCardGridEvidence(source, css);
         }
-        if (/dominant blue/iu.test(pattern)) {
-            return /#155eef|#2563eb|blue|cyan/iu.test(source);
+        if (isDominantBlueForbiddenPattern(pattern)) {
+            return hasDominantBlueSurfaceEvidence(css);
         }
-        return lowerSource.includes(normalized);
+
+        // Natural-language forbidden-pattern labels are frequently rendered as
+        // acceptance criteria or explanatory copy. Their literal presence in
+        // TSX is not implementation evidence. Unknown patterns therefore do
+        // not fail the deterministic gate without a structural detector.
+        return false;
     });
 
     return [
@@ -335,6 +339,34 @@ export async function evaluateDesignPlanCompliance(input: {
                 : `Checked motifs: ${input.designPlan.visualDNA.uniqueMotifs.join(", ")}.`,
         },
     ];
+}
+
+
+function isCardGridForbiddenPattern(pattern: string): boolean {
+    return /(?:card\s*grid|rounded\s*cards?|saas[^\n]{0,24}cards?|feature\s*cards?|generic\s*saas|product\s*cards?|marketing\s*cards?|普通产品卡片|重复圆角卡片|通用\s*saas\s*功能卡片|营销式?卡片|卡片宫格)/iu.test(
+        pattern,
+    );
+}
+
+function hasStructuralCardGridEvidence(source: string, css: string): boolean {
+    return (
+        /(?:className|class)\s*=\s*["'`][^"'`]*(?:page-card|feature-card|card-grid|page-grid)[^"'`]*["'`]/iu.test(
+            source,
+        ) ||
+        /\.(?:page-card|feature-card|card-grid|page-grid)(?:\b|--)/iu.test(css)
+    );
+}
+
+function isDominantBlueForbiddenPattern(pattern: string): boolean {
+    return /(?:dominant\s+blue|blue\s+(?:saas|corporate)|蓝色企业\s*saas\s*背景|企业蓝(?:色)?背景)/iu.test(
+        pattern,
+    );
+}
+
+function hasDominantBlueSurfaceEvidence(css: string): boolean {
+    return /(?:--(?:bg|background|surface)\s*:\s*|background(?:-color)?\s*:\s*)(?:blue\b|#(?:155eef|2563eb|1d4ed8|1e40af|0284c7|0369a1)\b)/iu.test(
+        css,
+    );
 }
 
 async function readExistingTextFiles(

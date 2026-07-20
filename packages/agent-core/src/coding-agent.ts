@@ -155,7 +155,7 @@ export class CodingAgent {
                                 "Only use run_command when the user explicitly asks for a command that is part of the app behavior, not for checking your work.",
                                 "After writing the necessary files, return a finish action on the next step.",
                                 "Keep individual generated files compact without shrinking the requested experience. Build richness from focused content data, CSS, and reusable components rather than one oversized file.",
-                                `Each write_file content must be under ${MAX_WRITE_FILE_CONTENT_LENGTH} characters. Longer file writes are rejected by the platform.`,
+                                "Each write_file content must be under 6000 characters. Longer file writes are rejected by the platform.",
                                 "Each append_file content must be under 4000 characters. Use multiple append_file actions for long content or long CSS.",
                                 "Avoid huge hard-coded lists, excessive inline styles, and oversized JSX. Use concise arrays and CSS classes when possible.",
                                 "For rich styling, write src/App.css in a separate write_file action and import it from src/App.tsx instead of putting all styles inline.",

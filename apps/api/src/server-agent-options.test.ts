@@ -56,7 +56,28 @@ describe("server agent options wrapper", () => {
         expect(options.designPlan).toEqual(designPlan);
         expect(options.currentRequest).toBe("Shrink text");
         expect(options.resetWorkspace).toBe(false);
+        expect(options.stableGeneration).toBe(true);
         expect(options.parallelCoding).toBe(false);
         expect(options.llm.stream).toBe(false);
     });
+    it("allows stable generation to be disabled explicitly", () => {
+        const options = createServerRunReactAppAgentOptions(
+            {
+                goal: "Create a page",
+                workspaceRoot: "E:/tmp/workspace",
+            },
+            {
+                templateRoot: "E:/tmp/template",
+                baseUrl: "https://example.test/v1",
+                apiKey: "test-key",
+                model: "test-model",
+                env: {
+                    APPFORGE_STABLE_GENERATION: "false",
+                },
+            },
+        );
+
+        expect(options.stableGeneration).toBe(false);
+    });
+
 });

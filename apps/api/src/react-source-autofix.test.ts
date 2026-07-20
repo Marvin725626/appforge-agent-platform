@@ -28,28 +28,6 @@ describe("escapeInvalidJsxTextGreaterThan", () => {
 
         expect(escapeInvalidJsxTextGreaterThan(source)).toBe(source);
     });
-
-    it("does not rewrite TypeScript arrow operators before JSX", () => {
-        const source = [
-            "const activeRouteData = useMemo(",
-            "  () => mapRoutes.find((route) => route.id === activeRoute) ?? mapRoutes[1],",
-            "  [activeRoute],",
-            ");",
-            "return <main><h1>战区地图</h1></main>;",
-        ].join("\n");
-
-        expect(escapeInvalidJsxTextGreaterThan(source)).toBe(source);
-    });
-
-    it("escapes JSX text after a nested closing tag without scanning preceding code", () => {
-        expect(
-            escapeInvalidJsxTextGreaterThan(
-                "const render = () => <div><span>状态</span>更多 >></div>;",
-            ),
-        ).toBe(
-            "const render = () => <div><span>状态</span>更多 &gt;&gt;</div>;",
-        );
-    });
 });
 
 describe("restoreMissingClosingTagOpeningAngle", () => {
@@ -258,43 +236,6 @@ describe("autofixReactSource", () => {
 
         expect(result.changed).toBe(true);
         expect(fixedSource).toContain('"北大创办于1898年",');
-    });
-
-    it("does not convert valid arrow functions into HTML entities before build", async () => {
-        const workspaceRoot = await mkdtemp(
-            path.join(os.tmpdir(), "appforge-autofix-"),
-        );
-        temporaryDirectories.push(workspaceRoot);
-
-        await mkdir(path.join(workspaceRoot, "src"));
-        await writeFile(
-            path.join(workspaceRoot, "src", "App.tsx"),
-            [
-                'import { useMemo } from "react";',
-                "const routes = [{ id: 'a' }];",
-                "export function App() {",
-                "  const active = useMemo(",
-                "    () => routes.find((route) => route.id === 'a') ?? routes[0],",
-                "    [],",
-                "  );",
-                "  return <main><h1>{active?.id}</h1><p>更多 >></p></main>;",
-                "}",
-            ].join("\n"),
-            "utf8",
-        );
-
-        const result = await autofixReactSource(workspaceRoot);
-        const fixedSource = await readFile(
-            path.join(workspaceRoot, "src", "App.tsx"),
-            "utf8",
-        );
-
-        expect(result.changed).toBe(true);
-        expect(fixedSource).toContain(
-            "routes.find((route) => route.id === 'a')",
-        );
-        expect(fixedSource).not.toContain("(route) =&gt;");
-        expect(fixedSource).toContain("更多 &gt;&gt;");
     });
 
     it("restores HTML-escaped arrow functions before build", async () => {

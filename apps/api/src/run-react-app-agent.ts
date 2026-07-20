@@ -44,7 +44,6 @@ import {
 } from "@appforge/harness";
 import { formatRepairContext } from "./format-repair-context.js";
 import { shouldRepair } from "./should-repair.js";
-import { validateRepairSourceAction } from "./validate-repair-source-action.js";
 import type {
     AgentAction,
     RunOperationStage,
@@ -79,13 +78,16 @@ import {
     evaluateDesignPlanCompliance,
     formatDesignPlanForPrompt,
 } from "./design-plan-utils.js";
-import { formatDesignPlanMetadataStyles } from "./project-styles.js";
 import { evaluateInitialGenerationCompleteness } from "./initial-generation-completeness.js";
+import {
+    extractStableProductGoal,
+    generateStableReactPage,
+    isGenericRepairRequest,
+} from "./stable-react-page-generator.js";
 
 const INSTALL_COMMAND_TIMEOUT_MS = 5 * 60 * 1_000;
 const BUILD_COMMAND_TIMEOUT_MS = 2 * 60 * 1_000;
 const TYPECHECK_COMMAND_TIMEOUT_MS = 2 * 60 * 1_000;
-const DESIGN_PLAN_METADATA_MARKER = "appforge-design-plan-metadata:start";
 
 export type RunReactAppAgentOptions = {
     goal: string;
@@ -112,6 +114,10 @@ export type RunReactAppAgentOptions = {
         maxTokens?: number;
     };
     model?: ModelProvider;
+    /** Prefer the deterministic single-page generator for fresh structural
+     * runs. Production defaults to true; injected-model tests keep the legacy
+     * agent path unless they opt in explicitly. */
+    stableGeneration?: boolean;
     /** Enable page-scoped Coding Agents for fresh generation. Every planned
      * webpage receives one initial Coding API call; existing-draft iterations
      * remain on the focused single-agent path. */
@@ -1283,86 +1289,6 @@ function extractWorkspaceSourceLocation(
     return undefined;
 }
 
-function extractMissingNamedExport(
-    stderr: string,
-): { missingExport: string; modulePath: string; importerPath: string } | undefined {
-    const match = stderr.match(
-        /"([^"]+)" is not exported by "([^"]+)", imported by "([^"]+)"/u,
-    );
-
-    if (!match?.[1] || !match[2] || !match[3]) {
-        return undefined;
-    }
-
-    return {
-        missingExport: match[1],
-        modulePath: toWorkspacePath(match[2]),
-        importerPath: toWorkspacePath(match[3]),
-    };
-}
-
-function extractNamedExports(source: string): string[] {
-    const exports = new Set<string>();
-
-    for (const match of source.matchAll(
-        /\bexport\s+(?:declare\s+)?(?:async\s+)?(?:const|let|var|function|class|type|interface|enum)\s+([A-Za-z_$][\w$]*)/gu,
-    )) {
-        if (match[1]) {
-            exports.add(match[1]);
-        }
-    }
-
-    for (const match of source.matchAll(/\bexport\s*\{([^}]+)\}/gu)) {
-        for (const item of (match[1] ?? "").split(",")) {
-            const exportedName = item
-                .trim()
-                .replace(/^type\s+/u, "")
-                .split(/\s+as\s+/u)
-                .at(-1)
-                ?.trim();
-
-            if (exportedName && /^[A-Za-z_$][\w$]*$/u.test(exportedName)) {
-                exports.add(exportedName);
-            }
-        }
-    }
-
-    return [...exports].slice(0, 40);
-}
-
-async function formatMissingExportContext(
-    workspaceRoot: string,
-    stderr: string,
-): Promise<string> {
-    const mismatch = extractMissingNamedExport(stderr);
-
-    if (!mismatch || !mismatch.modulePath.startsWith("src/")) {
-        return "";
-    }
-
-    const absolutePath = path.resolve(workspaceRoot, mismatch.modulePath);
-    const relativePath = path.relative(workspaceRoot, absolutePath);
-
-    if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
-        return "";
-    }
-
-    try {
-        const source = await readFile(absolutePath, "utf8");
-        const exports = extractNamedExports(source);
-
-        return [
-            "Named import/export mismatch:",
-            `- ${mismatch.importerPath} imports ${mismatch.missingExport} from ${mismatch.modulePath}.`,
-            `- ${mismatch.modulePath} does not export ${mismatch.missingExport}.`,
-            `- Available named exports: ${exports.length > 0 ? exports.join(", ") : "none detected"}.`,
-            "Repair only this import/export contract. Do not alter unrelated strings or content blocks.",
-        ].join("\n");
-    } catch {
-        return "";
-    }
-}
-
 export async function formatBuildErrorSourceExcerpt(
     workspaceRoot: string,
     stderr: string,
@@ -1382,11 +1308,6 @@ export async function formatBuildErrorSourceExcerpt(
         const startLine = Math.max(1, location.lineNumber - 10);
         const endLine = Math.min(lines.length, location.lineNumber + 10);
 
-        const missingExportContext = await formatMissingExportContext(
-            workspaceRoot,
-            stderr,
-        );
-
         return [
             `Source: ${location.relativePath}`,
             ...lines
@@ -1398,9 +1319,6 @@ export async function formatBuildErrorSourceExcerpt(
 
                     return `${marker} ${String(currentLine).padStart(4, " ")} | ${line}`;
                 }),
-            ...(missingExportContext.length > 0
-                ? ["", missingExportContext]
-                : []),
         ].join("\n");
     } catch {
         return "";
@@ -4958,37 +4876,6 @@ function hasExplicitHorizontalPointLabelStructure(source: string): boolean {
     );
 }
 
-async function ensureDesignPlanMetadataStyles(input: {
-    workspaceRoot: string;
-    designPlan: DesignPlan;
-}): Promise<boolean> {
-    const cssPath = path.join(input.workspaceRoot, "src", "App.css");
-    let css = "";
-
-    try {
-        css = await readFile(cssPath, "utf8");
-    } catch {
-        // A generated app may omit App.css. Creating a metadata-only stylesheet
-        // is harmless and keeps DesignPlan evidence deterministic.
-    }
-
-    if (
-        css.includes(DESIGN_PLAN_METADATA_MARKER) ||
-        (css.includes("--project-composition") &&
-            css.includes("--surface-strategy"))
-    ) {
-        return false;
-    }
-
-    const metadata = formatDesignPlanMetadataStyles(input.designPlan);
-    const nextCss = css.trimEnd().length > 0
-        ? `${css.trimEnd()}\n\n${metadata}\n`
-        : `${metadata}\n`;
-
-    await writeFile(cssPath, nextCss, "utf8");
-    return true;
-}
-
 function stillHasUngovernedPointLabelSource(source: string): boolean {
     return /\b(?:A\s*(?:\/|SITE|POINT|\u70b9|\u5305\u70b9)|B\s*(?:\/|SITE|POINT|\u70b9|\u5305\u70b9)|C\s*(?:\/|SITE|POINT|\u70b9|\u5305\u70b9)|A\s*\/\s*B|A\s*\/\s*B\s*\/\s*C|ABC|abc)\b/iu.test(
         source,
@@ -5001,47 +4888,9 @@ function hasRawSlashSeparatedPointText(source: string): boolean {
     );
 }
 
-function extractVisibleSeparatorText(source: string): string[] {
-    const candidates: string[] = [];
-    const patterns = [
-        /["'`]([^"'`<>\n]{0,120}(?:\/\/|::|--)[^"'`<>\n]{0,120})["'`]/gu,
-        />([^<>{}\n]{0,120}(?:\/\/|::|--)[^<>{}\n]{0,120})</gu,
-    ];
-
-    for (const pattern of patterns) {
-        for (const match of source.matchAll(pattern)) {
-            const text = match[1]?.replace(/\s+/gu, " ").trim();
-            if (text) {
-                candidates.push(text);
-            }
-        }
-    }
-
-    return candidates;
-}
-
-function isSemanticHudIdentifier(text: string): boolean {
-    if (text.length > 64 || /[。！？!?，,；;]/u.test(text)) {
-        return false;
-    }
-
-    const separatorCount = text.match(/\/\/|::|--/gu)?.length ?? 0;
-    if (separatorCount === 0 || separatorCount > 3) {
-        return false;
-    }
-
-    const semanticToken = /\b(?:mission|ops|operation|sector|zone|link|status|round|phase|threat|coord|coordinate|terminal|system|version|build|node|trace|runtime|online|active|stable|locked|ready|alert|t-minus|tick)\b|(?:任务|行动|作战|战区|区域|链路|状态|回合|阶段|威胁|坐标|终端|系统|版本|节点|追踪|运行|在线|激活|稳定|锁定|就绪|警报|倒计时)/iu.test(
-        text,
-    );
-    const compactReadout = /^[\p{L}\p{N}\s+._:/-]+$/u.test(text) &&
-        text.split(/\s+/u).length <= 6;
-
-    return semanticToken && compactReadout;
-}
-
-export function hasVisibleDecorativeSlashNoise(source: string): boolean {
-    return extractVisibleSeparatorText(source).some(
-        (text) => !isSemanticHudIdentifier(text),
+function hasVisibleDecorativeSlashNoise(source: string): boolean {
+    return /(?:["'`>][^"'`<>{}\n]{0,40})\s\/\/\s*(?:[^"'`<>{}\n]{0,20}[<"'`])|(?:["'`>][^"'`<>{}\n]{0,40})\s(?:::|--)\s*(?:[^"'`<>{}\n]{0,20}[<"'`])/u.test(
+        source,
     );
 }
 
@@ -5084,7 +4933,7 @@ async function enforceFocusedVisualSemanticReview(input: {
 
     if (hasVisibleDecorativeSlashNoise(source)) {
         failureReasons.push(
-            "the source contains repeated meaningless separator punctuation such as //, ::, or -- in ordinary UI copy instead of using CSS decoration",
+            "the source contains visible decorative separator punctuation such as //, ::, or -- in UI copy instead of using CSS decoration",
         );
     }
 
@@ -5097,7 +4946,7 @@ async function enforceFocusedVisualSemanticReview(input: {
         accepted: false,
         reason: [
             `Rejected because ${failureReasons.join("; ")}.`,
-            "Tactical/game point labels must be separate horizontal chips or labels. Concise semantic HUD identifiers such as MISSION//ACTIVE, LINK::STABLE, or ROUND-13 are allowed; repeated decorative punctuation in ordinary headings or prose is not.",
+            "Tactical/game point labels must be separate horizontal chips or labels, and visual separators must be CSS, not literal punctuation noise.",
             input.review.reason,
         ].join(" "),
     };
@@ -5194,16 +5043,19 @@ export async function runReactAppAgent(
     let reviewerProvider: ModelProvider;
     const maxRepairAttempts = options.maxRepairAttempts ?? 1;
     const focusedRequest = options.currentRequest?.trim() || options.goal;
-    // A continuation can execute only the newest focused request because the
-    // existing draft supplies the accepted baseline. Fresh generation (also
-    // used after a zero-progress failure) must receive the accumulated goal,
-    // otherwise a short follow-up such as "add navigation" would regenerate a
-    // generic page and forget the original subject.
-    const executionRequest =
-        options.resetWorkspace === false
-            ? focusedRequest
-            : options.goal;
+    const genericRepairRequest = isGenericRepairRequest(
+        options.currentRequest,
+    );
+    // A generic command such as "修复" is an execution instruction, not a new
+    // product requirement. Preserve the accumulated goal and its Requirement
+    // Ledger instead of replacing REQ-1 with the word "修复".
+    const executionRequest = genericRepairRequest
+        ? extractStableProductGoal(options.goal)
+        : options.resetWorkspace === false
+          ? focusedRequest
+          : options.goal;
     let focusedEditRequest =
+        !genericRepairRequest &&
         options.resetWorkspace === false &&
         (isFocusedVisualAdjustmentRequest(executionRequest) ||
             isExplicitFocusedEditRequest(executionRequest));
@@ -5381,18 +5233,25 @@ export async function runReactAppAgent(
     );
     const complexPageRequest =
         !focusedEditRequest && isComplexReactAppRequest(executionRequest);
-    const useParallelCodingAgents = shouldUseParallelCodingAgents({
-        request: executionRequest,
-        navigationKind: navigationRequestKind,
-        ...(options.resetWorkspace !== undefined
-            ? { resetWorkspace: options.resetWorkspace }
-            : {}),
-        enabled:
-            options.parallelCoding ??
-            // Production uses a real provider. Keep injected-model tests and
-            // embedders on the legacy single-agent path unless they opt in.
-            options.model === undefined,
-    });
+    const stableScaffoldRequested =
+        (options.stableGeneration ?? (options.model === undefined)) &&
+        navigationRequestKind !== "routes" &&
+        isFreshPageGenerationRequest(executionRequest) &&
+        (options.resetWorkspace !== false || genericRepairRequest);
+    const useParallelCodingAgents =
+        !stableScaffoldRequested &&
+        shouldUseParallelCodingAgents({
+            request: executionRequest,
+            navigationKind: navigationRequestKind,
+            ...(options.resetWorkspace !== undefined
+                ? { resetWorkspace: options.resetWorkspace }
+                : {}),
+            enabled:
+                options.parallelCoding ??
+                // Production uses a real provider. Keep injected-model tests and
+                // embedders on the legacy single-agent path unless they opt in.
+                options.model === undefined,
+        });
     const complexPageExecutionContext = complexPageRequest
         ? navigationRequestKind === "routes"
             ? [
@@ -5981,47 +5840,32 @@ export async function runReactAppAgent(
             | ParallelCodingWorkstreamResult[]
             | undefined;
         let agent!: RunCodingAgentLoopResult;
+        let usedStableScaffold = false;
         const codingStartedAt = Date.now();
-        const validateAttemptAction = async (action: AgentAction) => {
-            if (
-                focusedEditRequest &&
-                focusedEditScope &&
-                beforeWorkspaceSnapshot
-            ) {
-                const focusedValidation =
-                    await validateFocusedActionWithRecording(action);
-
-                if (focusedValidation) {
-                    return focusedValidation;
-                }
-            }
-
-            if (typecheckRepairAttempt) {
-                const typecheckValidation =
-                    validateTypecheckRepairAction(action);
-
-                if (typecheckValidation) {
-                    return typecheckValidation;
-                }
-            }
-
-            if (kind === "repair") {
-                return validateRepairSourceAction(
-                    options.workspaceRoot,
-                    action,
-                );
-            }
-
-            return undefined;
-        };
-        const shouldValidateAttemptActions =
-            kind === "repair" ||
-            (focusedEditRequest !== undefined &&
-                focusedEditScope !== undefined &&
-                beforeWorkspaceSnapshot !== undefined);
 
         try {
-            if (useParallelCodingAgents && kind === "initial") {
+            if (
+                stableScaffoldRequested &&
+                (kind === "initial" || genericRepairRequest)
+            ) {
+                const stableResult = await generateStableReactPage({
+                    workspaceRoot: options.workspaceRoot,
+                    goal: executionRequest,
+                    contentModel: codingModel,
+                    ...(attemptImageAssetTool
+                        ? { imageAssetTool: attemptImageAssetTool }
+                        : {}),
+                    ...(activeImageAssetModes.length > 0
+                        ? { imageModes: activeImageAssetModes }
+                        : {}),
+                    ...(resolvedDesignPlan
+                        ? { designPlan: resolvedDesignPlan }
+                        : {}),
+                    ...(options.signal ? { signal: options.signal } : {}),
+                });
+                agent = stableResult.agent;
+                usedStableScaffold = true;
+            } else if (useParallelCodingAgents && kind === "initial") {
                 const parallelResult = await runParallelReactPagesAgent({
                     goal: executionRequest,
                     plannerOutput,
@@ -6078,8 +5922,13 @@ export async function runReactAppAgent(
                             "After src/App.tsx exists, write src/App.css only if needed, then finish. Do not create src/content.ts, do not request images, do not run commands, and do not spend steps polishing optional details before the entrypoint is complete.",
                         ].join("\n\n"),
                         ...(options.signal ? { signal: options.signal } : {}),
-                        ...(shouldValidateAttemptActions
-                            ? { validateAction: validateAttemptAction }
+                        ...(focusedEditRequest &&
+                        focusedEditScope &&
+                        beforeWorkspaceSnapshot
+                            ? {
+                                  validateAction:
+                                      validateFocusedActionWithRecording,
+                              }
                             : {}),
                     });
                 }
@@ -6108,9 +5957,16 @@ export async function runReactAppAgent(
                               imageAssetModes: activeImageAssetModes,
                           }
                         : {}),
+                    ...(typecheckRepairAttempt
+                        ? { validateAction: validateTypecheckRepairAction }
+                        : {}),
                     ...(options.signal ? { signal: options.signal } : {}),
-                    ...(shouldValidateAttemptActions
-                        ? { validateAction: validateAttemptAction }
+                    ...(focusedEditRequest &&
+                    focusedEditScope &&
+                    beforeWorkspaceSnapshot
+                        ? {
+                              validateAction: validateFocusedActionWithRecording,
+                          }
                         : {}),
                 });
             }
@@ -6184,10 +6040,12 @@ export async function runReactAppAgent(
             };
         }
 
-        const sourceAutofix = await autofixReactSource(
-            options.workspaceRoot,
-            options.signal,
-        );
+        const sourceAutofix = usedStableScaffold
+            ? { changed: false, messages: [] }
+            : await autofixReactSource(
+                  options.workspaceRoot,
+                  options.signal,
+              );
 
         let initialGenerationCompleteness =
             requiresInitialGenerationCompleteness
@@ -6322,17 +6180,6 @@ export async function runReactAppAgent(
                     ? { parallelWorkstreams }
                     : {}),
             };
-        }
-
-        if (
-            resolvedDesignPlan &&
-            resolvedDesignPlanSource &&
-            resolvedDesignPlanSource !== "fallback"
-        ) {
-            await ensureDesignPlanMetadataStyles({
-                workspaceRoot: options.workspaceRoot,
-                designPlan: resolvedDesignPlan,
-            });
         }
 
         const agentModifiedFiles = listModifiedFilesFromAgent(agent);
@@ -6644,36 +6491,42 @@ export async function runReactAppAgent(
                   }
                 : baseDeterministicReview;
         await emitRunProgress(options.onProgress, "reviewing");
-        const { review: reviewedResult, llmReview } = focusedEditRequest
-            ? { review: deterministicReview }
-            : await timeRunPhase(runMetrics, "reviewerDurationMs", async () =>
-                  reviewWithOptionalLlm({
-                      reviewerAgent,
-                      deterministicReview,
-                      goal: options.goal,
-                      plan: [
-                          ...coordination.plan,
-                          ...(resolvedDesignPlan
-                              ? [
-                                    formatDesignPlanForPrompt(
-                                        resolvedDesignPlan,
-                                    ),
-                                ]
-                              : []),
-                      ],
-                      source: await formatReviewerSourceEvidence(
-                          options.workspaceRoot,
-                          executionRequest,
-                      ),
-                      buildPassed: build.exitCode === 0,
-                      evaluationSummary: formatEvaluationSummary(
-                          evalResult,
-                          browserEval,
-                      ),
-                      assetEvidence,
-                      ...(options.signal ? { signal: options.signal } : {}),
-                  }),
-              );
+        const { review: reviewedResult, llmReview } =
+            focusedEditRequest || usedStableScaffold
+                ? { review: deterministicReview }
+                : await timeRunPhase(
+                      runMetrics,
+                      "reviewerDurationMs",
+                      async () =>
+                          reviewWithOptionalLlm({
+                              reviewerAgent,
+                              deterministicReview,
+                              goal: options.goal,
+                              plan: [
+                                  ...coordination.plan,
+                                  ...(resolvedDesignPlan
+                                      ? [
+                                            formatDesignPlanForPrompt(
+                                                resolvedDesignPlan,
+                                            ),
+                                        ]
+                                      : []),
+                              ],
+                              source: await formatReviewerSourceEvidence(
+                                  options.workspaceRoot,
+                                  executionRequest,
+                              ),
+                              buildPassed: build.exitCode === 0,
+                              evaluationSummary: formatEvaluationSummary(
+                                  evalResult,
+                                  browserEval,
+                              ),
+                              assetEvidence,
+                              ...(options.signal
+                                  ? { signal: options.signal }
+                                  : {}),
+                          }),
+                  );
         options.signal?.throwIfAborted();
         const review = await enforceFocusedVisualSemanticReview({
             workspaceRoot: options.workspaceRoot,
@@ -6882,14 +6735,22 @@ export async function runReactAppAgent(
             (compliance) => compliance.status === "FAIL",
         ) ?? [];
     if (finalReview.accepted && failedDesignCompliance.length > 0) {
-        finalReview = {
-            ...finalReview,
-            accepted: false,
-            reason: [
-                finalReview.reason,
-                `DesignPlan compliance failed: ${failedDesignCompliance.map((item) => `${item.criterion} (${item.evidence})`).join("; ")}`,
-            ].join(" "),
-        };
+        const complianceMessage = `DesignPlan compliance failed: ${failedDesignCompliance.map((item) => `${item.criterion} (${item.evidence})`).join("; ")}`;
+        finalReview = stableScaffoldRequested
+            ? {
+                  ...finalReview,
+                  accepted: true,
+                  reason: [
+                      finalReview.reason,
+                      complianceMessage,
+                      "Stable generation keeps the runnable result because install, typecheck, build, static evaluation, and browser runtime gates passed. DesignPlan heuristics are advisory in stable mode.",
+                  ].join(" "),
+              }
+            : {
+                  ...finalReview,
+                  accepted: false,
+                  reason: [finalReview.reason, complianceMessage].join(" "),
+              };
     }
     if (finalReview !== latestAttempt.review) {
         latestAttempt = {

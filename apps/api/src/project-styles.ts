@@ -24,22 +24,6 @@ function cssString(value: string): string {
     return JSON.stringify(value);
 }
 
-export function formatDesignPlanMetadataStyles(plan: DesignPlan): string {
-    const primitives = deriveLayoutPrimitives(plan);
-    const rhythm = plan.visualDNA.sectionRhythm.join(" / ");
-    const motifs = plan.visualDNA.uniqueMotifs.join(" / ");
-
-    return `/* appforge-design-plan-metadata:start */
-:root {
-    --project-composition: ${cssString(plan.visualDNA.composition)};
-    --surface-strategy: ${plan.visualDNA.surfaceStrategy};
-    --layout-primitives: ${cssString(primitives.join(" / "))};
-    --section-rhythm: ${cssString(rhythm)};
-    --unique-motifs: ${cssString(motifs)};
-}
-/* appforge-design-plan-metadata:end */`;
-}
-
 function radius(plan: DesignPlan, index: number, fallback: number): string {
     return `${plan.designTokens.radiusScale[index] ?? fallback}px`;
 }
@@ -347,14 +331,20 @@ export function formatProjectStyles(input: {
     const plan = input.designPlan;
     const colors = plan.designTokens.colorRoles;
     const primitives = deriveLayoutPrimitives(plan);
+    const rhythm = plan.visualDNA.sectionRhythm.join(" / ");
+    const motifs = plan.visualDNA.uniqueMotifs.join(" / ");
     const pageList = input.pages
         .map((page) => `${page.path}:${page.label}`)
         .join(", ");
     const openSurface = plan.visualDNA.surfaceStrategy === "open";
     const containedSurface = plan.visualDNA.surfaceStrategy === "contained";
 
-    return `${formatDesignPlanMetadataStyles(plan)}
-:root {
+    return `:root {
+    --project-composition: ${cssString(plan.visualDNA.composition)};
+    --surface-strategy: ${plan.visualDNA.surfaceStrategy};
+    --layout-primitives: ${cssString(primitives.join(" / "))};
+    --section-rhythm: ${cssString(rhythm)};
+    --unique-motifs: ${cssString(motifs)};
     --background: ${colors.background};
     --surface: ${colors.surface};
     --foreground: ${colors.foreground};

@@ -16,8 +16,6 @@ export type ActionExecutionResult = {
      * unless the executor explicitly reports an idempotent no-op.
      */
     changed?: boolean;
-    /** Whether a rejected action can be corrected within the current loop. */
-    retryable?: boolean;
 };
 
 export type ActionExecutorOptions = {

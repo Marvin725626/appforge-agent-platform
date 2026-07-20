@@ -28,22 +28,6 @@ export function hasReviewQualityFailure(
     );
 }
 
-export function shouldRollbackRejectedWorkspace(
-    review: ReactAppAgentReview,
-): boolean {
-    if (review.accepted) {
-        return false;
-    }
-
-    if (hasReviewQualityFailure(review)) {
-        return true;
-    }
-
-    return /required requirement\(s\) failed or were unverified|generated application is incomplete|requested independent pages do not have a verifiable routing implementation|designplan compliance failed|no new draft was produced|iteration did not change the workspace/iu.test(
-        review.reason,
-    );
-}
-
 export function decideReviewDisposition(input: {
     review: ReactAppAgentReview;
     repairAttempt: number;

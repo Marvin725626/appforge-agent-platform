@@ -24,6 +24,8 @@ export function createServerRunReactAppAgentOptions(
         goal: input.goal,
         workspaceRoot: input.workspaceRoot,
         templateRoot: config.templateRoot,
+        stableGeneration:
+            env.APPFORGE_STABLE_GENERATION?.trim().toLowerCase() !== "false",
         parallelCoding:
             env.APPFORGE_PARALLEL_CODING?.trim().toLowerCase() !== "false",
         parallelCodingConcurrency: Number(

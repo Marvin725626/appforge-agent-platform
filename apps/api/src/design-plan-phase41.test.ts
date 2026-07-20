@@ -295,6 +295,60 @@ describe("Phase 4.1 DesignPlan", () => {
         }
     });
 
+    it("does not treat forbidden-pattern wording in acceptance copy as implementation evidence", async () => {
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-design-plan-copy-test-"),
+        );
+        try {
+            await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+            const designPlan = createFallbackDesignPlan({
+                goal: "创建战术游戏专题页，不要重复圆角卡片网格",
+                plannerOutput: PLANNER_OUTPUT,
+                routes: [{ path: "/", purpose: "战术游戏首页" }],
+            });
+            designPlan.visualDNA.forbiddenPatterns = ["重复圆角卡片网格"];
+            designPlan.acceptanceCriteria = [
+                {
+                    id: "DESIGN-1",
+                    instruction: "不得使用重复圆角卡片网格作为主要布局。",
+                    verification: "检查页面使用轨道、矩阵与终端结构。",
+                },
+            ];
+
+            await writeFile(
+                path.join(workspaceRoot, "src", "App.css"),
+                [
+                    ':root { --project-composition: "战术轨道"; --surface-strategy: mixed; --unique-motifs: "HUD"; }',
+                    ".module-rail { display: grid; gap: 1px; }",
+                    ".module-row { border: 1px solid currentColor; }",
+                ].join("\n"),
+                "utf8",
+            );
+            await writeFile(
+                path.join(workspaceRoot, "src", "App.tsx"),
+                'export function App() { return <main className="module-rail"><section className="module-row"><p>不得使用重复圆角卡片网格作为主要布局。</p></section></main>; }',
+                "utf8",
+            );
+
+            const compliance = await evaluateDesignPlanCompliance({
+                workspaceRoot,
+                designPlan,
+                designPlanSource: "planner",
+            });
+
+            expect(compliance).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        criterion: "forbiddenPatterns are avoided",
+                        status: "PASS",
+                    }),
+                ]),
+            );
+        } finally {
+            await rm(workspaceRoot, { recursive: true, force: true });
+        }
+    });
+
     it("produces materially different plans for city, SaaS, game, and dashboard topics", () => {
         const scenarios = [
             {

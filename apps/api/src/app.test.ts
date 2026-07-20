@@ -2901,62 +2901,6 @@ describe("POST /runs/:id/execute", () => {
     ).resolves.toContain("StableApp");
   });
 
-  it("preserves a runnable reviewer-rejected draft for human review when a baseline exists", async () => {
-    const temporaryRoot = await mkdtemp(
-      path.join(os.tmpdir(), "appforge-api-"),
-    );
-    temporaryDirectories.push(temporaryRoot);
-    const workspaceManager = new WorkspaceManager(temporaryRoot);
-    const revisedSource =
-      "export function App() { return <main><h1>MISSION//ACTIVE</h1></main>; }";
-    const executeRun = vi.fn(async (input: { workspaceRoot: string }) => {
-      await writeWorkspaceFile(
-        input.workspaceRoot,
-        "src/App.tsx",
-        revisedSource,
-      );
-      const successful = createSuccessfulAgentResult(input.workspaceRoot);
-      const reviewerFeedback = {
-        ...successful.review,
-        accepted: false,
-        reason: "LLM reviewer rejected: Reduce decorative punctuation.",
-      };
-
-      return {
-        ...successful,
-        review: reviewerFeedback,
-        attempts: successful.attempts.map((attempt) => ({
-          ...attempt,
-          review: reviewerFeedback,
-        })),
-      };
-    });
-    const app = buildApp(undefined, workspaceManager, executeRun);
-    const createResponse = await app.inject({
-      method: "POST",
-      url: "/runs",
-      payload: { goal: "Create a tactical game page" },
-    });
-    const createdRun = RunSchema.parse(createResponse.json());
-    const workspaceRoot = workspaceManager.resolve(createdRun.id);
-    await writeRunnableWorkspace(
-      workspaceRoot,
-      "export function App() { return <main><h1>Stable baseline</h1></main>; }",
-    );
-
-    const executeResponse = await app.inject({
-      method: "POST",
-      url: `/runs/${createdRun.id}/execute`,
-    });
-
-    expect(executeResponse.statusCode).toBe(200);
-    expect(executeResponse.json().run.status).toBe("waiting_for_human");
-    expect(executeResponse.json().run.errorMessage).toBeUndefined();
-    await expect(
-      readWorkspaceFile(workspaceRoot, "src/App.tsx"),
-    ).resolves.toBe(revisedSource);
-  });
-
   it("keeps a first rejected draft when no earlier workspace baseline exists", async () => {
     const temporaryRoot = await mkdtemp(
         path.join(os.tmpdir(), "appforge-api-"),
