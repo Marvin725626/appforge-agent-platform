@@ -507,11 +507,40 @@ function DesignDrivenLayout() {
     default: return <SplitNarrativeLayout />;
   }
 }
+/* APPFORGE_PHASE4_RUNTIME_LAYOUT_TRACE_V9_4_1
+ * Diagnostic-only instrumentation. This does not change layout selection.
+ */
+/* APPFORGE_PHASE4_RUNTIME_ROUTING_LABELS_V9_4_2
+ * Diagnostic label mirrors the actual dashboard primitive branch selected at runtime.
+ */
+function resolveAppforgeRendererName() {
+  if (page.applicationType === "dashboard") {
+    switch (page.layout.primaryPrimitive) {
+      case "data-region": return "DashboardAdaptiveLayout:data-region";
+      case "workflow-lane": return "DashboardAdaptiveLayout:workflow-lane";
+      case "editorial-rail": return "DashboardAdaptiveLayout:editorial-rail";
+      case "map-list-hybrid": return "DashboardAdaptiveLayout:map-list-hybrid";
+      default: return "DashboardAdaptiveLayout:" + page.layout.primaryPrimitive;
+    }
+  }
+  switch (page.layout.primaryPrimitive) {
+    case "full-bleed-stage": return "FullBleedStageLayout";
+    case "editorial-rail": return "EditorialRailLayout";
+    case "split-narrative": return "SplitNarrativeLayout";
+    case "workflow-lane": return "WorkflowLaneLayout";
+    case "data-region": return "DataRegionLayout";
+    case "gallery-wall": return "GalleryWallLayout";
+    case "map-list-hybrid": return "MapListHybridLayout";
+    case "timeline-lane": return "TimelineLaneLayout";
+    case "asymmetric-media-break": return "GalleryWallLayout";
+    default: return "SplitNarrativeLayout";
+  }
+}
 function PageLayout() { return <DesignDrivenLayout />; }
 
 export function App() {
     return (
-        <div className={\`stable-app stable-app--\${page.applicationType} stable-app--\${page.templateVariant} layout-family--\${page.layout.family} primitive--\${page.layout.primaryPrimitive} surface--\${page.layout.surfaceMode} hero-mode--\${page.layout.heroMode} density--\${page.theme.density}\`} data-appforge-layout-family={page.layout.family}>
+        <div className={\`stable-app stable-app--\${page.applicationType} stable-app--\${page.templateVariant} layout-family--\${page.layout.family} primitive--\${page.layout.primaryPrimitive} surface--\${page.layout.surfaceMode} hero-mode--\${page.layout.heroMode} density--\${page.theme.density}\`} data-appforge-application-type={page.applicationType} data-appforge-layout-family={page.layout.family} data-appforge-layout-primitive={page.layout.primaryPrimitive} data-appforge-renderer={resolveAppforgeRendererName()}>
             <div className="ambient-layer" aria-hidden="true" />
             <PageLayout />
             <footer className="site-footer"><div><strong>{page.brand.name}</strong><p>{page.footer.statement}</p></div><nav aria-label="页脚导航">{page.footer.links.map((link) => <a href="#top" key={link}>{link}</a>)}</nav><span>{page.brand.statusLabel}</span></footer>

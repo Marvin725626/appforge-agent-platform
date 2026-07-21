@@ -12,6 +12,13 @@ export type ScreenshotFingerprint = {
     edges: number[];
 };
 
+export type RuntimeLayoutTrace = {
+    layoutFamily: string;
+    layoutPrimitive: string;
+    renderer: string;
+    rootStructureSignature: string;
+};
+
 export type CrossTemplateSimilarityCaseInput = {
     id: string;
     applicationType: ApplicationType;
@@ -21,6 +28,7 @@ export type CrossTemplateSimilarityCaseInput = {
     screenshotFingerprint?: ScreenshotFingerprint;
     screenshotPath?: string;
     screenshotError?: string;
+    runtimeTrace?: RuntimeLayoutTrace;
 };
 
 export type CrossTemplateSimilarityThresholds = {
@@ -49,6 +57,10 @@ export type CrossTemplateSimilarityCaseResult = {
     screenshotPath?: string;
     screenshotCaptured: boolean;
     screenshotError?: string;
+    layoutFamily?: string;
+    layoutPrimitive?: string;
+    renderer?: string;
+    rootStructureSignature?: string;
     mostSimilarCase: string | null;
     mostSimilarApplicationType: ApplicationType | null;
     mostSimilarIsSameType: boolean | null;
@@ -101,6 +113,7 @@ export type CrossTemplateSimilarityReport = {
 export type RuntimeVisualFingerprint = {
     structureTokens: TokenFingerprint;
     styleTokens: TokenFingerprint;
+    trace?: RuntimeLayoutTrace;
 };
 
 const DEFAULT_THRESHOLDS: CrossTemplateSimilarityThresholds = {
@@ -841,6 +854,7 @@ export function createCrossTemplateSimilarityReport(
             ...(input.screenshotPath ? { screenshotPath: input.screenshotPath } : {}),
             screenshotCaptured: Boolean(input.screenshotFingerprint),
             ...(input.screenshotError ? { screenshotError: input.screenshotError } : {}),
+            ...(input.runtimeTrace ? input.runtimeTrace : {}),
             mostSimilarCase: otherId,
             mostSimilarApplicationType: other?.applicationType ?? null,
             mostSimilarIsSameType:
@@ -924,10 +938,10 @@ export function formatCrossTemplateSimilarityMarkdown(
         "",
         "## Case nearest neighbours",
         "",
-        "| Case | Type | Template | Screenshot | Nearest case | Nearest type | Screenshot sim | Structure sim | Style sim | Repetition | Level |",
-        "|---|---|---|---|---|---|---:|---:|---:|---:|---|",
+        "| Case | Type | Template | Family | Primitive | Renderer | Root signature | Screenshot | Nearest case | Nearest type | Screenshot sim | Structure sim | Style sim | Repetition | Level |",
+        "|---|---|---|---|---|---|---|---|---|---|---:|---:|---:|---:|---|",
         ...report.cases.map((item) =>
-            `| ${item.id} | ${item.applicationType} | ${item.templateVariant} | ${item.screenshotCaptured ? "yes" : "no"} | ${item.mostSimilarCase ?? "-"} | ${item.mostSimilarApplicationType ?? "-"} | ${item.screenshotSimilarity === null ? "-" : (item.screenshotSimilarity * 100).toFixed(1)}% | ${(item.structureSimilarity * 100).toFixed(1)}% | ${(item.styleSimilarity * 100).toFixed(1)}% | ${item.repetitionScore} | ${item.level} |`,
+            `| ${item.id} | ${item.applicationType} | ${item.templateVariant} | ${item.layoutFamily ?? "-"} | ${item.layoutPrimitive ?? "-"} | ${item.renderer ?? "-"} | ${(item.rootStructureSignature ?? "-").replace(/\|/gu, "/")} | ${item.screenshotCaptured ? "yes" : "no"} | ${item.mostSimilarCase ?? "-"} | ${item.mostSimilarApplicationType ?? "-"} | ${item.screenshotSimilarity === null ? "-" : (item.screenshotSimilarity * 100).toFixed(1)}% | ${(item.structureSimilarity * 100).toFixed(1)}% | ${(item.styleSimilarity * 100).toFixed(1)}% | ${item.repetitionScore} | ${item.level} |`,
         ),
         "",
         "## Highest similarity pairs",

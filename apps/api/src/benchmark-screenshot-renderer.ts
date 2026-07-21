@@ -72,6 +72,46 @@ export const COLLECT_BENCHMARK_RUNTIME_FINGERPRINT_EXPRESSION = String.raw`
     if (!root) {
         return { structureTokens, styleTokens };
     }
+    const appRoot = root.firstElementChild;
+    const normalizePart = (value) =>
+        String(value || '')
+            .replace(/[^A-Za-z0-9_-]+/g, '-')
+            .replace(/^-+|-+$/g, '')
+            .slice(0, 80);
+    const describeElement = (element) => {
+        if (!element) {
+            return '';
+        }
+        const classes = Array.from(element.classList)
+            .slice(0, 4)
+            .map(normalizePart)
+            .filter(Boolean)
+            .join('.');
+        return element.tagName.toLowerCase() + (classes ? '.' + classes : '');
+    };
+    const directChildren = appRoot
+        ? Array.from(appRoot.children).slice(0, 10)
+        : [];
+    const structuralRoot = appRoot?.querySelector(
+        'main, aside, [class*="shell"], [class*="layout"], [class*="workspace"]',
+    );
+    const structuralChildren = structuralRoot
+        ? Array.from(structuralRoot.children).slice(0, 10)
+        : [];
+    const trace = {
+        layoutFamily:
+            appRoot?.getAttribute('data-appforge-layout-family') || '',
+        layoutPrimitive:
+            appRoot?.getAttribute('data-appforge-layout-primitive') || '',
+        renderer:
+            appRoot?.getAttribute('data-appforge-renderer') || '',
+        rootStructureSignature: [
+            describeElement(appRoot),
+            directChildren.map(describeElement).filter(Boolean).join('>'),
+            describeElement(structuralRoot),
+            structuralChildren.map(describeElement).filter(Boolean).join('>'),
+        ].filter(Boolean).join('|'),
+    };
     const selector = [
         'header',
         'nav',
@@ -180,7 +220,7 @@ export const COLLECT_BENCHMARK_RUNTIME_FINGERPRINT_EXPRESSION = String.raw`
         }
     }
 
-    return { structureTokens, styleTokens };
+    return { structureTokens, styleTokens, trace };
 })()
 `;
 
@@ -315,9 +355,20 @@ export class BenchmarkScreenshotSession {
                     COLLECT_BENCHMARK_RUNTIME_FINGERPRINT_EXPRESSION,
                 );
 
+                const normalizedTrace = runtime.trace
+                    ? {
+                        layoutFamily: String(runtime.trace.layoutFamily ?? ""),
+                        layoutPrimitive: String(runtime.trace.layoutPrimitive ?? ""),
+                        renderer: String(runtime.trace.renderer ?? ""),
+                        rootStructureSignature: String(
+                            runtime.trace.rootStructureSignature ?? "",
+                        ),
+                    }
+                    : undefined;
                 const normalizedRuntime: RuntimeVisualFingerprint = {
                     structureTokens: {},
                     styleTokens: {},
+                    ...(normalizedTrace ? { trace: normalizedTrace } : {}),
                 };
                 for (const [token, weight] of Object.entries(
                     runtime.structureTokens,

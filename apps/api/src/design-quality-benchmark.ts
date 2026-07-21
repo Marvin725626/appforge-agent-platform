@@ -605,6 +605,9 @@ async function main(): Promise<void> {
                         }
                         : {}),
                     ...(capture.error ? { screenshotError: capture.error } : {}),
+                    ...(capture.runtime?.trace
+                        ? { runtimeTrace: capture.runtime.trace }
+                        : {}),
                 });
             },
         });
@@ -657,6 +660,24 @@ async function main(): Promise<void> {
             "utf8",
         ),
         writeFile(
+            path.join(args.outputDirectory, "runtime-layout-trace.json"),
+            `${JSON.stringify(
+                similarityReport.cases.map((item) => ({
+                    id: item.id,
+                    applicationType: item.applicationType,
+                    templateVariant: item.templateVariant,
+                    layoutFamily: item.layoutFamily ?? null,
+                    layoutPrimitive: item.layoutPrimitive ?? null,
+                    renderer: item.renderer ?? null,
+                    rootStructureSignature: item.rootStructureSignature ?? null,
+                })),
+                null,
+                2,
+            )}
+`,
+            "utf8",
+        ),
+        writeFile(
             path.join(args.outputDirectory, "template-clusters.json"),
             `${JSON.stringify({
                 generatedAt: similarityReport.generatedAt,
@@ -676,6 +697,12 @@ async function main(): Promise<void> {
         `Similarity benchmark: ${similarityReport.summary.totalPairs} pairs, ` +
             `${similarityReport.summary.severeCrossTypePairs} severe cross-type pairs, ` +
             `${similarityReport.screenshotCapture.capturedCases.length}/${similarityReport.summary.totalCases} screenshots.`,
+    );
+    const tracedCases = similarityReport.cases.filter(
+        (item) => item.renderer && item.layoutFamily && item.layoutPrimitive,
+    ).length;
+    console.log(
+        `Runtime layout trace: ${tracedCases}/${similarityReport.summary.totalCases} cases.`,
     );
     console.log(`Reports written to ${args.outputDirectory}`);
 

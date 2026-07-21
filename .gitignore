@@ -41,6 +41,17 @@ playwright-report/
 
 # Local AppForge backups
 .appforge-local-backup/
+.appforge-v9-backup/
+
+# Generated patch payloads
+/V9_*_PAYLOAD/
+/.phase4-*-payload/
+
+# Temporary patch installers and verification scripts
+/APPLY_PHASE4_*.ps1
+/VERIFY_PHASE4_*.ps1
+/ROLLBACK_PHASE4_*.ps1
+/PATCH_PHASE4_*.mjs
 
 # Temporary repair packages and reports
 *.zip
@@ -50,17 +61,3 @@ playwright-report/
 
 # Raw local run diagnostics
 /latest-*-run-raw.json
-
-# Local AppForge backups
-.appforge-local-backup/
-
-# Temporary repair packages and reports
-*.zip
-*.patch
-/appforge-*-report.md
-/appforge-v3-clean-stale-repair-files.ps1
-
-# Raw local run diagnostics
-/latest-*-run-raw.json
-
-.appforge-local-backup/

@@ -110,9 +110,9 @@ describe("V9.3 residual layout-cluster separation", () => {
     const infrastructure = deriveStableLayoutFamily(content("dashboard", "Infrastructure Server CPU Monitor", "sidebar-console"));
     const clinical = deriveStableLayoutFamily(content("dashboard", "Clinical Patient Incident Triage", "report-board"));
 
-    expect(infrastructure.family).toBe("operations-console");
+    expect(infrastructure.family).toBe("infrastructure-topology");
     expect(clinical.family).toBe("incident-command");
-    expect(infrastructure.primaryPrimitive).toBe("data-region");
+    expect(infrastructure.primaryPrimitive).toBe("map-list-hybrid");
     expect(clinical.primaryPrimitive).toBe("workflow-lane");
   });
 

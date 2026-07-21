@@ -34,7 +34,8 @@ describe("deriveStableLayoutFamily", () => {
   });
 
   it("selects semantic dashboard families instead of one fixed scaffold", () => {
-    expect(deriveStableLayoutFamily(content("dashboard", "Infrastructure Operations Monitor", "sidebar-console")).family).toBe("operations-console");
+    expect(deriveStableLayoutFamily(content("dashboard", "Operations Work Queue Console", "sidebar-console")).family).toBe("operations-console");
+    expect(deriveStableLayoutFamily(content("dashboard", "Infrastructure Server Topology Monitor", "sidebar-console")).family).toBe("infrastructure-topology");
     expect(deriveStableLayoutFamily(content("dashboard", "Clinical Incident Alert Command", "report-board")).family).toBe("incident-command");
     expect(deriveStableLayoutFamily(content("dashboard", "Growth Trend Analytics", "report-board")).family).toBe("trend-command");
   });

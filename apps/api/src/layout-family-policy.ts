@@ -32,9 +32,17 @@ type Candidate = StableLayoutFamily & {
   hints: RegExp[];
 };
 
-type IntentRule = {
+type PriorityIntentRule = {
   family: string;
   pattern: RegExp;
+};
+
+type WeightedPattern = readonly [pattern: RegExp, weight: number];
+
+type WeightedIntentRule = {
+  family: string;
+  positive: WeightedPattern[];
+  negative?: WeightedPattern[];
 };
 
 const FAMILY_CANDIDATES: Record<ApplicationType, Candidate[]> = {
@@ -86,6 +94,17 @@ const FAMILY_CANDIDATES: Record<ApplicationType, Candidate[]> = {
   ],
   dashboard: [
     candidate(
+      "infrastructure-topology",
+      "map-list-hybrid",
+      ["map-list-hybrid", "data-region"],
+      "status",
+      "top",
+      "contained",
+      "route-line",
+      ["map", "metrics", "timeline", "data-table"],
+      /infrastructure|topology|server|service|cpu|memory|latency|monitor|基础设施|拓扑|服务器|服务|内存|延迟|监控/iu,
+    ),
+    candidate(
       "operations-console",
       "data-region",
       ["data-region", "timeline-lane"],
@@ -94,7 +113,7 @@ const FAMILY_CANDIDATES: Record<ApplicationType, Candidate[]> = {
       "contained",
       "data-spine",
       ["metrics", "data-table", "timeline", "matrix"],
-      /operation|infrastructure|monitor|server|cpu|memory|latency|运维|基础设施|监控|服务器|内存|延迟|console/iu,
+      /operation|queue|work order|command|运维|操作|工单|队列|指挥|console/iu,
     ),
     candidate(
       "trend-command",
@@ -397,7 +416,7 @@ const FAMILY_CANDIDATES: Record<ApplicationType, Candidate[]> = {
   ],
 };
 
-const INTENT_PRIORITY: Partial<Record<ApplicationType, IntentRule[]>> = {
+const INTENT_PRIORITY: Partial<Record<ApplicationType, PriorityIntentRule[]>> = {
   game: [
     { family: "orbital-expedition", pattern: /space|expedition|orbital|stellar|galaxy|planet|太空|星际|远征|轨道|行星|探索/iu },
     { family: "tactical-map", pattern: /tactic|operation|mission|combat|地图|战术|行动|作战|任务/iu },
@@ -405,10 +424,8 @@ const INTENT_PRIORITY: Partial<Record<ApplicationType, IntentRule[]>> = {
     { family: "campaign-stage", pattern: /campaign|cinematic|warfront|战役|沉浸|剧情/iu },
   ],
   dashboard: [
-    { family: "incident-command", pattern: /clinical|incident|alert|patient|triage|临床|告警|事故|患者|分诊|处置/iu },
-    { family: "operations-console", pattern: /infrastructure|server|cpu|memory|latency|monitor|基础设施|服务器|内存|延迟|监控|运维/iu },
     { family: "trend-command", pattern: /trend|analytics|growth|forecast|趋势|分析|增长|预测/iu },
-    { family: "table-operations", pattern: /inventory|record|queue|registry|清单|记录|队列|台账|表格/iu },
+    { family: "table-operations", pattern: /inventory|record|registry|清单|记录|台账|表格/iu },
   ],
   product: [
     { family: "design-system-catalog", pattern: /design system|component library|design token|pattern library|设计系统|组件库|设计令牌|模式库/iu },
@@ -422,16 +439,6 @@ const INTENT_PRIORITY: Partial<Record<ApplicationType, IntentRule[]>> = {
     { family: "catalog-rail", pattern: /headphone|catalog|collection|耳机|目录|系列/iu },
     { family: "market-wall", pattern: /market|drop|launch|store|市集|发售|上新|商店/iu },
   ],
-  institution: [
-    { family: "public-service-portal", pattern: /public|health|service|clinic|citizen|公共|健康|服务|门诊|市民/iu },
-    { family: "research-institute", pattern: /laboratory|research|lab|science|实验室|研究|科研|科学/iu },
-    { family: "foundation-program", pattern: /foundation|grant|charity|基金会|资助|公益/iu },
-  ],
-  portfolio: [
-    { family: "gallery-portfolio", pattern: /photographer|photo|visual|image|摄影师|摄影|视觉|影像/iu },
-    { family: "resume-story", pattern: /engineer|resume|experience|career|工程师|履历|经历|职业/iu },
-    { family: "case-study-rail", pattern: /designer|case study|product design|设计师|案例|产品设计/iu },
-  ],
   custom: [
     { family: "event-stage", pattern: /festival|music|concert|音乐节|节庆|演出/iu },
     { family: "expo-map", pattern: /expo|industry|venue|booth|展会|产业|场馆|展位/iu },
@@ -441,6 +448,132 @@ const INTENT_PRIORITY: Partial<Record<ApplicationType, IntentRule[]>> = {
     { family: "route-narrative", pattern: /route|renewal|journey|路线|更新|旅程|迁移/iu },
     { family: "editorial-feature", pattern: /city|culture|feature|城市|文化|专题|人物/iu },
     { family: "research-dossier", pattern: /ai|climate|report|research|人工智能|气候|报告|研究/iu },
+  ],
+};
+
+/* APPFORGE_PHASE4_WEIGHTED_INTENT_ROUTING_V9_4_2
+ * APPFORGE_PHASE4_WEIGHTED_INTENT_ROUTING_V9_4_2_1
+ * Strong user-goal evidence is scored before generated boilerplate. Broad words
+ * such as alert, public, image and gallery cannot unilaterally select a family.
+ */
+const WEIGHTED_INTENT_RULES: Partial<Record<ApplicationType, WeightedIntentRule[]>> = {
+  dashboard: [
+    {
+      family: "operations-console",
+      positive: [
+        [/工单|work[ -]?order|ticket|approval|审批|待办|backlog/iu, 10],
+        [/运营数据后台|运营后台|operations? dashboard|operations? console|operator console/iu, 8],
+        [/标准操作流程|操作流程|operating procedure|workflow|流程|协同/iu, 6],
+        [/队列|queue|任务|task|调度|dispatch/iu, 3],
+      ],
+      negative: [
+        [/医院|hospital|临床|clinical|患者|patient|门诊|outpatient|床位|bed/iu, 12],
+        [/服务器|server|云资源|cloud resource|基础设施|infrastructure|拓扑|topology|实例|instance/iu, 9],
+      ],
+    },
+    {
+      family: "infrastructure-topology",
+      positive: [
+        [/服务器|server|云资源|cloud resource|基础设施|infrastructure|主机|host|实例|instance|节点|node|集群|cluster/iu, 10],
+        [/延迟|latency|cpu|内存|memory|可用性|availability|uptime|拓扑|topology/iu, 8],
+        [/监控|monitor|observability|可观测|服务依赖|service dependency|部署|deployment/iu, 6],
+        [/告警|alert|故障|incident|健康状态|health status/iu, 3],
+      ],
+      negative: [
+        [/医院|hospital|临床|clinical|患者|patient|门诊|outpatient|床位|bed|科室|department/iu, 12],
+        [/工单|work[ -]?order|审批|approval/iu, 6],
+      ],
+    },
+    {
+      family: "incident-command",
+      positive: [
+        [/医院|hospital|临床|clinical|患者|patient|门诊|outpatient/iu, 12],
+        [/床位|bed|检验|laboratory test|科室|department|分诊|triage|病例|case management/iu, 10],
+        [/诊疗|医疗|medical|护理|nursing|入院|admission|出院|discharge/iu, 8],
+        [/检验队列|异常提醒|协同流程|clinical workflow/iu, 4],
+      ],
+      negative: [
+        [/服务器|server|云资源|cloud resource|基础设施|infrastructure|cpu|内存|memory|拓扑|topology/iu, 12],
+        [/工单|work[ -]?order|审批|approval|backlog/iu, 6],
+      ],
+    },
+  ],
+  institution: [
+    {
+      family: "research-institute",
+      positive: [
+        [/人工智能实验室|高校实验室|laboratory|\blab\b|实验室/iu, 12],
+        [/研究方向|科研项目|科研成果|publication|paper|principal investigator|科研|研究/iu, 8],
+        [/高校|university|science|科学|团队发展|合作入口/iu, 4],
+      ],
+      negative: [
+        [/公共卫生|public health|公众服务|public service/iu, 10],
+        [/基金会|foundation|捐赠|donation|志愿者|volunteer/iu, 12],
+      ],
+    },
+    {
+      family: "public-service-portal",
+      positive: [
+        [/公共卫生|public health/iu, 14],
+        [/公众参与|public participation|公共服务|public service|市民|citizen|社区|community|门诊|clinic/iu, 9],
+        [/数据资源|resource portal|服务入口|service access|覆盖区域|coverage region/iu, 6],
+        [/使命|mission|机构门户|institution portal/iu, 3],
+      ],
+      negative: [
+        [/基金会|foundation|捐赠|donation|志愿者|volunteer|资助|grant/iu, 12],
+        [/实验室|laboratory|\blab\b/iu, 8],
+      ],
+    },
+    {
+      family: "foundation-program",
+      positive: [
+        [/基金会|foundation/iu, 14],
+        [/捐赠|donation|donor|志愿者|volunteer|资助|grant|公益|charity|nonprofit/iu, 10],
+        [/乡村教育|rural education|受益|beneficiar|影响数据|impact data|项目覆盖|program coverage/iu, 6],
+      ],
+      negative: [
+        [/公共卫生|public health|门诊|clinic/iu, 10],
+        [/实验室|laboratory|\blab\b|科研项目|research project/iu, 8],
+      ],
+    },
+  ],
+  portfolio: [
+    {
+      family: "case-study-rail",
+      positive: [
+        [/产品设计师|product designer|ux designer|ui designer/iu, 14],
+        [/案例过程|case study|prototype|原型|usability|可用性|design system|设计系统/iu, 9],
+        [/设计师|designer|设计方法|design process/iu, 6],
+      ],
+      negative: [
+        [/摄影师|photographer|摄影|photography/iu, 12],
+        [/工程师|engineer|全栈|full[ -]?stack|开源|open source/iu, 12],
+      ],
+    },
+    {
+      family: "gallery-portfolio",
+      positive: [
+        [/纪实摄影师|摄影师|photographer/iu, 14],
+        [/摄影|photography|拍摄|shoot|主题系列|photo series|肖像|portrait|风景|landscape/iu, 10],
+        [/展览|exhibition|出版记录|publication record|镜头|lens/iu, 7],
+      ],
+      negative: [
+        [/工程师|engineer|全栈|full[ -]?stack|开源|open source/iu, 12],
+        [/产品设计师|product designer|ux designer/iu, 10],
+      ],
+    },
+    {
+      family: "resume-story",
+      positive: [
+        [/全栈工程师|full[ -]?stack engineer|软件工程师|software engineer|工程师|engineer|developer|开发者/iu, 14],
+        [/开源项目|open source|技术方案|technical solution|能力栈|tech stack|代码|code|架构|architecture|api/iu, 9],
+        [/职业经历|career|resume|履历|系统|system/iu, 5],
+      ],
+      negative: [
+        [/摄影师|photographer|摄影|photography/iu, 12],
+        [/产品设计师|product designer|ux designer/iu, 10],
+      ],
+    },
   ],
 };
 
@@ -478,7 +611,7 @@ function stableHash(value: string): number {
   return hash >>> 0;
 }
 
-function normalize(parts: Array<string | undefined>): string {
+function normalize(parts: Array<string | null | undefined>): string {
   return parts.filter(Boolean).join(" ").toLowerCase();
 }
 
@@ -501,15 +634,36 @@ function semanticEvidence(content: StablePageContent): string {
   ]);
 }
 
-function designEvidence(designPlan?: DesignPlan): string {
-  if (!designPlan) return "";
+function goalEvidence(content: StablePageContent, designPlan?: DesignPlan): string {
+  const routes = designPlan?.informationArchitecture?.routes ?? [];
+  const acceptanceCriteria = designPlan?.acceptanceCriteria ?? [];
   return normalize([
-    designPlan.visualDNA.composition,
-    designPlan.visualDNA.heroPattern,
-    designPlan.visualDNA.navigationPattern,
-    designPlan.visualDNA.surfaceStrategy,
-    ...designPlan.visualDNA.sectionRhythm,
-    ...designPlan.visualDNA.uniqueMotifs,
+    designPlan?.designIntent?.primaryGoal,
+    designPlan?.designIntent?.audience,
+    ...routes.flatMap((route) => [
+      route?.purpose,
+      ...(route?.primaryContent ?? []),
+      ...(route?.primaryActions ?? []),
+    ]),
+    ...acceptanceCriteria.flatMap((criterion) => [
+      criterion?.instruction,
+      criterion?.verification,
+    ]),
+    content.brand.summary,
+    content.footer.statement,
+  ]);
+}
+
+function designEvidence(designPlan?: DesignPlan): string {
+  const visualDNA = designPlan?.visualDNA;
+  if (!visualDNA) return "";
+  return normalize([
+    visualDNA.composition,
+    visualDNA.heroPattern,
+    visualDNA.navigationPattern,
+    visualDNA.surfaceStrategy,
+    ...(visualDNA.sectionRhythm ?? []),
+    ...(visualDNA.uniqueMotifs ?? []),
   ]);
 }
 
@@ -517,13 +671,55 @@ function findCandidate(applicationType: ApplicationType, family: string): Candid
   return FAMILY_CANDIDATES[applicationType].find((item) => item.family === family);
 }
 
-function resolveIntentCandidate(applicationType: ApplicationType, evidence: string): Candidate | undefined {
+function resolvePriorityIntentCandidate(
+  applicationType: ApplicationType,
+  evidence: string,
+): Candidate | undefined {
   for (const rule of INTENT_PRIORITY[applicationType] ?? []) {
     if (!rule.pattern.test(evidence)) continue;
     const selected = findCandidate(applicationType, rule.family);
     if (selected) return selected;
   }
   return undefined;
+}
+
+function scoreWeightedPatterns(
+  evidence: string,
+  patterns: WeightedPattern[] | undefined,
+): number {
+  return (patterns ?? []).reduce(
+    (score, [pattern, weight]) => score + (pattern.test(evidence) ? weight : 0),
+    0,
+  );
+}
+
+function resolveWeightedIntentCandidate(
+  applicationType: ApplicationType,
+  evidence: string,
+  seed: number,
+): { candidate: Candidate; score: number; runnerUpScore: number } | undefined {
+  const rules = WEIGHTED_INTENT_RULES[applicationType] ?? [];
+  if (rules.length === 0) return undefined;
+
+  const ranked = rules
+    .map((rule, index) => ({
+      rule,
+      score:
+        scoreWeightedPatterns(evidence, rule.positive) -
+        scoreWeightedPatterns(evidence, rule.negative) +
+        ((seed + index * 2654435761) % 997) / 100_000,
+    }))
+    .sort((left, right) => right.score - left.score);
+
+  const winner = ranked[0];
+  if (!winner || winner.score < 6) return undefined;
+  const candidate = findCandidate(applicationType, winner.rule.family);
+  if (!candidate) return undefined;
+  return {
+    candidate,
+    score: winner.score,
+    runnerUpScore: ranked[1]?.score ?? Number.NEGATIVE_INFINITY,
+  };
 }
 
 function primitiveFromPlan(evidence: string): StableLayoutPrimitive | undefined {
@@ -594,8 +790,9 @@ function sectionOrderFromPlan(
   fallback: StableLayoutFamily["sectionOrder"],
   designPlan?: DesignPlan,
 ): StableLayoutFamily["sectionOrder"] {
-  if (!designPlan) return [...fallback];
-  const planned = designPlan.visualDNA.sectionRhythm.flatMap((entry) =>
+  const sectionRhythm = designPlan?.visualDNA?.sectionRhythm ?? [];
+  if (sectionRhythm.length === 0) return [...fallback];
+  const planned = sectionRhythm.flatMap((entry) =>
     SECTION_KIND_RULES.filter(([, pattern]) => pattern.test(entry)).map(([kind]) => kind),
   );
   return [...new Set([...planned, ...fallback])];
@@ -606,13 +803,18 @@ export function deriveStableLayoutFamily(
   designPlan?: DesignPlan,
 ): StableLayoutFamily {
   const candidates = FAMILY_CANDIDATES[content.applicationType];
+  const goal = goalEvidence(content, designPlan);
   const semantic = semanticEvidence(content);
   const plan = designEvidence(designPlan);
   const template = content.templateVariant.toLowerCase();
-  const seed = stableHash(`${content.brand.title}|${content.templateVariant}|${semantic}|${plan}`);
+  const seed = stableHash(`${content.brand.title}|${content.templateVariant}|${goal}|${semantic}|${plan}`);
 
-  const intentCandidate = resolveIntentCandidate(content.applicationType, semantic);
+  const weightedIntent = resolveWeightedIntentCandidate(content.applicationType, goal, seed);
+  const priorityIntent = weightedIntent
+    ? undefined
+    : resolvePriorityIntentCandidate(content.applicationType, goal || semantic);
   const scored = candidates.map((item, index) => {
+    const goalHits = item.hints.reduce((count, hint) => count + (hint.test(goal) ? 1 : 0), 0);
     const semanticHits = item.hints.reduce((count, hint) => count + (hint.test(semantic) ? 1 : 0), 0);
     const planHits = item.hints.reduce((count, hint) => count + (hint.test(plan) ? 1 : 0), 0);
     const templateHits = item.hints.reduce((count, hint) => count + (hint.test(template) ? 1 : 0), 0);
@@ -623,20 +825,35 @@ export function deriveStableLayoutFamily(
     const tiebreak = ((seed + index * 2654435761) % 997) / 1000;
     return {
       item,
-      score: semanticHits * 240 + planHits * 140 + templateHits * 35 + sectionAffinity * 4 + tiebreak,
+      score:
+        goalHits * 320 +
+        semanticHits * 80 +
+        planHits * 140 +
+        templateHits * 35 +
+        sectionAffinity * 4 +
+        tiebreak,
     };
   });
   scored.sort((left, right) => right.score - left.score);
 
-  const selected = intentCandidate ?? scored[0]?.item ?? candidates[seed % candidates.length]!;
+  const selected =
+    weightedIntent?.candidate ??
+    priorityIntent ??
+    scored[0]?.item ??
+    candidates[seed % candidates.length]!;
   const plannedPrimitive = primitiveFromPlan(plan);
   const primaryPrimitive = plannedPrimitive ?? selected.primaryPrimitive;
   const primitives = [primaryPrimitive, ...selected.primitives.filter((item) => item !== primaryPrimitive)];
-  const surfaceMode = designPlan?.visualDNA.surfaceStrategy === "contained"
+  const surfaceMode = designPlan?.visualDNA?.surfaceStrategy === "contained"
     ? "contained"
-    : designPlan?.visualDNA.surfaceStrategy === "open"
+    : designPlan?.visualDNA?.surfaceStrategy === "open"
       ? "open"
       : selected.surfaceMode;
+  const selection = weightedIntent
+    ? "weighted-goal-intent"
+    : priorityIntent
+      ? "goal-priority"
+      : "weighted-fallback";
 
   return {
     family: selected.family,
@@ -650,11 +867,13 @@ export function deriveStableLayoutFamily(
     evidence: [
       `applicationType=${content.applicationType}`,
       `templateVariant=${content.templateVariant}`,
-      `selection=${intentCandidate ? "semantic-intent" : "weighted-fallback"}`,
+      `selection=${selection}`,
       `family=${selected.family}`,
       `primaryPrimitive=${primaryPrimitive}`,
-      `composition=${designPlan?.visualDNA.composition ?? "fallback"}`,
-      `heroPattern=${designPlan?.visualDNA.heroPattern ?? "fallback"}`,
+      `weightedIntentScore=${weightedIntent?.score.toFixed(3) ?? "n/a"}`,
+      `weightedIntentMargin=${weightedIntent ? (weightedIntent.score - weightedIntent.runnerUpScore).toFixed(3) : "n/a"}`,
+      `composition=${designPlan?.visualDNA?.composition ?? "fallback"}`,
+      `heroPattern=${designPlan?.visualDNA?.heroPattern ?? "fallback"}`,
     ],
   };
 }
