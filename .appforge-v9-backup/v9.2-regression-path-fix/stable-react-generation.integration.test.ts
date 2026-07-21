@@ -1,23 +1,11 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { FakeModelProvider } from "@appforge/agent-core";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createFallbackDesignPlan } from "./design-plan-utils.js";
 import { runReactAppAgent } from "./run-react-app-agent.js";
-
-const REPOSITORY_ROOT = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../../..",
-);
-const VITE_REACT_STARTER_TEMPLATE_ROOT = path.join(
-  REPOSITORY_ROOT,
-  "tests",
-  "fixtures",
-  "vite-react-starter",
-);
 
 const AI_GAME_CONTENT = {
     version: 1,
@@ -85,7 +73,10 @@ describe("stable production generation", () => {
             path.join(os.tmpdir(), "appforge-stable-run-"),
         );
         temporaryDirectories.push(workspaceRoot);
-        const templateRoot = VITE_REACT_STARTER_TEMPLATE_ROOT;
+        const templateRoot = path.resolve(
+            process.cwd(),
+            "../../tests/fixtures/vite-react-starter",
+        );
         const plannerOutput = {
             summary: "生成沉浸式战术游戏专题页面",
             steps: [
@@ -169,7 +160,10 @@ describe("stable production generation", () => {
             path.join(os.tmpdir(), "appforge-stable-dashboard-"),
         );
         temporaryDirectories.push(workspaceRoot);
-        const templateRoot = VITE_REACT_STARTER_TEMPLATE_ROOT;
+        const templateRoot = path.resolve(
+            process.cwd(),
+            "../../tests/fixtures/vite-react-starter",
+        );
         const plannerOutput = {
             summary: "生成服务器运行监控后台",
             steps: [

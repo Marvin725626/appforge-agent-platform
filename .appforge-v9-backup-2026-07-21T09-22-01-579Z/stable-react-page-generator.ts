@@ -147,7 +147,7 @@ export async function generateStableReactPage(
     const appSource = createStableAppSource(contentResult.content, {
         ...(mediaResult.heroPath ? { heroPath: mediaResult.heroPath } : {}),
         heroAlt: contentResult.content.hero.imageAlt,
-    }, input.designPlan);
+    });
     const cssSource = createStableCssSource(
         contentResult.content,
         input.designPlan,
