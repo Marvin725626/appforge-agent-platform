@@ -59,6 +59,7 @@ import {
 } from "./run-execution-manager.js";
 import { normalizeStepLimitOnlyReview } from "./review-react-app-agent.js";
 import { executeWithWorkspaceRollback } from "./workspace-execution-transaction.js";
+import { isExplicitRegenerationPrompt } from "./generation-request-intent.js";
 
 const RepairRequestSchema = z.object({
     feedback: z.string().trim().min(1).max(2000),
@@ -426,6 +427,17 @@ function isUnchangedWorkspaceReview(reason: string): boolean {
     );
 }
 
+function shouldRollbackRejectedWorkspace(
+    hasRecoveryBaseline: boolean,
+    result: RunReactAppAgentResult,
+): boolean {
+    return (
+        hasRecoveryBaseline &&
+        !result.review.accepted &&
+        result.review.checks.browserVisualOnly !== true
+    );
+}
+
 function markRunAfterExecutionResult(
     run: Run,
     result: RunReactAppAgentResult,
@@ -627,12 +639,6 @@ function cleanPersistedRunState(run: Run): boolean {
 
 function isRegenerationPrompt(prompt: string): boolean {
     return isExplicitRegenerationPrompt(prompt);
-}
-
-function isExplicitRegenerationPrompt(prompt: string): boolean {
-    return /\u91cd\u65b0\u751f\u6210|\u91cd\u65b0\u7ed9\u6211\u751f\u6210|\u91cd\u65b0\u505a|\u91cd\u505a|\u4ece\u5934\u751f\u6210|\u4ece\u5934\u505a|\u5b8c\u5168\u91cd\u65b0|\u6362\u4e00\u4e2a\u754c\u9762|\u6362\u4e2a\u754c\u9762|new design|regenerate|start over|from scratch/iu.test(
-        prompt,
-    );
 }
 
 function summarizeRunMemory(result: RunReactAppAgentResult): string {
@@ -1986,14 +1992,16 @@ export  function buildApp(
                     rollbackWhen: (executionResult) => {
                         signal.throwIfAborted();
                         return (
-                            hasRecoveryBaseline &&
-                            !executionResult.review.accepted
+                            shouldRollbackRejectedWorkspace(
+                                hasRecoveryBaseline,
+                                executionResult,
+                            )
                         );
                     },
                 });
                 resultToPreserveOnError = result;
                 preservedResultWorkspaceRolledBack =
-                    hasRecoveryBaseline && !result.review.accepted;
+                    shouldRollbackRejectedWorkspace(hasRecoveryBaseline, result);
                 signal.throwIfAborted();
                 await assertRunOperationAuthority(run.id, operationId);
 
@@ -2001,7 +2009,7 @@ export  function buildApp(
                 const completedRun: Run = { ...run };
                 const outcome = markRunAfterExecutionResult(completedRun, result, {
                     workspaceRolledBack:
-                        hasRecoveryBaseline && !result.review.accepted,
+                        shouldRollbackRejectedWorkspace(hasRecoveryBaseline, result),
                 });
                 await assertRunOperationAuthority(run.id, operationId);
                 await runRepository.saveResult(
@@ -2397,8 +2405,10 @@ export  function buildApp(
                     rollbackWhen: (validatedResult) => {
                         signal.throwIfAborted();
                         return (
-                            hasRecoveryBaseline &&
-                            !validatedResult.review.accepted
+                            shouldRollbackRejectedWorkspace(
+                                hasRecoveryBaseline,
+                                validatedResult,
+                            )
                         );
                     },
                 });
@@ -2406,7 +2416,7 @@ export  function buildApp(
                 await assertRunOperationAuthority(run.id, operationId);
                 const completedRun: Run = { ...run };
                 const workspaceRolledBack =
-                    hasRecoveryBaseline && !result.review.accepted;
+                    shouldRollbackRejectedWorkspace(hasRecoveryBaseline, result);
                 const outcome = markRunAfterExecutionResult(completedRun, result, {
                     workspaceRolledBack,
                 });
@@ -2756,8 +2766,10 @@ export  function buildApp(
                     rollbackWhen: (validatedResult) => {
                         signal.throwIfAborted();
                         return (
-                            hasRecoveryBaseline &&
-                            !validatedResult.review.accepted
+                            shouldRollbackRejectedWorkspace(
+                                hasRecoveryBaseline,
+                                validatedResult,
+                            )
                         );
                     },
                 });
@@ -2766,7 +2778,7 @@ export  function buildApp(
                 const completedRun: Run = { ...run };
                 const outcome = markRunAfterExecutionResult(completedRun, result, {
                     workspaceRolledBack:
-                        hasRecoveryBaseline && !result.review.accepted,
+                        shouldRollbackRejectedWorkspace(hasRecoveryBaseline, result),
                 });
                 await assertRunOperationAuthority(run.id, operationId);
                 await runRepository.saveResult(

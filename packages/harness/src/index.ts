@@ -1,5 +1,28 @@
 import { chromium, type Browser, type Page } from "playwright";
 
+import {
+    collectMultiViewportVisualReport,
+    isMultiViewportVisualCheckName,
+    type MultiViewportVisualReport,
+} from "./visual-evaluation.js";
+
+export {
+    DEFAULT_VISUAL_VIEWPORTS,
+    collectMultiViewportVisualReport,
+    createVisualViewportChecks,
+    isMultiViewportVisualCheckName,
+} from "./visual-evaluation.js";
+export type {
+    MultiViewportVisualReport,
+    VisualQualityCheck,
+    VisualViewportEvidence,
+    VisualViewportId,
+    VisualViewportIssue,
+    VisualViewportMetrics,
+    VisualViewportResult,
+    VisualViewportSpec,
+} from "./visual-evaluation.js";
+
 export type HarnessCheck = {
     name:string;
     passed:boolean;
@@ -63,6 +86,7 @@ export type BrowserEvalResult = {
     passed: boolean;
     checks: BrowserCheck[];
     evidence?: BrowserEvalEvidence[];
+    visualReport?: MultiViewportVisualReport;
 };
 
 export type BrowserEvalEvidence = {
@@ -185,9 +209,86 @@ export function createBrowserRuntimeChecks(
     ];
 }
 
-function isVisualPageQualityGoal(goal: string | undefined): boolean {
-    return /\b(?:page|homepage|landing|dashboard|portal|site|screen)\b|页面|界面|首页|主页|官网|门户|仪表盘|介绍/iu.test(
+export function isVisualPageQualityGoal(goal: string | undefined): boolean {
+    return /\b(?:page|homepage|landing|dashboard|portal|site|screen|workspace|workbench|console|back[- ]?office|control\s+panel)\b|页面|界面|首页|主页|官网|门户|仪表盘|后台|看板|控制台|监控台|工作台|管理台|操作台|中控台|介绍/iu.test(
         goal ?? "",
+    );
+}
+
+
+function isDashboardVisualGoal(goal: string | undefined): boolean {
+    return /\b(?:dashboard|monitoring\s+console|operations?\s+console|control\s+panel|back[- ]?office)\b|后台|看板|仪表盘|控制台|监控台|工作台|管理台/iu.test(
+        goal ?? "",
+    );
+}
+
+export type DashboardAboveFoldEvidence = {
+    overviewVisible: boolean;
+    metricVisibility: {
+        cpu: boolean;
+        memory: boolean;
+        latency: boolean;
+    };
+    dominantMediaRatio: number;
+};
+
+const DASHBOARD_VISUAL_CHECK_NAMES = {
+    overview: "visual contract: dashboard operational overview is visible above the fold",
+    metrics: "visual contract: dashboard core metrics are visible above the fold",
+    media: "visual contract: dashboard avoids dominant marketing hero media",
+} as const;
+
+export function createDashboardAboveFoldChecks(
+    goal: string | undefined,
+    evidence: DashboardAboveFoldEvidence,
+): BrowserCheck[] {
+    if (!isDashboardVisualGoal(goal)) {
+        return [];
+    }
+
+    const metricsPassed =
+        evidence.metricVisibility.cpu &&
+        evidence.metricVisibility.memory &&
+        evidence.metricVisibility.latency;
+    const mediaPassed = evidence.dominantMediaRatio <= 0.22;
+
+    return [
+        {
+            name: DASHBOARD_VISUAL_CHECK_NAMES.overview,
+            passed: evidence.overviewVisible,
+            ...(evidence.overviewVisible
+                ? {}
+                : {
+                      message:
+                          "The first viewport does not expose a compact operational overview. A dashboard should open on health and monitoring context, not a marketing introduction.",
+                  }),
+        },
+        {
+            name: DASHBOARD_VISUAL_CHECK_NAMES.metrics,
+            passed: metricsPassed,
+            ...(metricsPassed
+                ? {}
+                : {
+                      message: `CPU=${evidence.metricVisibility.cpu ? "visible" : "below fold or missing"}, memory=${evidence.metricVisibility.memory ? "visible" : "below fold or missing"}, latency=${evidence.metricVisibility.latency ? "visible" : "below fold or missing"}.`,
+                  }),
+        },
+        {
+            name: DASHBOARD_VISUAL_CHECK_NAMES.media,
+            passed: mediaPassed,
+            ...(mediaPassed
+                ? {}
+                : {
+                      message: `A first-viewport image/figure occupies ${(evidence.dominantMediaRatio * 100).toFixed(1)}% of the viewport. Operational dashboards must prioritize live metrics, tables, and status evidence.`,
+                  }),
+        },
+    ];
+}
+
+export function isAdvisoryVisualBrowserCheckName(name: string): boolean {
+    return (
+        Object.values(DASHBOARD_VISUAL_CHECK_NAMES).includes(
+            name as (typeof DASHBOARD_VISUAL_CHECK_NAMES)[keyof typeof DASHBOARD_VISUAL_CHECK_NAMES],
+        ) || isMultiViewportVisualCheckName(name)
     );
 }
 
@@ -625,6 +726,91 @@ async function createVisualPageQualityChecks(
                               : "The page retains browser-default typography and spacing, and no authored visual layout was detected.",
                   }),
         });
+    }
+
+    if (isDashboardVisualGoal(goal)) {
+        signal?.throwIfAborted();
+        const dashboardEvidence = await page.evaluate<DashboardAboveFoldEvidence>(() => {
+            const viewportWidth = Math.max(window.innerWidth, 1);
+            const viewportHeight = Math.max(window.innerHeight, 1);
+            const isVisibleAboveFold = (element: Element | null): boolean => {
+                if (!(element instanceof HTMLElement)) {
+                    return false;
+                }
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+
+                return (
+                    style.display !== "none" &&
+                    style.visibility !== "hidden" &&
+                    Number.parseFloat(style.opacity || "1") > 0.05 &&
+                    rect.width >= 24 &&
+                    rect.height >= 20 &&
+                    rect.bottom > 0 &&
+                    rect.top < viewportHeight
+                );
+            };
+            const findMetricByText = (pattern: RegExp): HTMLElement | null =>
+                Array.from(
+                    document.querySelectorAll<HTMLElement>(
+                        "[data-appforge-metric], article, section, [class*='metric' i]",
+                    ),
+                ).find((element) => pattern.test(element.innerText || element.textContent || "")) ?? null;
+            const metricElement = (key: string, pattern: RegExp): HTMLElement | null =>
+                document.querySelector<HTMLElement>(`[data-appforge-metric="${key}"]`) ??
+                findMetricByText(pattern);
+            const media = Array.from(
+                document.querySelectorAll<HTMLElement>("img, figure, picture, video"),
+            );
+            const dominantMediaRatio = media.reduce((maxRatio, element) => {
+                const rect = element.getBoundingClientRect();
+                const style = getComputedStyle(element);
+                if (
+                    style.display === "none" ||
+                    style.visibility === "hidden" ||
+                    Number.parseFloat(style.opacity || "1") <= 0.05 ||
+                    rect.bottom <= 0 ||
+                    rect.top >= viewportHeight
+                ) {
+                    return maxRatio;
+                }
+                const visibleWidth = Math.max(
+                    0,
+                    Math.min(rect.right, viewportWidth) - Math.max(rect.left, 0),
+                );
+                const visibleHeight = Math.max(
+                    0,
+                    Math.min(rect.bottom, viewportHeight) - Math.max(rect.top, 0),
+                );
+                return Math.max(
+                    maxRatio,
+                    (visibleWidth * visibleHeight) /
+                        (viewportWidth * viewportHeight),
+                );
+            }, 0);
+
+            return {
+                overviewVisible: isVisibleAboveFold(
+                    document.querySelector('[data-appforge-role="dashboard-overview"]'),
+                ),
+                metricVisibility: {
+                    cpu: isVisibleAboveFold(
+                        metricElement("cpu", /\bCPU\b|处理器/iu),
+                    ),
+                    memory: isVisibleAboveFold(
+                        metricElement("memory", /内存|memory/iu),
+                    ),
+                    latency: isVisibleAboveFold(
+                        metricElement(
+                            "latency",
+                            /请求.{0,8}延迟|延迟|latency|P95/iu,
+                        ),
+                    ),
+                },
+                dominantMediaRatio,
+            };
+        });
+        checks.push(...createDashboardAboveFoldChecks(goal, dashboardEvidence));
     }
 
     signal?.throwIfAborted();
@@ -2142,6 +2328,7 @@ export type BrowserEvaluateInput = {
     goal?: string;
     probes?: BrowserProbe[];
     timeoutMs?: number;
+    artifactDirectory?: string;
     signal?: AbortSignal;
 };
 
@@ -2312,6 +2499,7 @@ export class PlaywrightBrowserEvaluator implements BrowserEvaluator {
         const checks: BrowserCheck[] = [];
         const evidence: BrowserEvalEvidence[] = [];
         const runtimeErrors = new Set<string>();
+        let visualReport: MultiViewportVisualReport | undefined;
         let rootEvidence:
             | Omit<BrowserRuntimeEvidence, "runtimeErrors">
             | undefined;
@@ -2406,6 +2594,21 @@ export class PlaywrightBrowserEvaluator implements BrowserEvaluator {
                     input.signal,
                 )),
             );
+            if (isVisualPageQualityGoal(input.goal)) {
+                visualReport = await collectMultiViewportVisualReport({
+                    page,
+                    ...(input.goal ? { goal: input.goal } : {}),
+                    ...(input.artifactDirectory
+                        ? { artifactDirectory: input.artifactDirectory }
+                        : {}),
+                    ...(input.signal ? { signal: input.signal } : {}),
+                });
+                checks.push(
+                    ...visualReport.viewports.flatMap((viewport) =>
+                        viewport.checks.map((check) => ({ ...check })),
+                    ),
+                );
+            }
             const focusedEvidence = await collectFocusedBrowserEvidence(
                 page,
                 input.goal,
@@ -2571,6 +2774,7 @@ export class PlaywrightBrowserEvaluator implements BrowserEvaluator {
             passed: checks.every((check) => check.passed),
             checks,
             ...(evidence.length > 0 ? { evidence } : {}),
+            ...(visualReport ? { visualReport } : {}),
         };
     }
 }
@@ -2656,10 +2860,10 @@ async function captureElementSnapshot(
     page: Page,
     probe: BrowserProbe,
 ): Promise<ElementSnapshot> {
-    const locator = page.locator(probe.selector).first();
-    const exists = (await locator.count()) > 0;
+    const matches = page.locator(probe.selector);
+    const matchCount = await matches.count();
 
-    if (!exists) {
+    if (matchCount === 0) {
         return {
             route: probe.route ?? "/",
             selector: probe.selector,
@@ -2668,6 +2872,17 @@ async function captureElementSnapshot(
             visible: false,
             computedStyles: {},
         };
+    }
+
+    let locator = matches.first();
+
+    for (let index = 0; index < matchCount; index += 1) {
+        const candidate = matches.nth(index);
+
+        if (await candidate.isVisible().catch(() => false)) {
+            locator = candidate;
+            break;
+        }
     }
 
     const visible = await locator.isVisible();

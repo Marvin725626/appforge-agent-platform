@@ -188,4 +188,59 @@ describe("stable-react-page-generator", () => {
             ),
         ).rejects.toMatchObject({ code: "ENOENT" });
     });
+    it("does not generate a decorative hero image for operational dashboards", async () => {
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-dashboard-policy-"),
+        );
+        temporaryDirectories.push(workspaceRoot);
+        const imageProvider = new FakeImageAssetProvider({
+            data: new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+            mediaType: "image/png",
+            source: "fake-image",
+        });
+        const imageAssetTool = new ImageAssetTool({
+            workspaceRoot,
+            provider: imageProvider,
+        });
+        const goal =
+            "创建一个服务器运行监控后台，包含 CPU、内存、请求延迟、异常服务、告警列表和故障处理流程";
+        const designPlan = createFallbackDesignPlan({
+            goal,
+            plannerOutput: {
+                summary: goal,
+                steps: [
+                    {
+                        id: "step-1",
+                        title: "生成监控后台",
+                        description: "生成数据优先的运维控制台",
+                        acceptanceCriteria: ["首屏展示核心监控指标"],
+                    },
+                ],
+            },
+            routes: [{ path: "/", purpose: "服务器监控后台" }],
+        });
+        designPlan.applicationType = "dashboard";
+
+        const result = await generateStableReactPage({
+            workspaceRoot,
+            goal,
+            designPlan,
+            imageAssetTool,
+            imageModes: ["generate"],
+        });
+        const appSource = await readFile(
+            path.join(workspaceRoot, "src", "App.tsx"),
+            "utf8",
+        );
+
+        expect(imageProvider.requests).toHaveLength(0);
+        expect(result.generatedFiles.some((file) => file.includes("generated-hero"))).toBe(false);
+        expect(appSource).toContain('data-appforge-role="dashboard-overview"');
+        expect(appSource).toContain('data-appforge-metric');
+        expect(result.agent.steps.at(-1)?.action).toMatchObject({
+            type: "finish",
+            summary: expect.stringContaining("heroImage=disabled_by_policy"),
+        });
+    });
+
 });

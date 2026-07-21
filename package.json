@@ -36,7 +36,9 @@
     "pretest": "npm run build:shared && npm run build:harness",
     "test": "npm run test --workspaces --if-present",
     "pretypecheck": "npm run build:shared && npm run build:harness",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "benchmark:design": "npm run benchmark:design --workspace @appforge/api",
+    "benchmark:design:ai": "npm run benchmark:design:ai --workspace @appforge/api"
   },
   "engines": {
     "node": ">=22"

@@ -138,7 +138,7 @@ export type GenerateStablePageContentResult = {
     warnings: string[];
 };
 
-const TYPE_VARIANTS: Record<ApplicationType, readonly StableTemplateVariant[]> = {
+export const STABLE_TEMPLATE_VARIANTS: Record<ApplicationType, readonly StableTemplateVariant[]> = {
     game: ["cinematic-stage", "command-console", "season-archive"],
     dashboard: ["sidebar-console", "wide-monitor", "report-board"],
     product: ["product-narrative", "developer-launch", "enterprise-solution"],
@@ -148,6 +148,33 @@ const TYPE_VARIANTS: Record<ApplicationType, readonly StableTemplateVariant[]> =
     portfolio: ["project-gallery", "case-study", "resume-story"],
     custom: ["adaptive-story"],
 };
+
+
+export function getStableTemplateVariants(
+    applicationType: ApplicationType,
+): readonly StableTemplateVariant[] {
+    return STABLE_TEMPLATE_VARIANTS[applicationType];
+}
+
+function stableStringHash(value: string): number {
+    let hash = 2166136261;
+    for (const character of value) {
+        hash ^= character.codePointAt(0) ?? 0;
+        hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+}
+
+export function selectFallbackTemplateVariant(
+    goal: string,
+    applicationType: ApplicationType,
+): StableTemplateVariant {
+    const variants = getStableTemplateVariants(applicationType);
+    if (variants.length === 0) {
+        return "adaptive-story";
+    }
+    return variants[stableStringHash(goal.trim()) % variants.length] ?? variants[0] ?? "adaptive-story";
+}
 
 const TYPE_DEFAULTS: Record<
     ApplicationType,
@@ -325,7 +352,7 @@ function createFallbackStablePageContent(
     const content: StablePageContent = {
         version: 1,
         applicationType,
-        templateVariant: TYPE_VARIANTS[applicationType][0] ?? "adaptive-story",
+        templateVariant: selectFallbackTemplateVariant(goal, applicationType),
         theme: {
             palette: defaults.palette,
             fontPair: defaults.fontPair,
@@ -389,12 +416,142 @@ function parseModelContent(text: string): StablePageContent {
     return StablePageContentSchema.parse(parsed);
 }
 
+
+const DASHBOARD_REQUIRED_METRICS: StablePageContent["sections"][number]["items"] = [
+    {
+        title: "CPU 使用率",
+        meta: "阈值 75%",
+        description: "跟踪核心节点的处理器负载、峰值与阈值状态，便于快速定位计算热点。",
+        value: "68%",
+        status: "正常",
+    },
+    {
+        title: "内存占用",
+        meta: "阈值 80%",
+        description: "观察堆内存、缓存实例与回收压力，提前识别容量和泄漏风险。",
+        value: "72%",
+        status: "关注",
+    },
+    {
+        title: "请求延迟 P95",
+        meta: "SLA 150ms",
+        description: "展示核心请求的尾延迟与基线变化，帮助判断下游依赖和连接池异常。",
+        value: "126ms",
+        status: "正常",
+    },
+];
+
+const DASHBOARD_REQUIRED_STATS: StablePageContent["hero"]["stats"] = [
+    { label: "全局健康", value: "稳定" },
+    { label: "在线节点", value: "284 / 300" },
+    { label: "活动告警", value: "18" },
+    { label: "刷新频率", value: "10s" },
+];
+
+function includesDashboardMetric(item: StablePageContent["sections"][number]["items"][number], pattern: RegExp): boolean {
+    return pattern.test(`${item.title} ${item.meta} ${item.description}`);
+}
+
+function ensureDashboardMetricItems(
+    items: StablePageContent["sections"][number]["items"],
+): StablePageContent["sections"][number]["items"] {
+    const required: Array<{ pattern: RegExp; item: StablePageContent["sections"][number]["items"][number] }> = [
+        { pattern: /\bCPU\b|处理器/iu, item: DASHBOARD_REQUIRED_METRICS[0]! },
+        { pattern: /内存|memory/iu, item: DASHBOARD_REQUIRED_METRICS[1]! },
+        { pattern: /请求.{0,8}延迟|延迟|latency|P95/iu, item: DASHBOARD_REQUIRED_METRICS[2]! },
+    ];
+    const selected = required.map(
+        (requirement) =>
+            items.find((item) =>
+                includesDashboardMetric(item, requirement.pattern),
+            ) ?? requirement.item,
+    );
+    const selectedTitles = new Set(selected.map((item) => item.title));
+    const remaining = items.filter((item) => !selectedTitles.has(item.title));
+
+    return [...selected, ...remaining].slice(0, 6);
+}
+
+function ensureDashboardStats(
+    stats: StablePageContent["hero"]["stats"],
+): StablePageContent["hero"]["stats"] {
+    const required: Array<{ pattern: RegExp; item: StablePageContent["hero"]["stats"][number] }> = [
+        { pattern: /健康|health/iu, item: DASHBOARD_REQUIRED_STATS[0]! },
+        { pattern: /节点|node|服务/iu, item: DASHBOARD_REQUIRED_STATS[1]! },
+        { pattern: /告警|alert/iu, item: DASHBOARD_REQUIRED_STATS[2]! },
+        { pattern: /刷新|refresh|更新/iu, item: DASHBOARD_REQUIRED_STATS[3]! },
+    ];
+
+    return required.map(
+        (requirement) =>
+            stats.find((item) =>
+                requirement.pattern.test(`${item.label} ${item.value}`),
+            ) ?? requirement.item,
+    );
+}
+
+function enforceDashboardContentContract(
+    content: StablePageContent,
+    fallback: StablePageContent,
+): StablePageContent {
+    const requiredKinds: StablePageSection["kind"][] = [
+        "metrics",
+        "data-table",
+        "feature-list",
+        "timeline",
+    ];
+    const selectedRequiredSections = requiredKinds
+        .map(
+            (kind) =>
+                content.sections.find((section) => section.kind === kind) ??
+                fallback.sections.find((section) => section.kind === kind),
+        )
+        .filter((section): section is StablePageSection => section !== undefined)
+        .map((section) =>
+            section.kind === "metrics"
+                ? {
+                      ...section,
+                      items: ensureDashboardMetricItems(section.items),
+                  }
+                : section,
+        );
+    const selectedIds = new Set(selectedRequiredSections.map((section) => section.id));
+    const remainingSections = content.sections.filter(
+        (section) => !selectedIds.has(section.id),
+    );
+
+    return StablePageContentSchema.parse({
+        ...content,
+        brand: {
+            ...content.brand,
+            title: compactText(content.brand.title, 24),
+        },
+        hero: {
+            ...content.hero,
+            stats: ensureDashboardStats(content.hero.stats),
+        },
+        sections: [...selectedRequiredSections, ...remainingSections].slice(0, 6),
+    });
+}
+
+function enforceApplicationContentContract(
+    content: StablePageContent,
+    fallback: StablePageContent,
+): StablePageContent {
+    if (content.applicationType === "dashboard") {
+        return enforceDashboardContentContract(content, fallback);
+    }
+
+    return content;
+}
+
 function normalizeContentForDesignPlan(
     content: StablePageContent,
-    designPlan?: DesignPlan,
+    designPlan: DesignPlan | undefined,
+    fallback: StablePageContent,
 ): StablePageContent {
     const applicationType = normalizeApplicationType(designPlan);
-    const allowedVariants = TYPE_VARIANTS[applicationType];
+    const allowedVariants = STABLE_TEMPLATE_VARIANTS[applicationType];
     const templateVariant = allowedVariants.includes(content.templateVariant)
         ? content.templateVariant
         : (allowedVariants[0] ?? "adaptive-story");
@@ -414,12 +571,14 @@ function normalizeContentForDesignPlan(
         return { ...section, id };
     });
 
-    return StablePageContentSchema.parse({
+    const normalized = StablePageContentSchema.parse({
         ...content,
         applicationType,
         templateVariant,
         sections,
     });
+
+    return enforceApplicationContentContract(normalized, fallback);
 }
 
 function createContentPrompt(
@@ -435,10 +594,11 @@ function createContentPrompt(
         "Choose exactly 4 to 6 substantive sections. Every section needs 2 to 8 useful items.",
         "Choose a templateVariant compatible with applicationType.",
         "Allowed applicationType values: editorial, institution, dashboard, commerce, product, portfolio, game, custom.",
-        `Allowed template variants by type: ${JSON.stringify(TYPE_VARIANTS)}.`,
+        `Allowed template variants by type: ${JSON.stringify(STABLE_TEMPLATE_VARIANTS)}.`,
         "Allowed palettes: tactical-amber, ocean-cyan, violet-signal, forest-lime, sand-coral, monochrome, crimson-night.",
         "Allowed font pairs: system-modern, editorial-serif, condensed-mono, geometric-sans.",
         "Allowed section kinds: feature-list, timeline, matrix, gallery, data-table, story, quotes, faq, metrics, map.",
+        "For dashboard pages: use a compact operational overview instead of a marketing hero; make the first section metrics; include CPU, memory, and request latency when requested; include a data table, alert/status section, and workflow timeline; hero.stats must summarize health, nodes/services, alerts, and refresh cadence.",
         "Required JSON shape:",
         JSON.stringify(fallback, null, 2),
         "User goal:",
@@ -452,7 +612,14 @@ export async function generateStablePageContent(
     input: GenerateStablePageContentInput,
 ): Promise<GenerateStablePageContentResult> {
     input.signal?.throwIfAborted();
-    const fallback = createFallbackStablePageContent(input.goal, input.designPlan);
+    const rawFallback = createFallbackStablePageContent(
+        input.goal,
+        input.designPlan,
+    );
+    const fallback = enforceApplicationContentContract(
+        rawFallback,
+        rawFallback,
+    );
 
     if (!input.model) {
         return { content: fallback, source: "fallback", warnings: [] };
@@ -483,6 +650,7 @@ export async function generateStablePageContent(
             const content = normalizeContentForDesignPlan(
                 parseModelContent(response.content),
                 input.designPlan,
+                fallback,
             );
             return { content, source: "ai", warnings };
         } catch (error) {

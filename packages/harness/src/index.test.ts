@@ -7,10 +7,13 @@ import {
     containsChinese,
     containsLikelyMojibake,
     createBrowserRuntimeChecks,
+    createDashboardAboveFoldChecks,
     evaluateChecks,
     evaluateReactApp,
+    isAdvisoryVisualBrowserCheckName,
     isIndependentPageNavigationGoal,
     isNavigationBrowserGoal,
+    isVisualPageQualityGoal,
     PlaywrightBrowserEvaluator,
     summarizeBrowserEval,
 } from "./index.js";
@@ -57,6 +60,81 @@ async function createHttpPage(html: string): Promise<string> {
 
     return `http://127.0.0.1:${address.port}`;
 }
+
+
+describe("visual page quality goal detection", () => {
+    it.each([
+        "创建一个服务器运行监控后台",
+        "创建一个运维工作台",
+        "生成管理控制台",
+        "Build an operations workspace",
+        "Build a back-office console",
+    ])("enables multi-viewport quality for %s", (goal) => {
+        expect(isVisualPageQualityGoal(goal)).toBe(true);
+    });
+
+    it("does not enable page visual quality for a non-UI coding task", () => {
+        expect(isVisualPageQualityGoal("编写一个排序算法")).toBe(false);
+    });
+});
+
+describe("dashboard above-fold visual contract", () => {
+    it("passes a data-first operational overview", () => {
+        const checks = createDashboardAboveFoldChecks(
+            "创建一个服务器运行监控后台",
+            {
+                overviewVisible: true,
+                metricVisibility: {
+                    cpu: true,
+                    memory: true,
+                    latency: true,
+                },
+                dominantMediaRatio: 0,
+            },
+        );
+
+        expect(checks).toHaveLength(3);
+        expect(checks.every((check) => check.passed)).toBe(true);
+        expect(
+            checks.every((check) =>
+                isAdvisoryVisualBrowserCheckName(check.name),
+            ),
+        ).toBe(true);
+    });
+
+    it("rejects a dashboard whose first viewport is a marketing hero", () => {
+        const checks = createDashboardAboveFoldChecks(
+            "创建一个服务器运行监控后台",
+            {
+                overviewVisible: false,
+                metricVisibility: {
+                    cpu: false,
+                    memory: false,
+                    latency: false,
+                },
+                dominantMediaRatio: 0.46,
+            },
+        );
+
+        expect(checks.every((check) => !check.passed)).toBe(true);
+        expect(checks[1]?.message).toContain("CPU=below fold or missing");
+        expect(checks[2]?.message).toContain("46.0%");
+    });
+
+    it("does not apply dashboard contracts to product pages", () => {
+        expect(
+            createDashboardAboveFoldChecks("创建一个 AI 产品官网", {
+                overviewVisible: false,
+                metricVisibility: {
+                    cpu: false,
+                    memory: false,
+                    latency: false,
+                },
+                dominantMediaRatio: 0.6,
+            }),
+        ).toEqual([]);
+    });
+});
 
 describe("PlaywrightBrowserEvaluator browser lifecycle", () => {
     it("bounds a launch that never settles with a hard deadline", async () => {
@@ -183,6 +261,44 @@ describe("PlaywrightBrowserEvaluator runtime gate", () => {
             name: "has visible main content",
             passed: true,
         });
+    }, 15_000);
+
+
+    it("uses the first visible selector match for browser probes", async () => {
+        const evaluator = new PlaywrightBrowserEvaluator();
+        const result = await evaluator.evaluate({
+            url: createDataPage(`
+                <style>
+                    .probe-target:first-of-type { display: none; }
+                    .probe-target:last-of-type { display: block; }
+                </style>
+                <div id="root">
+                    <main>
+                        <div class="probe-target">hidden</div>
+                        <div class="probe-target">visible</div>
+                    </main>
+                </div>
+            `),
+            goal: "Verify a visible probe target",
+            probes: [
+                {
+                    requirementId: "REQ-1",
+                    selector: ".probe-target",
+                    viewport: { width: 390, height: 844 },
+                    measurement: "visibility",
+                    expected: true,
+                },
+            ],
+            timeoutMs: 2_000,
+        });
+
+        expect(result.passed).toBe(true);
+        expect(result.checks).toContainEqual(
+            expect.objectContaining({
+                name: "browser probe REQ-1: .probe-target visibility",
+                passed: true,
+            }),
+        );
     }, 15_000);
 
     it("rejects logo text that blends into its background", async () => {

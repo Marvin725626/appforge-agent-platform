@@ -22,7 +22,9 @@
     "start": "node dist/server.js",
     "test": "vitest run",
     "pretypecheck": "node ../../scripts/check-node-version.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "benchmark:design": "tsx src/design-quality-benchmark.ts --strict",
+    "benchmark:design:ai": "tsx --env-file=../../.env src/design-quality-benchmark.ts --ai"
   },
   "dependencies": {
     "@appforge/agent-core": "0.1.0",

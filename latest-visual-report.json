@@ -1,0 +1,195 @@
+{
+    "passed":  false,
+    "viewports":  [
+                      {
+                          "viewport":  {
+                                           "id":  "mobile",
+                                           "width":  375,
+                                           "height":  812
+                                       },
+                          "passed":  false,
+                          "checks":  [
+                                         {
+                                             "name":  "visual quality: 375x812 has no page horizontal overflow",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 375x812 has no critical element overlap",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 375x812 keeps key content inside the viewport",
+                                             "passed":  false,
+                                             "message":  "10 visible heading/control/landmark element(s) are horizontally clipped. aside.dashboard-sidebar: bounds 0..754 exceed viewport width 375 | nav.primary-nav: bounds 16..737 exceed viewport width 375 | main.dashboard-main: bounds 0..754 exceed viewport width 375"
+                                         },
+                                         {
+                                             "name":  "visual quality: 375x812 text contrast is readable",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 375x812 interactive controls have usable targets",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 375x812 visible text is not excessively small",
+                                             "passed":  true
+                                         }
+                                     ],
+                          "metrics":  {
+                                          "pageOverflowPx":  0,
+                                          "criticalOverlapCount":  0,
+                                          "clippedElementCount":  10,
+                                          "lowContrastCount":  0,
+                                          "contrastSampleCount":  0,
+                                          "undersizedControlCount":  0,
+                                          "controlCount":  0,
+                                          "tinyTextCount":  3,
+                                          "textSampleCount":  137,
+                                          "minimumFontSizePx":  10.24
+                                      },
+                          "screenshotPath":  "E:\\agent\\appforge-agent-platform\\apps\\api\\.appforge\\artifacts\\5479a743-a990-4be1-9b15-db1aed01e43a\\visual-evaluation\\attempt-1\\mobile-375x812.png"
+                      },
+                      {
+                          "viewport":  {
+                                           "id":  "tablet",
+                                           "width":  768,
+                                           "height":  1024
+                                       },
+                          "passed":  false,
+                          "checks":  [
+                                         {
+                                             "name":  "visual quality: 768x1024 has no page horizontal overflow",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 768x1024 has no critical element overlap",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 768x1024 keeps key content inside the viewport",
+                                             "passed":  false,
+                                             "message":  "2 visible heading/control/landmark element(s) are horizontally clipped. aside.dashboard-sidebar: bounds 0..783 exceed viewport width 768 | main.dashboard-main: bounds 0..783 exceed viewport width 768"
+                                         },
+                                         {
+                                             "name":  "visual quality: 768x1024 text contrast is readable",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 768x1024 interactive controls have usable targets",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 768x1024 visible text is not excessively small",
+                                             "passed":  true
+                                         }
+                                     ],
+                          "metrics":  {
+                                          "pageOverflowPx":  0,
+                                          "criticalOverlapCount":  0,
+                                          "clippedElementCount":  2,
+                                          "lowContrastCount":  0,
+                                          "contrastSampleCount":  0,
+                                          "undersizedControlCount":  0,
+                                          "controlCount":  0,
+                                          "tinyTextCount":  3,
+                                          "textSampleCount":  137,
+                                          "minimumFontSizePx":  10.24
+                                      },
+                          "screenshotPath":  "E:\\agent\\appforge-agent-platform\\apps\\api\\.appforge\\artifacts\\5479a743-a990-4be1-9b15-db1aed01e43a\\visual-evaluation\\attempt-1\\tablet-768x1024.png"
+                      },
+                      {
+                          "viewport":  {
+                                           "id":  "desktop",
+                                           "width":  1280,
+                                           "height":  800
+                                       },
+                          "passed":  true,
+                          "checks":  [
+                                         {
+                                             "name":  "visual quality: 1280x800 has no page horizontal overflow",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 1280x800 has no critical element overlap",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 1280x800 keeps key content inside the viewport",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 1280x800 text contrast is readable",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 1280x800 interactive controls have usable targets",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 1280x800 visible text is not excessively small",
+                                             "passed":  true
+                                         }
+                                     ],
+                          "metrics":  {
+                                          "pageOverflowPx":  0,
+                                          "criticalOverlapCount":  0,
+                                          "clippedElementCount":  0,
+                                          "lowContrastCount":  0,
+                                          "contrastSampleCount":  0,
+                                          "undersizedControlCount":  0,
+                                          "controlCount":  0,
+                                          "tinyTextCount":  3,
+                                          "textSampleCount":  137,
+                                          "minimumFontSizePx":  10.24
+                                      },
+                          "screenshotPath":  "E:\\agent\\appforge-agent-platform\\apps\\api\\.appforge\\artifacts\\5479a743-a990-4be1-9b15-db1aed01e43a\\visual-evaluation\\attempt-1\\desktop-1280x800.png"
+                      },
+                      {
+                          "viewport":  {
+                                           "id":  "wide",
+                                           "width":  1440,
+                                           "height":  900
+                                       },
+                          "passed":  true,
+                          "checks":  [
+                                         {
+                                             "name":  "visual quality: 1440x900 has no page horizontal overflow",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 1440x900 has no critical element overlap",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 1440x900 keeps key content inside the viewport",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 1440x900 text contrast is readable",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 1440x900 interactive controls have usable targets",
+                                             "passed":  true
+                                         },
+                                         {
+                                             "name":  "visual quality: 1440x900 visible text is not excessively small",
+                                             "passed":  true
+                                         }
+                                     ],
+                          "metrics":  {
+                                          "pageOverflowPx":  0,
+                                          "criticalOverlapCount":  0,
+                                          "clippedElementCount":  0,
+                                          "lowContrastCount":  0,
+                                          "contrastSampleCount":  0,
+                                          "undersizedControlCount":  0,
+                                          "controlCount":  0,
+                                          "tinyTextCount":  3,
+                                          "textSampleCount":  137,
+                                          "minimumFontSizePx":  10.24
+                                      },
+                          "screenshotPath":  "E:\\agent\\appforge-agent-platform\\apps\\api\\.appforge\\artifacts\\5479a743-a990-4be1-9b15-db1aed01e43a\\visual-evaluation\\attempt-1\\wide-1440x900.png"
+                      }
+                  ]
+}

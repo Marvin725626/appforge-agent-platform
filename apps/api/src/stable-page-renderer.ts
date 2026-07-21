@@ -334,11 +334,27 @@ function Faq({ section }: { section: PageSection }) {
     );
 }
 
-function Metrics({ section }: { section: PageSection }) {
+function dashboardMetricKey(item: PageItem, index: number): string {
+    const text = item.title + " " + item.meta + " " + item.description;
+    if (/\bCPU\b|处理器/i.test(text)) return "cpu";
+    if (/内存|memory/i.test(text)) return "memory";
+    if (/请求.{0,8}延迟|延迟|latency|P95/i.test(text)) return "latency";
+    return "metric-" + String(index + 1);
+}
+
+function Metrics({ section, dashboard = false }: { section: PageSection; dashboard?: boolean }) {
     return (
-        <div className="metric-rail">
-            {section.items.map((item) => (
-                <article key={item.title}><span>{item.title}</span><strong>{item.value || item.status}</strong><p>{item.description}</p></article>
+        <div className={dashboard ? "metric-rail metric-rail--dashboard" : "metric-rail"}>
+            {section.items.map((item, index) => (
+                <article
+                    key={item.title}
+                    {...(dashboard ? { "data-appforge-metric": dashboardMetricKey(item, index) } : {})}
+                >
+                    <span>{item.title}</span>
+                    <strong>{item.value || item.status}</strong>
+                    <p>{item.description}</p>
+                    {dashboard ? <small>{item.meta || item.status}</small> : null}
+                </article>
             ))}
         </div>
     );
@@ -370,8 +386,8 @@ function SectionBody({ section }: { section: PageSection }) {
     }
 }
 
-function ContentSections() {
-    return <>{page.sections.map((section, index) => <section className={\`content-section content-section--\${section.kind}\`} id={section.id} key={section.id}><SectionHeading section={section} index={index} /><SectionBody section={section} /></section>)}</>;
+function ContentSections({ sections = page.sections, startIndex = 0 }: { sections?: PageSection[]; startIndex?: number }) {
+    return <>{sections.map((section, index) => <section className={"content-section content-section--" + section.kind} id={section.id} key={section.id}><SectionHeading section={section} index={startIndex + index} /><SectionBody section={section} /></section>)}</>;
 }
 
 function PrimaryNavigation() {
@@ -412,10 +428,39 @@ function GameLayout() {
 }
 
 function DashboardLayout() {
+    const metricsSection = page.sections.find((section) => section.kind === "metrics");
+    const remainingSections = metricsSection
+        ? page.sections.filter((section) => section.id !== metricsSection.id)
+        : page.sections;
+
     return (
         <div className="dashboard-shell">
-            <aside className="dashboard-sidebar"><a className="brand-lockup" href="#top"><span>{page.brand.name.slice(0, 2)}</span><strong>{page.brand.name}</strong></a><PrimaryNavigation /><div className="sidebar-status"><i />{page.brand.statusLabel}</div></aside>
-            <main className="dashboard-main"><Hero /><StatBand /><ContentSections /></main>
+            <aside className="dashboard-sidebar">
+                <a className="brand-lockup" href="#top"><span>{page.brand.name.slice(0, 2)}</span><strong>{page.brand.name}</strong></a>
+                <PrimaryNavigation />
+                <div className="sidebar-status"><i />{page.brand.statusLabel}</div>
+            </aside>
+            <main className="dashboard-main">
+                <header className="dashboard-topbar">
+                    <div><span>实时运行状态</span><strong>{page.brand.statusLabel}</strong></div>
+                    <div><span>数据刷新</span><strong>{page.hero.stats.find((stat) => /刷新|refresh/i.test(stat.label))?.value || "10s"}</strong></div>
+                </header>
+                <section className="dashboard-overview" id="top" data-appforge-role="dashboard-overview">
+                    <div className="dashboard-overview-copy">
+                        <p className="eyebrow">{page.brand.kicker}</p>
+                        <h1>{page.brand.title}</h1>
+                        <p>{page.brand.summary}</p>
+                    </div>
+                    <StatBand />
+                    {metricsSection ? (
+                        <div className="dashboard-core-metrics" aria-label="核心监控指标">
+                            <div className="dashboard-section-label"><span>核心指标</span><strong>当前值 / 阈值 / 状态</strong></div>
+                            <Metrics section={metricsSection} dashboard />
+                        </div>
+                    ) : null}
+                </section>
+                <ContentSections sections={remainingSections} startIndex={metricsSection ? 1 : 0} />
+            </main>
         </div>
     );
 }
@@ -592,7 +637,8 @@ h1 { max-width: 14ch; margin: 14px 0 0; font-size: clamp(3rem, 7vw, 7rem); line-
 .gallery-visual::before { content: ""; width: 58%; aspect-ratio: 1.3; border: 1px solid var(--line); transform: rotate(-8deg); }
 .gallery-visual span { position: absolute; color: var(--accent); font: 800 2rem var(--font-data); }
 .table-wrap { overflow-x: auto; border: 1px solid var(--line); }
-table { width: 100%; min-width: 720px; border-collapse: collapse; background: var(--surface); }
+table { width: 100%; min-width: 0; table-layout: fixed; border-collapse: collapse; background: var(--surface); }
+th, td { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
 th, td { padding: 17px 18px; border-bottom: 1px solid var(--line); text-align: left; }
 thead th { color: var(--muted); background: var(--surface-strong); font: .68rem var(--font-data); letter-spacing: .1em; }
 tbody th { color: var(--text); }
@@ -635,7 +681,26 @@ td span { color: var(--accent-alt); font: 700 .7rem var(--font-data); }
 .dashboard-sidebar .primary-nav a { border-bottom: 1px solid var(--line); }
 .dashboard-sidebar .sidebar-status { margin-top: auto; }
 .dashboard-main { width: min(1320px, 100%); padding-inline: clamp(18px, 4vw, 52px); }
-.dashboard-main .hero { min-height: 570px; }
+.dashboard-main { padding-bottom: 64px; }
+.dashboard-topbar { position: sticky; top: 0; z-index: 15; min-height: 58px; display: flex; justify-content: flex-end; gap: 28px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 90%, transparent); backdrop-filter: blur(14px); }
+.dashboard-topbar > div { display: grid; gap: 3px; text-align: right; }
+.dashboard-topbar span, .dashboard-section-label span { color: var(--muted); font: .64rem var(--font-data); letter-spacing: .1em; text-transform: uppercase; }
+.dashboard-topbar strong { color: var(--accent-alt); font: 700 .72rem var(--font-data); }
+.dashboard-overview { min-height: min(680px, calc(100vh - 58px)); display: grid; align-content: start; gap: 20px; padding: clamp(28px, 4vw, 52px) 0 34px; border-bottom: 1px solid var(--line); }
+.dashboard-overview-copy { display: grid; grid-template-columns: minmax(240px, .6fr) minmax(0, 1fr); align-items: end; gap: 34px; }
+.dashboard-overview h1 { max-width: 18ch; margin: 8px 0 0; font-size: clamp(2.15rem, 4.2vw, 4.8rem); line-height: .96; }
+.dashboard-overview-copy > p:last-child { max-width: 68ch; margin: 0; color: var(--muted); line-height: 1.7; }
+.dashboard-overview .stat-band { margin: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.dashboard-core-metrics { display: grid; gap: 10px; }
+.dashboard-section-label { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.dashboard-section-label strong { color: var(--muted); font: 600 .68rem var(--font-data); }
+.metric-rail--dashboard { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.metric-rail--dashboard article { min-height: 170px; position: relative; overflow: hidden; }
+.metric-rail--dashboard article::before { content: ""; position: absolute; inset: 0 0 auto; height: 3px; background: var(--accent); }
+.metric-rail--dashboard strong { margin: 14px 0 10px; font-size: clamp(1.8rem, 3vw, 3.2rem); }
+.metric-rail--dashboard p { margin: 0; color: var(--muted); line-height: 1.55; }
+.metric-rail--dashboard small { display: block; margin-top: 12px; color: var(--accent-alt); font: .66rem var(--font-data); }
+.dashboard-main > .content-section { padding-block: clamp(52px, 6vw, 84px); }
 .stable-app--editorial h1, .stable-app--commerce h1 { max-width: 16ch; line-height: .98; }
 .stable-app--editorial .hero { max-width: 1040px; }
 .stable-app--portfolio .gallery-piece { grid-column: span 6; }
@@ -683,9 +748,15 @@ td span { color: var(--accent-alt); font: 700 .7rem var(--font-data); }
     .hero-art { min-height: 360px; }
     .stat-band, .metric-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .gallery-piece, .gallery-piece:nth-child(4n + 1), .stable-app--portfolio .gallery-piece { grid-column: span 6; }
-    .dashboard-shell { grid-template-columns: 1fr; }
-    .dashboard-sidebar { position: relative; height: auto; display: grid; grid-template-columns: 1fr auto; }
-    .dashboard-sidebar .primary-nav { grid-column: 1 / -1; display: flex; overflow-x: auto; }
+    .dashboard-shell { width: 100%; max-width: 100%; min-width: 0; grid-template-columns: minmax(0, 1fr); }
+    .dashboard-sidebar { width: 100%; max-width: 100%; min-width: 0; position: relative; height: auto; display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+    .dashboard-main { width: 100%; max-width: 100%; min-width: 0; margin: 0; }
+    .dashboard-overview { min-height: auto; }
+    .dashboard-overview-copy { grid-template-columns: 1fr; align-items: start; }
+    .dashboard-overview .stat-band, .metric-rail--dashboard { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .dashboard-sidebar .primary-nav { width: 100%; min-width: 0; grid-column: 1 / -1; display: flex; overflow-x: visible; flex-wrap: wrap; }
+    table { min-width: 0; table-layout: fixed; }
+    th, td { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
     .dashboard-sidebar .sidebar-status { margin: 0; }
     .stable-app--enterprise-solution .content-section, .stable-app--case-study .content-section { grid-template-columns: 1fr; gap: 28px; }
     .site-footer { grid-template-columns: 1fr; }
@@ -710,6 +781,10 @@ td span { color: var(--accent-alt); font: 700 .7rem var(--font-data); }
     .story-flow article { border-right: 0; }
     .dashboard-sidebar { padding: 16px; }
     .dashboard-sidebar .sidebar-status { display: none; }
+    .dashboard-topbar { justify-content: space-between; }
+    .dashboard-overview { padding-top: 28px; }
+    .dashboard-overview .stat-band, .metric-rail--dashboard { grid-template-columns: 1fr; }
+    .dashboard-overview h1 { font-size: clamp(2.4rem, 12vw, 3.8rem); }
     .site-footer { padding-inline: 16px; }
 }
 

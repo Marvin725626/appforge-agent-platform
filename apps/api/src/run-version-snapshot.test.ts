@@ -245,7 +245,7 @@ describe("saveRunVersionSnapshot", () => {
         );
     });
 
-    it("cleans the temporary snapshot when publishing exhausts bounded retries", async () => {
+    it("falls back to direct copy when Windows rejects every publish rename", async () => {
         const workspaceRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-version-snapshot-"),
         );
@@ -263,14 +263,24 @@ describe("saveRunVersionSnapshot", () => {
             createFileSystemError("EPERM"),
         );
 
-        await expect(
-            saveRunVersionSnapshot({
-                workspaceRoot,
-                versionNumber: 1,
-            }),
-        ).rejects.toMatchObject({ code: "EPERM" });
+        await saveRunVersionSnapshot({
+            workspaceRoot,
+            versionNumber: 1,
+        });
 
         expect(fileSystemMock.rename).toHaveBeenCalledTimes(8);
+        await expect(
+            readFile(
+                path.join(
+                    workspaceRoot,
+                    "versions",
+                    "v1",
+                    "src",
+                    "App.tsx",
+                ),
+                "utf8",
+            ),
+        ).resolves.toBe("permanently locked candidate");
         await expect(listSavingDirectories(workspaceRoot)).resolves.toEqual(
             [],
         );

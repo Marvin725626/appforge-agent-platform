@@ -156,6 +156,9 @@ describe("project DesignPlan layout primitives", () => {
         expect(primitives).not.toContain("story-band");
         expect(styles).toContain("dense-operations-shell");
         expect(styles).toContain("--surface-fill: color-mix");
+        expect(styles).toContain("*, *::before, *::after { box-sizing: border-box; }");
+        expect(styles).toContain(".app-shell {\n    width: 100%;");
+        expect(styles).toContain(".route-main {\n    width: var(--content-width);\n    max-width: 100%;\n    min-width: 0;");
     });
 
     it("lets surfaceStrategy change generated surfaces and excludes forbidden primitive conflicts", () => {

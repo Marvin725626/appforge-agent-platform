@@ -9,6 +9,11 @@ const SNAPSHOT_PUBLISH_MAX_RETRY_DELAY_MS = 250;
 const SNAPSHOT_CLEANUP_RETRIES = 5;
 const SNAPSHOT_CLEANUP_RETRY_DELAY_MS = 50;
 
+// Version saves for one snapshot id are serialized inside the API process.
+// This prevents a retry, approval request, or duplicate operation from
+// observing a copy-published snapshot before all files have been written.
+const inFlightSnapshotPublishes = new Map<string, Promise<void>>();
+
 const EXCLUDED_WORKSPACE_ENTRIES = new Set([
     ".appforge",
     ".cache",
@@ -83,10 +88,54 @@ const RETRYABLE_SNAPSHOT_PUBLISH_ERROR_CODES = new Set([
     "EPERM",
 ]);
 
-async function publishRunVersionSnapshot(input: {
+async function copyPublishedSnapshot(input: {
     temporarySnapshotRoot: string;
     snapshotRoot: string;
 }): Promise<void> {
+    if (await pathExists(input.snapshotRoot)) {
+        return;
+    }
+
+    try {
+        await mkdir(input.snapshotRoot, { recursive: false });
+    } catch (error) {
+        if (
+            isFileSystemErrorWithCode(error, new Set(["EEXIST"])) &&
+            (await pathExists(input.snapshotRoot))
+        ) {
+            return;
+        }
+
+        throw error;
+    }
+
+    try {
+        for (const entry of await listSnapshotEntries(
+            input.temporarySnapshotRoot,
+        )) {
+            await cp(
+                path.join(input.temporarySnapshotRoot, entry),
+                path.join(input.snapshotRoot, entry),
+                { recursive: true },
+            );
+        }
+    } catch (error) {
+        await rm(input.snapshotRoot, {
+            recursive: true,
+            force: true,
+            maxRetries: SNAPSHOT_CLEANUP_RETRIES,
+            retryDelay: SNAPSHOT_CLEANUP_RETRY_DELAY_MS,
+        });
+        throw error;
+    }
+}
+
+async function performRunVersionSnapshotPublish(input: {
+    temporarySnapshotRoot: string;
+    snapshotRoot: string;
+}): Promise<void> {
+    let finalRenameError: unknown;
+
     for (let attempt = 0; attempt < SNAPSHOT_PUBLISH_ATTEMPTS; attempt += 1) {
         // Saving the same immutable snapshot is idempotent. In particular,
         // Windows reports EPERM rather than EEXIST for some directory rename
@@ -109,18 +158,64 @@ async function publishRunVersionSnapshot(input: {
                 !isFileSystemErrorWithCode(
                     error,
                     RETRYABLE_SNAPSHOT_PUBLISH_ERROR_CODES,
-                ) ||
-                attempt === SNAPSHOT_PUBLISH_ATTEMPTS - 1
+                )
             ) {
                 throw error;
             }
 
-            const retryDelay = Math.min(
-                SNAPSHOT_PUBLISH_INITIAL_RETRY_DELAY_MS * 2 ** attempt,
-                SNAPSHOT_PUBLISH_MAX_RETRY_DELAY_MS,
-            );
+            finalRenameError = error;
 
-            await delay(retryDelay);
+            if (attempt < SNAPSHOT_PUBLISH_ATTEMPTS - 1) {
+                const retryDelay = Math.min(
+                    SNAPSHOT_PUBLISH_INITIAL_RETRY_DELAY_MS * 2 ** attempt,
+                    SNAPSHOT_PUBLISH_MAX_RETRY_DELAY_MS,
+                );
+
+                await delay(retryDelay);
+            }
+        }
+    }
+
+    // A Vite/Chokidar preview, antivirus scanner, or Windows Search can keep
+    // a directory handle open long enough for every atomic rename attempt to
+    // fail with EPERM/EBUSY. The version is not exposed through repository
+    // metadata until this function returns, so copying into the final, unique
+    // snapshot id is a safe publication fallback. It avoids turning a fully
+    // validated run into waiting_for_human merely because Windows rejected a
+    // directory rename.
+    try {
+        await copyPublishedSnapshot(input);
+    } catch (copyError) {
+        if (finalRenameError instanceof Error) {
+            throw new AggregateError(
+                [finalRenameError, copyError],
+                "Version snapshot could not be published by rename or copy",
+            );
+        }
+
+        throw copyError;
+    }
+}
+
+async function publishRunVersionSnapshot(input: {
+    temporarySnapshotRoot: string;
+    snapshotRoot: string;
+}): Promise<void> {
+    const existingPublish = inFlightSnapshotPublishes.get(input.snapshotRoot);
+
+    if (existingPublish !== undefined) {
+        await existingPublish;
+        return;
+    }
+
+    const publish = performRunVersionSnapshotPublish(input);
+    inFlightSnapshotPublishes.set(input.snapshotRoot, publish);
+
+    try {
+        await publish;
+    } finally {
+        if (inFlightSnapshotPublishes.get(input.snapshotRoot) === publish) {
+            inFlightSnapshotPublishes.delete(input.snapshotRoot);
         }
     }
 }
