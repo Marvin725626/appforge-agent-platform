@@ -487,3 +487,118 @@ describe("decideReviewDisposition", () => {
         ).toBe("human_review");
     });
 });
+
+describe("visual-only browser review handling", () => {
+    it("preserves a build-safe visual mismatch for human review without auto repair", () => {
+        const review = reviewReactAppAgentResult({
+            agent: {
+                finished: true,
+                madeProgress: true,
+                stopReason: "finish",
+            },
+            install: { exitCode: 0 },
+            build: { exitCode: 0 },
+            typecheck: { exitCode: 0 },
+            eval: { passed: true },
+            browserEval: {
+                passed: false,
+                checks: [
+                    {
+                        name: "visual contract: dashboard core metrics are visible above the fold",
+                        passed: false,
+                        message: "CPU=below fold or missing",
+                    },
+                    {
+                        name: "visual contract: dashboard avoids dominant marketing hero media",
+                        passed: false,
+                        message: "A hero image dominates the first viewport.",
+                    },
+                ],
+            },
+        });
+
+        expect(review.accepted).toBe(false);
+        expect(review.checks.browserVisualOnly).toBe(true);
+        expect(
+            decideReviewDisposition({
+                review,
+                repairAttempt: 0,
+                maxRepairAttempts: 2,
+            }),
+        ).toBe("human_review");
+    });
+
+
+
+    it("treats multi-viewport visual quality failures as advisory human-review issues", () => {
+        const review = reviewReactAppAgentResult({
+            agent: {
+                finished: true,
+                madeProgress: true,
+                stopReason: "finish",
+            },
+            install: { exitCode: 0 },
+            build: { exitCode: 0 },
+            typecheck: { exitCode: 0 },
+            eval: { passed: true },
+            browserEval: {
+                passed: false,
+                checks: [
+                    {
+                        name: "visual quality: 375x812 has no page horizontal overflow",
+                        passed: false,
+                        message: "The document is 24px wider than the viewport.",
+                    },
+                    {
+                        name: "visual quality: 768x1024 text contrast is readable",
+                        passed: false,
+                        message: "Muted text contrast is below target.",
+                    },
+                ],
+            },
+        });
+
+        expect(review.accepted).toBe(false);
+        expect(review.checks.browserVisualOnly).toBe(true);
+        expect(
+            decideReviewDisposition({
+                review,
+                repairAttempt: 0,
+                maxRepairAttempts: 2,
+            }),
+        ).toBe("human_review");
+    });
+
+    it("still auto repairs real browser runtime failures", () => {
+        const review = reviewReactAppAgentResult({
+            agent: {
+                finished: true,
+                madeProgress: true,
+                stopReason: "finish",
+            },
+            install: { exitCode: 0 },
+            build: { exitCode: 0 },
+            typecheck: { exitCode: 0 },
+            eval: { passed: true },
+            browserEval: {
+                passed: false,
+                checks: [
+                    {
+                        name: "has no runtime errors",
+                        passed: false,
+                        message: "Uncaught page error",
+                    },
+                ],
+            },
+        });
+
+        expect(review.checks.browserVisualOnly).not.toBe(true);
+        expect(
+            decideReviewDisposition({
+                review,
+                repairAttempt: 0,
+                maxRepairAttempts: 2,
+            }),
+        ).toBe("auto_repair");
+    });
+});

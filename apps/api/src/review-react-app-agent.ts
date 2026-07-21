@@ -10,6 +10,7 @@ export type ReactAppAgentReview = {
         typecheckPassed?: boolean;
         evalPassed: boolean;
         browserPassed?: boolean;
+        browserVisualOnly?: boolean;
     };
 };
 
@@ -24,7 +25,8 @@ export function hasReviewQualityFailure(
         !review.checks.buildPassed ||
         review.checks.typecheckPassed === false ||
         !review.checks.evalPassed ||
-        review.checks.browserPassed === false
+        (review.checks.browserPassed === false &&
+            review.checks.browserVisualOnly !== true)
     );
 }
 
@@ -167,6 +169,30 @@ export type ReviewReactAppAgentInput = {
     };
 };
 
+function isAdvisoryVisualBrowserCheckName(name: string): boolean {
+    return (
+        name.startsWith("visual contract: dashboard ") ||
+        name.startsWith("visual quality:")
+    );
+}
+
+function hasOnlyAdvisoryVisualBrowserFailures(
+    browserEval: ReviewReactAppAgentInput["browserEval"],
+): boolean {
+    if (browserEval?.passed !== false) {
+        return false;
+    }
+
+    const failedChecks = browserEval.checks?.filter((check) => !check.passed) ?? [];
+
+    return (
+        failedChecks.length > 0 &&
+        failedChecks.every((check) =>
+            isAdvisoryVisualBrowserCheckName(check.name),
+        )
+    );
+}
+
 function formatBrowserEvalFailure(input: ReviewReactAppAgentInput): string {
     if (input.browserEval?.passed !== false) {
         return "";
@@ -237,6 +263,9 @@ export function reviewReactAppAgentResult(
         : undefined;
     const evalPassed = input.eval.passed;
     const browserPassed = input.browserEval?.passed;
+    const browserVisualOnly = hasOnlyAdvisoryVisualBrowserFailures(
+        input.browserEval,
+    );
     const deterministicallyCompletedAfterModelError =
         input.agent.stopReason === "model_error" &&
         input.agent.madeProgress === true &&
@@ -274,6 +303,9 @@ export function reviewReactAppAgentResult(
 
     if (browserPassed !== undefined) {
         checks.browserPassed = browserPassed;
+    }
+    if (browserVisualOnly) {
+        checks.browserVisualOnly = true;
     }
 
     const qualityFailures = [

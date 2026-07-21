@@ -49,7 +49,10 @@ import type {
     RunOperationStage,
     TraceEvent,
 } from "@appforge/protocol";
-import { autofixReactSource } from "./react-source-autofix.js";
+import {
+    autofixReactSource,
+    autofixReactStyles,
+} from "./react-source-autofix.js";
 import {
     resolveReactPagePlans,
     runParallelReactPagesAgent,
@@ -84,6 +87,8 @@ import {
     generateStableReactPage,
     isGenericRepairRequest,
 } from "./stable-react-page-generator.js";
+import { isFreshPageGenerationRequest } from "./generation-request-intent.js";
+import { evaluateSourceStyleContract } from "./source-style-contract.js";
 
 const INSTALL_COMMAND_TIMEOUT_MS = 5 * 60 * 1_000;
 const BUILD_COMMAND_TIMEOUT_MS = 2 * 60 * 1_000;
@@ -4251,7 +4256,7 @@ function inferRequirementTargetFiles(instruction: string): string[] | undefined 
     return files.size > 0 ? [...files] : undefined;
 }
 
-function createBrowserProbesForRequirement(input: {
+export function createBrowserProbesForRequirement(input: {
     requirementId: string;
     instruction: string;
 }): BrowserProbe[] | undefined {
@@ -4334,25 +4339,13 @@ function createBrowserProbesForRequirement(input: {
         });
     }
 
-    if (/\b(?:mobile|responsive|single column)\b|手机|响应式|单列/iu.test(instruction)) {
-        probes.push(
-            {
-                requirementId: input.requirementId,
-                selector: ".feature-grid, .grid, [class*='grid']",
-                viewport: { width: 390, height: 844 },
-                measurement: "computed_style",
-                property: "gridTemplateColumns",
-                expected: "1fr",
-            },
-            {
-                requirementId: input.requirementId,
-                selector: ".feature-grid, .grid, [class*='grid']",
-                viewport: defaultViewport,
-                measurement: "computed_style",
-                property: "gridTemplateColumns",
-            },
-        );
-    }
+    // General responsive requirements are validated by the deterministic
+    // multi-viewport visual report. Do not synthesize a generic grid probe:
+    // applications may use flexbox, container queries, or differently named
+    // layout primitives, and getComputedStyle(gridTemplateColumns) resolves
+    // tracks to pixels rather than the authored value (for example, "1fr").
+    // The previous heuristic therefore rejected valid responsive pages when
+    // the selector was absent, hidden, flex-based, or returned a pixel track.
 
     if (/\b(?:image|photo|asset)\b|图片|照片|素材/iu.test(instruction)) {
         probes.push({
@@ -4850,12 +4843,6 @@ function formatRequirementLedgerContext(requirements: Requirement[]): string {
                 .join(" | "),
         ),
     ].join("\n");
-}
-
-function isFreshPageGenerationRequest(text: string): boolean {
-    return /\b(?:page|pages|site|website|homepage|landing|screen|interface|dashboard|portal|spa)\b|页面|界面|网页|网站|主页|首页|官网|门户|大屏/iu.test(
-        text,
-    );
 }
 
 function isHorizontalPointLabelRequest(text: string): boolean {
@@ -6041,7 +6028,10 @@ export async function runReactAppAgent(
         }
 
         const sourceAutofix = usedStableScaffold
-            ? { changed: false, messages: [] }
+            ? await autofixReactStyles(
+                  options.workspaceRoot,
+                  options.signal,
+              )
             : await autofixReactSource(
                   options.workspaceRoot,
                   options.signal,
@@ -6277,6 +6267,32 @@ export async function runReactAppAgent(
                       ],
                   }
                 : staticEvalResult;
+        const sourceStyleContract = focusedEditRequest
+            ? undefined
+            : evaluateSourceStyleContract({
+                  appSource: await readFile(
+                      path.join(options.workspaceRoot, "src", "App.tsx"),
+                      "utf8",
+                  ).catch(() => ""),
+                  cssSource: await readFile(
+                      path.join(options.workspaceRoot, "src", "App.css"),
+                      "utf8",
+                  ).catch(() => ""),
+              });
+        const sourceStyleEvalResult: ReactAppEvalResult =
+            sourceStyleContract?.applicable && !sourceStyleContract.passed
+                ? {
+                      passed: false,
+                      checks: [
+                          ...baseEvalResult.checks,
+                          {
+                              name: "JSX and project CSS use a coherent class contract",
+                              passed: false,
+                              message: sourceStyleContract.evidence,
+                          },
+                      ],
+                  }
+                : baseEvalResult;
         const routeImplementationFailures =
             navigationRequestKind === "routes"
                 ? listRouteImplementationFailures(
@@ -6290,14 +6306,14 @@ export async function runReactAppAgent(
                 ? {
                       passed: false,
                       checks: [
-                          ...baseEvalResult.checks,
+                          ...sourceStyleEvalResult.checks,
                           {
                               name: `has distinct URL routes: ${routeImplementationFailures.join(" ")}`,
                               passed: false,
                           },
                       ],
                   }
-                : baseEvalResult;
+                : sourceStyleEvalResult;
         const assetEvidence = [
             formatAssetEvidence(agent),
             await formatLocalAssetReferenceEvidence(options.workspaceRoot),

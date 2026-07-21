@@ -4850,6 +4850,98 @@ describe("POST /runs/:id/iterate", () => {
     });
   });
 
+  it("resets the workspace when an iteration explicitly creates a different whole application", async () => {
+    const temporaryRoot = await mkdtemp(
+        path.join(os.tmpdir(), "appforge-api-"),
+    );
+
+    temporaryDirectories.push(temporaryRoot);
+
+    const workspaceManager = new WorkspaceManager(temporaryRoot);
+    const executeRun = vi.fn(async (input: { workspaceRoot: string }) => {
+      await writeWorkspaceFile(
+          input.workspaceRoot,
+          "src/App.tsx",
+          "export function NewApp() {}",
+      );
+
+      return createSuccessfulAgentResult(input.workspaceRoot);
+    });
+    const app = buildApp(undefined, workspaceManager, executeRun);
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/runs",
+      payload: {
+        goal: "Create an AI Agent product website",
+      },
+    });
+    const createdRun = RunSchema.parse(createResponse.json());
+
+    const prompt =
+        "创建一个服务器运行监控后台，包含 CPU、内存、请求延迟、异常服务、告警列表和故障处理流程";
+    const response = await app.inject({
+      method: "POST",
+      url: `/runs/${createdRun.id}/iterate`,
+      payload: { prompt },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(executeRun).toHaveBeenCalledWith({
+      goal: expect.stringContaining("Create an AI Agent product website"),
+      currentRequest: prompt,
+      workspaceRoot: workspaceManager.resolve(createdRun.id),
+      resetWorkspace: true,
+      signal: expect.any(AbortSignal),
+      onProgress: expect.any(Function),
+    });
+  });
+
+  it("does not reset the workspace when creating only a section inside the current app", async () => {
+    const temporaryRoot = await mkdtemp(
+        path.join(os.tmpdir(), "appforge-api-"),
+    );
+
+    temporaryDirectories.push(temporaryRoot);
+
+    const workspaceManager = new WorkspaceManager(temporaryRoot);
+    const executeRun = vi.fn(async (input: { workspaceRoot: string }) =>
+        createSuccessfulAgentResult(input.workspaceRoot),
+    );
+    const app = buildApp(undefined, workspaceManager, executeRun);
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/runs",
+      payload: { goal: "Create a dashboard" },
+    });
+    const createdRun = RunSchema.parse(createResponse.json());
+    const executeResponse = await app.inject({
+      method: "POST",
+      url: `/runs/${createdRun.id}/execute`,
+      payload: {},
+    });
+    expect(executeResponse.statusCode).toBe(200);
+    const workspaceRoot = workspaceManager.resolve(createdRun.id);
+    await writeWorkspaceFile(workspaceRoot, "package.json", "{}");
+    await writeWorkspaceFile(workspaceRoot, "index.html", "<div id=\"root\"></div>");
+    await writeWorkspaceFile(workspaceRoot, "src/main.tsx", "export {};");
+    await writeWorkspaceFile(workspaceRoot, "src/App.tsx", "export function App() {}");
+    executeRun.mockClear();
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/runs/${createdRun.id}/iterate`,
+      payload: { prompt: "创建一个新的告警列表模块，并保留其他内容" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(executeRun.mock.calls[0]?.[0]).toMatchObject({
+      currentRequest: "创建一个新的告警列表模块，并保留其他内容",
+      resetWorkspace: false,
+    });
+  });
+
   it("keeps the latest iteration prompt when review rejects the result", async () => {
     const temporaryRoot = await mkdtemp(
         path.join(os.tmpdir(), "appforge-api-"),

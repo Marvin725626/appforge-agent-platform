@@ -4,15 +4,187 @@ import path from "node:path";
 const MAX_SOURCE_FILES = 200;
 const MAX_SOURCE_DIRECTORIES = 400;
 
+
+const RESPONSIVE_SAFETY_NET_START =
+    "/* appforge platform-responsive-safety-net start */";
+const RESPONSIVE_SAFETY_NET_END =
+    "/* appforge platform-responsive-safety-net end */";
+
+const RESPONSIVE_SAFETY_NET_CSS = `${RESPONSIVE_SAFETY_NET_START}
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+}
+
+body,
+#root {
+    overflow-x: hidden;
+}
+
+img,
+picture,
+video,
+canvas,
+svg {
+    max-width: 100%;
+    height: auto;
+}
+
+main,
+aside,
+nav,
+header,
+footer,
+section,
+article,
+form,
+[class*="shell" i],
+[class*="layout" i],
+[class*="workspace" i],
+[class*="workbench" i],
+[class*="dashboard" i],
+[class*="console" i],
+[class*="main" i],
+[class*="sidebar" i],
+[class*="nav" i],
+[class*="content" i],
+[class*="panel" i],
+[class*="grid" i],
+[class*="table" i] {
+    min-width: 0;
+    max-width: 100%;
+}
+
+@media (max-width: 900px) {
+    html,
+    body,
+    #root,
+    [class*="shell" i],
+    [class*="layout" i],
+    [class*="workspace" i],
+    [class*="workbench" i] {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+    }
+
+    [class*="shell" i],
+    [class*="layout" i],
+    [class*="workspace" i],
+    [class*="workbench" i] {
+        grid-template-columns: minmax(0, 1fr) !important;
+        grid-auto-columns: minmax(0, 1fr) !important;
+        flex-direction: column !important;
+    }
+
+    [class*="shell" i] > *,
+    [class*="layout" i] > *,
+    [class*="workspace" i] > *,
+    [class*="workbench" i] > * {
+        min-width: 0 !important;
+        max-width: 100% !important;
+    }
+
+    main,
+    aside,
+    [class*="main" i],
+    [class*="sidebar" i],
+    [class*="content" i] {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        grid-column: 1 / -1 !important;
+        flex: 0 1 auto !important;
+    }
+
+    aside,
+    [class*="sidebar" i] {
+        position: static !important;
+        inset: auto !important;
+        transform: none !important;
+    }
+
+    nav,
+    [class*="nav" i],
+    nav ul,
+    [class*="nav" i] ul {
+        max-width: 100% !important;
+        min-width: 0 !important;
+        flex-wrap: wrap !important;
+    }
+
+    h1,
+    h2,
+    h3,
+    h4,
+    p,
+    a,
+    button,
+    label {
+        overflow-wrap: anywhere;
+    }
+
+    table {
+        display: table;
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        table-layout: fixed;
+    }
+
+    th,
+    td {
+        min-width: 0 !important;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+
+    input,
+    select,
+    textarea,
+    button {
+        max-width: 100%;
+    }
+}
+${RESPONSIVE_SAFETY_NET_END}`;
+
+export function ensureResponsiveCssSafetyNet(source: string): string {
+    const withoutPrevious = source.replace(
+        /\n?\/\* appforge platform-responsive-safety-net start \*\/[\s\S]*?\/\* appforge platform-responsive-safety-net end \*\/\n?/u,
+        "\n",
+    );
+
+    return `${withoutPrevious.trimEnd()}\n\n${RESPONSIVE_SAFETY_NET_CSS}\n`;
+}
+
 export type ReactSourceAutofixResult = {
     changed: boolean;
     messages: string[];
 };
 
+const JSX_TEXT_CONTAINER_TAGS =
+    "a|p|span|div|li|button|h[1-6]|small|strong|em|label|td|th|caption|section|article|header|footer|main|nav|aside";
+
 export function escapeInvalidJsxTextGreaterThan(source: string): string {
+    const jsxTextPattern = new RegExp(
+        `(<(?:${JSX_TEXT_CONTAINER_TAGS})\\b[^<>]*>)([^<{}]*>[^<{}]*)(?=<)`,
+        "giu",
+    );
+
     return source.replace(
-        />([^<{}]*>[^<{}]*)</gu,
-        (_match, text: string) => `>${text.replace(/>/gu, "&gt;")}<`,
+        jsxTextPattern,
+        (_match, openingTag: string, text: string) =>
+            `${openingTag}${text.replace(/>/gu, "&gt;")}`,
     );
 }
 
@@ -144,7 +316,8 @@ async function listSourceFiles(
 
             if (
                 entry.isFile() &&
-                /\.(?:ts|tsx)$/u.test(entry.name) &&
+                (/\.(?:ts|tsx)$/u.test(entry.name) ||
+                    entry.name === "App.css") &&
                 sourceFiles.length < MAX_SOURCE_FILES
             ) {
                 sourceFiles.push(entryPath);
@@ -153,6 +326,40 @@ async function listSourceFiles(
     }
 
     return sourceFiles;
+}
+
+export async function autofixReactStyles(
+    workspaceRoot: string,
+    signal?: AbortSignal,
+): Promise<ReactSourceAutofixResult> {
+    signal?.throwIfAborted();
+    const sourceFiles = await listSourceFiles(workspaceRoot, signal);
+    const appCssFiles = sourceFiles.filter((filePath) =>
+        filePath.endsWith("App.css"),
+    );
+    let changed = false;
+
+    for (const filePath of appCssFiles) {
+        signal?.throwIfAborted();
+        const source = await readFile(filePath, "utf8");
+        const fixedSource = ensureResponsiveCssSafetyNet(source);
+
+        if (fixedSource === source) {
+            continue;
+        }
+
+        await writeFile(filePath, fixedSource, "utf8");
+        changed = true;
+    }
+
+    return changed
+        ? {
+              changed: true,
+              messages: [
+                  "Applied the platform responsive CSS safety net before build.",
+              ],
+          }
+        : { changed: false, messages: [] };
 }
 
 export async function autofixReactSource(
@@ -167,16 +374,21 @@ export async function autofixReactSource(
     for (const filePath of sourceFiles) {
         signal?.throwIfAborted();
         const source = await readFile(filePath, "utf8");
-        const repairedSource = insertMissingCommasBetweenStringArrayItems(
-            escapeInvalidJsxTextGreaterThan(
-                restoreMissingClosingTagOpeningAngle(
-                    restoreHtmlEscapedArrowOperators(source),
-                ),
-            ),
-        );
-        const fixedSource = filePath.endsWith(".tsx")
-            ? ensureReactRuntimeImport(repairedSource)
-            : repairedSource;
+        const fixedSource = filePath.endsWith("App.css")
+            ? ensureResponsiveCssSafetyNet(source)
+            : (() => {
+                  const repairedSource = restoreHtmlEscapedArrowOperators(
+                      insertMissingCommasBetweenStringArrayItems(
+                          escapeInvalidJsxTextGreaterThan(
+                              restoreMissingClosingTagOpeningAngle(source),
+                          ),
+                      ),
+                  );
+
+                  return filePath.endsWith(".tsx")
+                      ? ensureReactRuntimeImport(repairedSource)
+                      : repairedSource;
+              })();
 
         if (fixedSource === source) {
             continue;
@@ -186,7 +398,9 @@ export async function autofixReactSource(
         await writeFile(filePath, fixedSource, "utf8");
         changed = true;
         messages.add(
-            "Auto-fixed generated React/TypeScript source before build.",
+            filePath.endsWith("App.css")
+                ? "Applied the platform responsive CSS safety net before build."
+                : "Auto-fixed generated React/TypeScript source before build.",
         );
     }
 

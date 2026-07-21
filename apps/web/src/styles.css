@@ -1848,3 +1848,90 @@ pre {
     }
 
 }
+
+.visual-viewport-report {
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-color, #dbe3f0);
+}
+
+.visual-viewport-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.visual-viewport-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.visual-viewport-card {
+    padding: 12px;
+    border: 1px solid #d9e2ef;
+    border-radius: 12px;
+    background: #fff;
+}
+
+.visual-viewport-card.failed {
+    border-color: #f2b8b5;
+    background: #fff8f7;
+}
+
+.visual-viewport-card > div {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.visual-viewport-card > div span {
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.visual-viewport-card.passed > div span {
+    color: #087a55;
+}
+
+.visual-viewport-card.failed > div span {
+    color: #b42318;
+}
+
+.visual-viewport-card dl {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin: 0;
+}
+
+.visual-viewport-card dl div {
+    min-width: 0;
+}
+
+.visual-viewport-card dt {
+    color: #667085;
+    font-size: 11px;
+}
+
+.visual-viewport-card dd {
+    margin: 2px 0 0;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+@media (max-width: 980px) {
+    .visual-viewport-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 560px) {
+    .visual-viewport-grid {
+        grid-template-columns: 1fr;
+    }
+}

@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
     classifyNavigationRequest,
+    createBrowserProbesForRequirement,
     formatBuildErrorSourceExcerpt,
     runReactAppAgent,
 } from "./run-react-app-agent.js";
@@ -78,6 +79,32 @@ describe("runReactAppAgent", () => {
         ["Polish the existing header spacing", "none"],
     ] as const)("classifies navigation goal %s as %s", (goal, expected) => {
         expect(classifyNavigationRequest(goal)).toBe(expected);
+    });
+
+
+    it("does not create brittle generic grid probes for responsive requirements", () => {
+        expect(
+            createBrowserProbesForRequirement({
+                requirementId: "REQ-2",
+                instruction:
+                    "要求适配手机、平板和桌面端，不允许页面整体横向滚动",
+            }),
+        ).toBeUndefined();
+    });
+
+    it("keeps explicit measurable browser probes", () => {
+        expect(
+            createBrowserProbesForRequirement({
+                requirementId: "REQ-1",
+                instruction: "将侧边栏宽度改为 280px",
+            }),
+        ).toEqual([
+            expect.objectContaining({
+                measurement: "bounding_box",
+                property: "width",
+                expected: 280,
+            }),
+        ]);
     });
 
     it("copies a starter, runs the agent, and builds the app", async () => {

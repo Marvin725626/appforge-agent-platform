@@ -155,6 +155,90 @@ describe("stable production generation", () => {
         expect(cssSource).toContain("--project-composition:");
         expect(cssSource).toContain("--surface-strategy: mixed;");
     }, 30_000);
+    it("routes Chinese 后台 requests through the stable renderer", async () => {
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-stable-dashboard-"),
+        );
+        temporaryDirectories.push(workspaceRoot);
+        const templateRoot = path.resolve(
+            process.cwd(),
+            "../../tests/fixtures/vite-react-starter",
+        );
+        const plannerOutput = {
+            summary: "生成服务器运行监控后台",
+            steps: [
+                {
+                    id: "step-1",
+                    title: "生成监控后台",
+                    description: "生成稳定可构建的单页监控应用",
+                    acceptanceCriteria: ["页面成功构建并渲染"],
+                },
+            ],
+        };
+        const dashboardContent = {
+            ...AI_GAME_CONTENT,
+            applicationType: "dashboard",
+            templateVariant: "sidebar-console",
+            brand: {
+                ...AI_GAME_CONTENT.brand,
+                name: "SENTRY OPS",
+                kicker: "LIVE INFRASTRUCTURE",
+                title: "服务器运行监控中心",
+                summary: "集中呈现 CPU、内存、请求延迟、异常服务、告警列表与故障处理流程。",
+                primaryAction: "查看告警",
+                secondaryAction: "打开流程",
+                statusLabel: "SYSTEM LIVE",
+            },
+        };
+        const model = new FakeModelProvider([
+            { content: JSON.stringify(plannerOutput) },
+            { content: JSON.stringify(dashboardContent) },
+        ]);
+        const goal =
+            "创建一个服务器运行监控后台，包含 CPU、内存、请求延迟、异常服务、告警列表和故障处理流程";
+        const designPlan = createFallbackDesignPlan({
+            goal,
+            plannerOutput,
+            routes: [{ path: "/", purpose: "服务器监控后台" }],
+        });
+        designPlan.applicationType = "dashboard";
+        designPlan.visualDNA.surfaceStrategy = "contained";
+
+        const result = await runReactAppAgent({
+            goal,
+            workspaceRoot,
+            templateRoot,
+            model,
+            stableGeneration: true,
+            designPlan,
+            designPlanning: false,
+            parallelCoding: true,
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        const appSource = await readFile(
+            path.join(workspaceRoot, "src", "App.tsx"),
+            "utf8",
+        );
+        const mainSource = await readFile(
+            path.join(workspaceRoot, "src", "main.tsx"),
+            "utf8",
+        );
+
+        expect(result.agent.finished).toBe(true);
+        expect(result.metrics?.codingCalls).toBe(1);
+        expect(result.build.exitCode).toBe(0);
+        expect(result.typecheck?.exitCode).toBe(0);
+        expect(result.review.accepted).toBe(true);
+        expect(appSource).toContain("服务器运行监控中心");
+        expect(appSource).toContain("sidebar-console");
+        expect(mainSource).toContain("<App />");
+    }, 30_000);
+
     it("keeps the original requirement when the user only says 修复", async () => {
         const workspaceRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-stable-repair-"),

@@ -369,9 +369,11 @@ export function formatProjectStyles(input: {
     color: var(--foreground);
     background: var(--background);
 }
-* { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
+*, *::before, *::after { box-sizing: border-box; }
+html { width: 100%; max-width: 100%; min-width: 0; scroll-behavior: smooth; }
 body {
+    width: 100%;
+    max-width: 100%;
     margin: 0;
     min-width: 320px;
     overflow-x: hidden;
@@ -382,6 +384,9 @@ a { color: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
 button:focus-visible, a:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
 .app-shell {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     min-height: 100vh;
     display: flex;
     flex-direction: column;
@@ -441,6 +446,8 @@ button:focus-visible, a:focus-visible { outline: 3px solid var(--accent); outlin
 .nav-link--active { color: var(--accent-foreground); background: var(--accent); }
 .route-main {
     width: var(--content-width);
+    max-width: 100%;
+    min-width: 0;
     margin: 0 auto;
     flex: 1;
 }
@@ -492,9 +499,9 @@ button:focus-visible, a:focus-visible { outline: 3px solid var(--accent); outlin
 }
 ${primitives.map((primitive) => primitiveStyles(primitive, plan)).join("\n")}
 @media (max-width: 780px) {
-    .site-header { position: static; align-items: flex-start; flex-direction: column; }
-    .site-nav { justify-content: flex-start; }
-    .route-main { width: min(100% - 1rem, 1180px); }
+    .site-header { width: 100%; max-width: 100%; min-width: 0; position: static; align-items: flex-start; flex-direction: column; }
+    .site-nav { width: 100%; max-width: 100%; min-width: 0; justify-content: flex-start; }
+    .route-main { width: min(100% - 1rem, 1180px); max-width: 100%; min-width: 0; }
     .editorial-rail, .city-story-rail, .culture-route-line,
     .asymmetric-split, .agent-runtime-stage, .trace-flow,
     .map-list-hybrid, .map-panel,

@@ -78,9 +78,37 @@ type BrowserCheck = {
     message?: string;
 };
 
+type VisualViewportMetrics = {
+    pageOverflowPx: number;
+    criticalOverlapCount: number;
+    clippedElementCount: number;
+    lowContrastCount: number;
+    contrastSampleCount: number;
+    undersizedControlCount: number;
+    controlCount: number;
+    tinyTextCount: number;
+    textSampleCount: number;
+    minimumFontSizePx?: number;
+};
+
+type VisualViewportResult = {
+    viewport: {
+        id: "mobile" | "tablet" | "desktop" | "wide";
+        width: number;
+        height: number;
+    };
+    passed: boolean;
+    metrics: VisualViewportMetrics;
+    screenshotPath?: string;
+};
+
 type BrowserEvalResult = {
     passed: boolean;
     checks: BrowserCheck[];
+    visualReport?: {
+        passed: boolean;
+        viewports: VisualViewportResult[];
+    };
 };
 
 type AgentAttempt = {
@@ -3768,6 +3796,101 @@ export function App() {
                                     </article>
                                 ))}
                             </div>
+                            {browserEval.visualReport ? (
+                                <div className="visual-viewport-report">
+                                    <div className="visual-viewport-heading">
+                                        <strong>Visual Evaluation / 多视口</strong>
+                                        <span
+                                            className={
+                                                browserEval.visualReport.passed
+                                                    ? "browser-check-summary passed"
+                                                    : "browser-check-summary failed"
+                                            }
+                                        >
+                                            {browserEval.visualReport.viewports.filter(
+                                                (viewport) => viewport.passed,
+                                            ).length}
+                                            /{browserEval.visualReport.viewports.length}{" "}
+                                            {copy.passed}
+                                        </span>
+                                    </div>
+                                    <div className="visual-viewport-grid">
+                                        {browserEval.visualReport.viewports.map(
+                                            (viewport) => (
+                                                <article
+                                                    className={
+                                                        viewport.passed
+                                                            ? "visual-viewport-card passed"
+                                                            : "visual-viewport-card failed"
+                                                    }
+                                                    key={viewport.viewport.id}
+                                                >
+                                                    <div>
+                                                        <strong>
+                                                            {viewport.viewport.width}×
+                                                            {viewport.viewport.height}
+                                                        </strong>
+                                                        <span>
+                                                            {viewport.passed
+                                                                ? copy.pass
+                                                                : copy.fail}
+                                                        </span>
+                                                    </div>
+                                                    <dl>
+                                                        <div>
+                                                            <dt>overflow</dt>
+                                                            <dd>
+                                                                {
+                                                                    viewport.metrics
+                                                                        .pageOverflowPx
+                                                                }
+                                                                px
+                                                            </dd>
+                                                        </div>
+                                                        <div>
+                                                            <dt>overlap</dt>
+                                                            <dd>
+                                                                {
+                                                                    viewport.metrics
+                                                                        .criticalOverlapCount
+                                                                }
+                                                            </dd>
+                                                        </div>
+                                                        <div>
+                                                            <dt>contrast</dt>
+                                                            <dd>
+                                                                {
+                                                                    viewport.metrics
+                                                                        .lowContrastCount
+                                                                }
+                                                                /
+                                                                {
+                                                                    viewport.metrics
+                                                                        .contrastSampleCount
+                                                                }
+                                                            </dd>
+                                                        </div>
+                                                        <div>
+                                                            <dt>targets</dt>
+                                                            <dd>
+                                                                {
+                                                                    viewport.metrics
+                                                                        .undersizedControlCount
+                                                                }
+                                                                /
+                                                                {
+                                                                    viewport.metrics
+                                                                        .controlCount
+                                                                }
+                                                            </dd>
+                                                        </div>
+                                                    </dl>
+                                                </article>
+                                            ),
+                                        )}
+                                    </div>
+                                </div>
+                            ) : null}
                         </section>
                     ) : null}
                     {run.status === "waiting_for_human" &&

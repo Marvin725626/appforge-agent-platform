@@ -1,0 +1,16 @@
+{
+    "review":  {
+                   "accepted":  false,
+                   "reason":  "Rejected because 页面构建成功，但浏览器运行验证失败。 browser runtime validation failed (visual quality: 375x812 keeps key content inside the viewport: 10 visible heading/control/landmark element(s) are horizontally clipped. aside.dashboard-sidebar: bounds 0..754 exceed viewport width 375 | nav.primary-nav: bounds 16..737 exceed viewport width 375 | main.dashboard-main: bounds 0..754 exceed viewport width 375; visual quality: 768x1024 keeps key content inside the viewport: 2 visible heading/control/landmark element(s) are horizontally clipped. aside.dashboard-sidebar: bounds 0..783 exceed viewport width 768 | main.dashboard-main: bounds 0..783 exceed viewport width 768) root: passed visible content: passed runtime console errors: none reported.",
+                   "checks":  {
+                                  "agentFinished":  true,
+                                  "installPassed":  true,
+                                  "buildPassed":  true,
+                                  "evalPassed":  true,
+                                  "typecheckPassed":  true,
+                                  "browserPassed":  false,
+                                  "browserVisualOnly":  true
+                              }
+               },
+    "exists":  true
+}

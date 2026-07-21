@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
     autofixReactSource,
+    autofixReactStyles,
     ensureReactRuntimeImport,
+    ensureResponsiveCssSafetyNet,
     escapeInvalidJsxTextGreaterThan,
     insertMissingCommasBetweenStringArrayItems,
     restoreHtmlEscapedArrowOperators,
@@ -25,6 +27,22 @@ describe("escapeInvalidJsxTextGreaterThan", () => {
     it("does not rewrite normal JSX tags or expressions", () => {
         const source =
             "export function App() { return <div>{items.map((item) => <p>{item}</p>)}</div>; }";
+
+        expect(escapeInvalidJsxTextGreaterThan(source)).toBe(source);
+    });
+
+
+    it("does not escape TypeScript arrows or comparisons before JSX", () => {
+        const source = [
+            "export function App() {",
+            '  const metricsSection = page.sections.find((section) => section.kind === "metrics");',
+            "  const remainingSections = metricsSection",
+            "      ? page.sections.filter((section) => section.id !== metricsSection.id)",
+            "      : page.sections;",
+            "  const isBusy = remainingSections.length > 3;",
+            "  return <main>{isBusy ? remainingSections.length : 0}</main>;",
+            "}",
+        ].join("\n");
 
         expect(escapeInvalidJsxTextGreaterThan(source)).toBe(source);
     });
@@ -111,6 +129,26 @@ describe("ensureReactRuntimeImport", () => {
     });
 });
 
+describe("ensureResponsiveCssSafetyNet", () => {
+    it("adds an idempotent platform responsive layer", () => {
+        const first = ensureResponsiveCssSafetyNet(
+            ".dashboard-layout { display: grid; grid-template-columns: 240px 1fr; }",
+        );
+        const second = ensureResponsiveCssSafetyNet(first);
+
+        expect(first).toContain(
+            "appforge platform-responsive-safety-net start",
+        );
+        expect(first).toContain(
+            "grid-template-columns: minmax(0, 1fr) !important",
+        );
+        expect(first).toContain('[class*="sidebar" i]');
+        expect(first).toContain("min-width: 0 !important");
+        expect(first).toContain("table-layout: fixed");
+        expect(second).toBe(first);
+    });
+});
+
 describe("autofixReactSource", () => {
     const temporaryDirectories: string[] = [];
 
@@ -127,6 +165,34 @@ describe("autofixReactSource", () => {
         );
 
         temporaryDirectories.length = 0;
+    });
+
+    it("applies responsive styles without rewriting stable TSX", async () => {
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-autofix-styles-"),
+        );
+        temporaryDirectories.push(workspaceRoot);
+
+        await mkdir(path.join(workspaceRoot, "src"));
+        const appPath = path.join(workspaceRoot, "src", "App.tsx");
+        const cssPath = path.join(workspaceRoot, "src", "App.css");
+        const appSource =
+            'export function App() { return <main>{[1].map((item) => <span key={item}>{item}</span>)}</main>; }';
+        await writeFile(appPath, appSource, "utf8");
+        await writeFile(
+            cssPath,
+            "table { min-width: 720px; }",
+            "utf8",
+        );
+
+        const result = await autofixReactStyles(workspaceRoot);
+        const fixedApp = await readFile(appPath, "utf8");
+        const fixedCss = await readFile(cssPath, "utf8");
+
+        expect(result.changed).toBe(true);
+        expect(fixedApp).toBe(appSource);
+        expect(fixedCss).toContain("min-width: 0 !important");
+        expect(fixedCss).toContain("table-layout: fixed");
     });
 
     it("rewrites src/App.tsx before build", async () => {
@@ -262,4 +328,70 @@ describe("autofixReactSource", () => {
             "routes.find((route) => route.path === '/')",
         );
     });
+
+
+    it("preserves generated arrow functions and comparisons before a JSX return", async () => {
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-autofix-"),
+        );
+        temporaryDirectories.push(workspaceRoot);
+
+        await mkdir(path.join(workspaceRoot, "src"));
+        const appPath = path.join(workspaceRoot, "src", "App.tsx");
+        await writeFile(
+            appPath,
+            [
+                "export function App() {",
+                '  const metricsSection = page.sections.find((section) => section.kind === "metrics");',
+                "  const remainingSections = metricsSection",
+                "      ? page.sections.filter((section) => section.id !== metricsSection.id)",
+                "      : page.sections;",
+                "  const isBusy = remainingSections.length > 3;",
+                "  return <main>{isBusy ? remainingSections.length : 0}</main>;",
+                "}",
+            ].join("\n"),
+            "utf8",
+        );
+
+        await autofixReactSource(workspaceRoot);
+        const fixedSource = await readFile(appPath, "utf8");
+
+        expect(fixedSource).toContain(
+            "page.sections.filter((section) => section.id !== metricsSection.id)",
+        );
+        expect(fixedSource).toContain("remainingSections.length > 3");
+        expect(fixedSource).not.toContain("=&gt;");
+        expect(fixedSource).not.toContain("length &gt; 3");
+    });
+
+    it("applies the platform responsive safety net to generated App.css", async () => {
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-autofix-"),
+        );
+        temporaryDirectories.push(workspaceRoot);
+
+        await mkdir(path.join(workspaceRoot, "src"));
+        const cssPath = path.join(workspaceRoot, "src", "App.css");
+        await writeFile(
+            cssPath,
+            ".dashboard-layout { display: grid; grid-template-columns: 260px 1fr; }",
+            "utf8",
+        );
+
+        const first = await autofixReactSource(workspaceRoot);
+        const firstCss = await readFile(cssPath, "utf8");
+        const second = await autofixReactSource(workspaceRoot);
+        const secondCss = await readFile(cssPath, "utf8");
+
+        expect(first.changed).toBe(true);
+        expect(first.messages).toContain(
+            "Applied the platform responsive CSS safety net before build.",
+        );
+        expect(firstCss).toContain(
+            "appforge platform-responsive-safety-net start",
+        );
+        expect(second.changed).toBe(false);
+        expect(secondCss).toBe(firstCss);
+    });
+
 });

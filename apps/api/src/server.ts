@@ -147,6 +147,7 @@ const app = buildApp(
         agentOptions.evaluateBrowser = async ({
             goal,
             workspaceRoot,
+            attemptNumber,
             browserProbes,
             signal: browserSignal,
         }) => {
@@ -157,9 +158,20 @@ const app = buildApp(
             });
             browserSignal?.throwIfAborted();
 
+            const runId = path.basename(workspaceRoot);
+            const appforgeRoot = path.dirname(path.dirname(workspaceRoot));
+            const artifactDirectory = path.join(
+                appforgeRoot,
+                "artifacts",
+                runId,
+                "visual-evaluation",
+                `attempt-${attemptNumber}`,
+            );
+
             return browserEvaluator.evaluate({
                 url: preview.url,
                 goal,
+                artifactDirectory,
                 ...(browserProbes && browserProbes.length > 0
                     ? { probes: browserProbes }
                     : {}),

@@ -1,0 +1,26 @@
+API: http://127.0.0.1:3000
+Run ID: 5479a743-a990-4be1-9b15-db1aed01e43a
+Status: waiting_for_human
+CreatedAt: 2026-07-21T04:09:55.810Z
+BrowserEval exists: True
+BrowserEval passed: False
+VisualReport exists: True
+VisualReport passed: False
+Review accepted: False
+Review reason: Rejected because 页面构建成功，但浏览器运行验证失败。 browser runtime validation failed (visual quality: 375x812 keeps key content inside the viewport: 10 visible heading/control/landmark element(s) are horizontally clipped. aside.dashboard-sidebar: bounds 0..754 exceed viewport width 375 | nav.primary-nav: bounds 16..737 exceed viewport width 375 | main.dashboard-main: bounds 0..754 exceed viewport width 375; visual quality: 768x1024 keeps key content inside the viewport: 2 visible heading/control/landmark element(s) are horizontally clipped. aside.dashboard-sidebar: bounds 0..783 exceed viewport width 768 | main.dashboard-main: bounds 0..783 exceed viewport width 768) root: passed visible content: passed runtime console errors: none reported.
+Failed browser checks: 2
+
+FAIL: visual quality: 375x812 keeps key content inside the viewport
+  10 visible heading/control/landmark element(s) are horizontally clipped. aside.dashboard-sidebar: bounds 0..754 exceed viewport width 375 | nav.primary-nav: bounds 16..737 exceed viewport width 375 | main.dashboard-main: bounds 0..754 exceed viewport width 375
+FAIL: visual quality: 768x1024 keeps key content inside the viewport
+  2 visible heading/control/landmark element(s) are horizontally clipped. aside.dashboard-sidebar: bounds 0..783 exceed viewport width 768 | main.dashboard-main: bounds 0..783 exceed viewport width 768
+
+Viewport summary:
+  mobile 375x812: passed=False, clipped=10, overflowPx=0
+    FAIL: visual quality: 375x812 keeps key content inside the viewport
+      10 visible heading/control/landmark element(s) are horizontally clipped. aside.dashboard-sidebar: bounds 0..754 exceed viewport width 375 | nav.primary-nav: bounds 16..737 exceed viewport width 375 | main.dashboard-main: bounds 0..754 exceed viewport width 375
+  tablet 768x1024: passed=False, clipped=2, overflowPx=0
+    FAIL: visual quality: 768x1024 keeps key content inside the viewport
+      2 visible heading/control/landmark element(s) are horizontally clipped. aside.dashboard-sidebar: bounds 0..783 exceed viewport width 768 | main.dashboard-main: bounds 0..783 exceed viewport width 768
+  desktop 1280x800: passed=True, clipped=0, overflowPx=0
+  wide 1440x900: passed=True, clipped=0, overflowPx=0

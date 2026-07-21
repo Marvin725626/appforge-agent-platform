@@ -122,4 +122,60 @@ describe("stable page content", () => {
         expect(result.content.applicationType).toBe("commerce");
         expect(result.warnings).toHaveLength(2);
     });
+    it("enforces a data-first dashboard content contract around CPU, memory, latency, tables, alerts, and workflow", async () => {
+        const designPlan = createDesignPlan("dashboard");
+        const fallback = await generateStablePageContent({
+            goal: "创建一个服务器运行监控后台，包含 CPU、内存、请求延迟、异常服务、告警列表和故障处理流程",
+            designPlan,
+        });
+        const genericSections = fallback.content.sections.map((section, index) => ({
+            ...section,
+            id: `generic-${index + 1}`,
+            kind: "story" as const,
+            title: `通用内容 ${index + 1}`,
+            items: section.items.map((item, itemIndex) => ({
+                ...item,
+                title: `通用项目 ${index + 1}-${itemIndex + 1}`,
+                description: "这是一段没有监控指标语义的普通内容。",
+            })),
+        }));
+        const model = new FakeModelProvider({
+            content: JSON.stringify({
+                ...fallback.content,
+                hero: {
+                    ...fallback.content.hero,
+                    stats: [
+                        { label: "受众", value: "运维团队" },
+                        { label: "模块", value: "04" },
+                        { label: "主题", value: "深色" },
+                    ],
+                },
+                sections: genericSections,
+            }),
+        });
+
+        const result = await generateStablePageContent({
+            goal: "创建一个服务器运行监控后台，包含 CPU、内存、请求延迟、异常服务、告警列表和故障处理流程",
+            designPlan,
+            model,
+        });
+
+        expect(result.content.sections.slice(0, 4).map((section) => section.kind)).toEqual([
+            "metrics",
+            "data-table",
+            "feature-list",
+            "timeline",
+        ]);
+        const metrics = result.content.sections[0];
+        expect(metrics?.items.map((item) => item.title).join(" ")).toMatch(/CPU/iu);
+        expect(metrics?.items.map((item) => item.title).join(" ")).toMatch(/内存/iu);
+        expect(metrics?.items.map((item) => item.title).join(" ")).toMatch(/延迟|P95/iu);
+        expect(result.content.hero.stats.map((stat) => stat.label)).toEqual([
+            "全局健康",
+            "在线节点",
+            "活动告警",
+            "刷新频率",
+        ]);
+    });
+
 });

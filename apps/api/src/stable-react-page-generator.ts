@@ -12,6 +12,7 @@ import {
     generateStablePageContent,
     type StablePageContent,
 } from "./stable-page-content.js";
+import { shouldGenerateStableHeroImage } from "./application-visual-policy.js";
 import {
     createStableAppSource,
     createStableCssSource,
@@ -69,6 +70,10 @@ async function tryGenerateHeroImage(input: {
     warnings: string[];
     step?: RunCodingAgentLoopResult["steps"][number];
 }> {
+    if (!shouldGenerateStableHeroImage(input.content.applicationType)) {
+        return { warnings: [] };
+    }
+
     if (
         !input.imageAssetTool ||
         !(input.imageModes ?? []).includes("generate")
@@ -208,7 +213,7 @@ export async function generateStableReactPage(
                     `contentSource=${contentResult.source}`,
                     `applicationType=${contentResult.content.applicationType}`,
                     `templateVariant=${contentResult.content.templateVariant}`,
-                    `heroImage=${mediaResult.heroPath ? "generated" : "fallback"}`,
+                    `heroImage=${shouldGenerateStableHeroImage(contentResult.content.applicationType) ? (mediaResult.heroPath ? "generated" : "fallback") : "disabled_by_policy"}`,
                 ].join(" "),
             },
             execution: {
