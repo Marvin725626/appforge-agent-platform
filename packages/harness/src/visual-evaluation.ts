@@ -233,7 +233,7 @@ export async function collectMultiViewportVisualReport(input: {
             };
             const keyElements = Array.from(
                 document.querySelectorAll<HTMLElement>(
-                    "header, nav, aside, main, h1, h2, h3, button, input, select, textarea, [role='button']",
+                    "header, nav, aside, main, h1, h2, h3, p, li, th, td, button, input, select, textarea, [role='button']",
                 ),
             )
                 .filter(isVisible)

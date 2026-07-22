@@ -179,8 +179,7 @@ function isAdvisoryVisualBrowserCheckName(name: string): boolean {
         (name.includes("has no page horizontal overflow") ||
             name.includes("has no critical element overlap") ||
             name.includes("keeps key content inside the viewport") ||
-            name.includes("interactive controls have usable targets") ||
-            name.includes("visible text is not excessively small"))
+            name.includes("interactive controls have usable targets"))
     ) {
         return false;
     }

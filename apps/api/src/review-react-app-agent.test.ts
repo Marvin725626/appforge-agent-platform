@@ -603,6 +603,41 @@ describe("visual-only browser review handling", () => {
         ).toBe("human_review");
     });
 
+    it("keeps marginal tiny-text visual quality failures as advisory human-review issues", () => {
+        const review = reviewReactAppAgentResult({
+            agent: {
+                finished: true,
+                madeProgress: true,
+                stopReason: "finish",
+            },
+            install: { exitCode: 0 },
+            build: { exitCode: 0 },
+            typecheck: { exitCode: 0 },
+            eval: { passed: true },
+            browserEval: {
+                passed: false,
+                checks: [
+                    {
+                        name: "visual quality: 1280x800 visible text is not excessively small",
+                        passed: false,
+                        message:
+                            "15/110 sampled text elements use a font size below 10.5px. span.status-signal: font-size 10.2px.",
+                    },
+                ],
+            },
+        });
+
+        expect(review.accepted).toBe(false);
+        expect(review.checks.browserVisualOnly).toBe(true);
+        expect(
+            decideReviewDisposition({
+                review,
+                repairAttempt: 0,
+                maxRepairAttempts: 2,
+            }),
+        ).toBe("human_review");
+    });
+
     it("still auto repairs real browser runtime failures", () => {
         const review = reviewReactAppAgentResult({
             agent: {
