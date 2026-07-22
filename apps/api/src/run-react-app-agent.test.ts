@@ -81,6 +81,26 @@ describe("runReactAppAgent", () => {
 
         expect(
             classifyIterationRequest({
+                currentRequest: "这个字体太小了，放大一点",
+                executionRequest: "这个字体太小了，放大一点",
+                resetWorkspace: false,
+                genericRepairRequest: false,
+                navigationRequestKind: "none",
+            }),
+        ).toBe("layout_repair");
+
+        expect(
+            classifyIterationRequest({
+                currentRequest: "按钮字体太小了，放大一点",
+                executionRequest: "按钮字体太小了，放大一点",
+                resetWorkspace: false,
+                genericRepairRequest: false,
+                navigationRequestKind: "none",
+            }),
+        ).toBe("fast_edit");
+
+        expect(
+            classifyIterationRequest({
                 currentRequest: "把按钮文字改成 Submit",
                 executionRequest: "把按钮文字改成 Submit",
                 resetWorkspace: false,
@@ -899,7 +919,7 @@ export function App() {
             "Coding Agent did not change the workspace",
         );
         expect(result.agent.steps.some((step) =>
-            step.execution.message.includes("Terminal Repair Agent safety net"),
+            step.execution.message.includes("Generated schema-driven"),
         )).toBe(true);
         await expect(
             readFile(path.join(workspaceRoot, "src", "App.tsx"), "utf8"),

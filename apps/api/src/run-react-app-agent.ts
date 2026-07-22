@@ -5324,6 +5324,23 @@ function isLayoutRepairIterationRequest(text: string): boolean {
     );
 }
 
+function isAmbiguousTypographyRequest(text: string): boolean {
+    const mentionsTypographySize =
+        /\b(?:font|font-size|text|heading|title)\b.{0,30}\b(?:small|large|bigger|smaller|tiny|huge)\b|\b(?:small|large|bigger|smaller|tiny|huge)\b.{0,30}\b(?:font|text|heading|title)\b|(?:字体|字号|文字|标题).{0,20}(?:太小|太大|小一点|大一点|放大|缩小)|(?:太小|太大|小一点|大一点|放大|缩小).{0,20}(?:字体|字号|文字|标题)/iu.test(
+            text,
+        );
+    const hasExplicitTarget =
+        /\b(?:button|sidebar|hero|nav|navigation|header|footer|table|card|section|title|h1|h2|h3|\.|#|selector|class)\b|(?:按钮|侧边栏|左侧栏|导航|顶部|页脚|表格|卡片|模块|区块|标题|主标题|副标题|菜单|列表|指标|数字|段落|正文)/iu.test(
+            text,
+        );
+    const hasDeicticReference =
+        /\b(?:this|that|these|those|here|there)\b|(?:这个|那个|这里|那里|上面|下面|截图|图里|里面|这一块|那一块|某个|有些)/iu.test(
+            text,
+        );
+
+    return mentionsTypographySize && hasDeicticReference && !hasExplicitTarget;
+}
+
 function isDependencyChangeRequest(text: string): boolean {
     return /(?:package\.json|package-lock|dependency|dependencies|npm\s+install|install\s+(?:a\s+)?package|add\s+(?:a\s+)?library)|(?:依赖|安装包|加库|package\.json|lockfile)/iu.test(
         text,
@@ -5355,6 +5372,7 @@ export function classifyIterationRequest(input: {
     if (
         !input.genericRepairRequest &&
         (isLayoutRepairIterationRequest(input.currentRequest) ||
+            isAmbiguousTypographyRequest(input.currentRequest) ||
             isNoChangeCorrectionRequest(input.currentRequest))
     ) {
         return "layout_repair";
@@ -7416,7 +7434,13 @@ export async function runReactAppAgent(
         try {
             if (
                 stableScaffoldRequested &&
-                (kind === "initial" || genericRepairRequest)
+                (kind === "initial" ||
+                    genericRepairRequest ||
+                    (options.resetWorkspace === false &&
+                        attemptNumber === 1 &&
+                        (contentCorrectionRequest ||
+                            layoutRepairIterationRequest ||
+                            iterationRequestKind === "structural_regen")))
             ) {
                 const stableResult = await generateStableReactPage({
                     workspaceRoot: options.workspaceRoot,
