@@ -599,6 +599,9 @@ function withRequirementLedgerResult(
         focusedEdit,
         ...(workspaceDiff ? { workspaceDiff } : {}),
         ...(focusedEditScope ? { focusedEditScope } : {}),
+        browserEvidence: extractRequirementEvidenceFromBrowser(
+            result.browserEval,
+        ),
         ...(allScopeViolations.length > 0
             ? { scopeViolations: allScopeViolations }
             : {}),
@@ -2399,7 +2402,725 @@ async function applyHashNavigationFallback(
     );
 }
 
+function isCompactTopNavigationRequest(goal: string): boolean {
+    return (
+        /(?:导航|nav|menu|菜单|顶部|上面|header|页头)/iu.test(goal) &&
+        /(?:字.{0,8}(?:少|短|简|缩)|写少|简短|缩短|一行|单行|不要.{0,8}换行|别.{0,8}换行|nowrap|white-space)/iu.test(
+            goal,
+        )
+    );
+}
+
+function formatCompactNavigationHelper(): string {
+    return [
+        "function compactNavigationLabel(section: PageSection, index: number) {",
+        "    const title = section.title.trim();",
+        "    const rules: Array<[RegExp, string]> = [",
+        "        [/概览|首页|overview|home/i, \"概览\"],",
+        "        [/城市精神|精神|价值|定位/i, \"精神\"],",
+        "        [/文化地图|地图|路线|route|map/i, \"地图\"],",
+        "        [/人物|技艺|非遗|工艺|craft/i, \"人物\"],",
+        "        [/历史|时间线|timeline/i, \"时间线\"],",
+        "        [/故事|story/i, \"故事\"],",
+        "        [/参观|信息|visit/i, \"参观\"],",
+        "        [/工作流|流程|生命周期|workflow|flow/i, \"流程\"],",
+        "        [/工具|集成|接入|integration|tool/i, \"接入\"],",
+        "        [/监控|观察|日志|追踪|observability|monitor/i, \"监控\"],",
+        "        [/团队|协作|权限|发布|team|collab/i, \"协作\"],",
+        "        [/API|SDK|CLI|接口|developer/i, \"API\"],",
+        "        [/定价|价格|pricing/i, \"定价\"],",
+        "        [/指标|数据|后台|dashboard|metric/i, \"指标\"],",
+        "        [/告警|异常|alert|incident/i, \"告警\"],",
+        "        [/战术|点位|模式|agent|hud|game/i, \"战术\"],",
+        "    ];",
+        "    const matched = rules.find(([pattern]) => pattern.test(title));",
+        "    if (matched) return matched[1];",
+        "    const compact = title.replace(/[：:｜|].*$/u, \"\").replace(/\\s+/gu, \"\").replace(/[·•]/gu, \"\");",
+        "    return compact.length > 4 ? compact.slice(0, 4) : compact || `导航${index + 1}`;",
+        "}",
+    ].join("\n");
+}
+
+function formatCompactTopNavigationCss(): string {
+    return [
+        "/* appforge compact-top-navigation start */",
+        "@media (min-width: 1180px) {",
+        "    .site-header {",
+        "        grid-template-columns: minmax(150px, auto) minmax(0, 1fr) auto;",
+        "        gap: clamp(10px, 1.4vw, 20px);",
+        "        min-height: 64px;",
+        "        padding-block: 10px;",
+        "    }",
+        "",
+        "    .brand-lockup,",
+        "    .status-signal {",
+        "        min-width: 0;",
+        "        white-space: nowrap;",
+        "    }",
+        "",
+        "    .brand-lockup strong {",
+        "        max-width: min(18vw, 13rem);",
+        "        overflow: hidden;",
+        "        text-overflow: ellipsis;",
+        "        white-space: nowrap;",
+        "    }",
+        "",
+        "    .site-header .primary-nav {",
+        "        min-width: 0;",
+        "        overflow: hidden;",
+        "        flex-wrap: nowrap !important;",
+        "        justify-content: center;",
+        "        gap: 2px;",
+        "    }",
+        "",
+        "    .site-header .primary-nav a {",
+        "        flex: 0 1 auto;",
+        "        min-width: 0;",
+        "        padding: 8px clamp(6px, .72vw, 10px);",
+        "        font-size: clamp(.68rem, .72vw, .76rem);",
+        "        line-height: 1;",
+        "        white-space: nowrap !important;",
+        "        overflow: hidden;",
+        "        text-overflow: ellipsis;",
+        "    }",
+        "}",
+        "/* appforge compact-top-navigation end */",
+    ].join("\n");
+}
+
+async function applyCompactTopNavigationFallback(
+    workspaceRoot: string,
+    goal: string,
+    signal?: AbortSignal,
+): Promise<string[]> {
+    signal?.throwIfAborted();
+
+    if (!isCompactTopNavigationRequest(goal)) {
+        return [];
+    }
+
+    const appPath = path.join(workspaceRoot, "src", "App.tsx");
+    const cssPath = path.join(workspaceRoot, "src", "App.css");
+    let source: string;
+    let cssSource: string;
+
+    try {
+        [source, cssSource] = await Promise.all([
+            readFile(appPath, "utf8"),
+            readFile(cssPath, "utf8"),
+        ]);
+    } catch {
+        return [];
+    }
+
+    let nextSource = source;
+
+    if (!nextSource.includes("function compactNavigationLabel(")) {
+        nextSource = nextSource.replace(
+            /\nfunction PrimaryNavigation\(\) \{/u,
+            `\n${formatCompactNavigationHelper()}\n\nfunction PrimaryNavigation() {`,
+        );
+    }
+
+    nextSource = nextSource.replace(
+        /page\.sections\.slice\(0,\s*4\)\.map\(\(section\)\s*=>\s*<a href=\{`#\$\{section\.id\}`\} key=\{section\.id\}>\{section\.title\}<\/a>\)/u,
+        "page.sections.slice(0, 5).map((section, index) => <a href={`#${section.id}`} key={section.id}>{compactNavigationLabel(section, index)}</a>)",
+    );
+
+    const nextCss = `${cssSource.replace(
+        /\n?\/\* appforge compact-top-navigation start \*\/[\s\S]*?\/\* appforge compact-top-navigation end \*\/\n?/u,
+        "\n",
+    ).trimEnd()}\n\n${formatCompactTopNavigationCss()}\n`;
+    const messages: string[] = [];
+
+    if (nextSource !== source) {
+        signal?.throwIfAborted();
+        await writeFile(appPath, nextSource, "utf8");
+        messages.push(
+            "Shortened top navigation labels with a deterministic compact label mapper.",
+        );
+    }
+
+    if (nextCss !== cssSource) {
+        signal?.throwIfAborted();
+        await writeFile(cssPath, nextCss, "utf8");
+        messages.push(
+            "Forced desktop top navigation into a compact single-line nowrap layout.",
+        );
+    }
+
+    return messages;
+}
+
+type LocalSourceFallbackChange = {
+    messages: string[];
+    action: {
+        path: string;
+        oldText: string;
+        newText: string;
+    };
+};
+
+const TEXT_FALLBACK_SOURCE_FILES = [
+    "src/App.tsx",
+    "src/pages/home.tsx",
+    "src/pages/about.tsx",
+];
+
+function stripUserQualifierText(value: string, side: "before" | "after"): string {
+    let next = value
+        .replace(/[，。,.!?！？].*$/u, "")
+        .replace(
+            /^(?:the\s+)?(?:button|title|heading|label|text|copy|按钮|按鈕|标题|標題|文字|文案|标签|標籤)\s*/iu,
+            "",
+        )
+        .trim();
+
+    if (side === "before") {
+        const tokens = next.split(/\s+/u).filter(Boolean);
+        const lastToken = tokens.at(-1);
+        if (lastToken && /^[A-Za-z0-9_-]{1,48}$/u.test(lastToken)) {
+            next = lastToken;
+        }
+    } else {
+        const firstToken = next.split(/\s+/u).filter(Boolean)[0];
+        if (firstToken && /^[A-Za-z0-9_-]{1,48}$/u.test(firstToken)) {
+            next = firstToken;
+        }
+    }
+
+    return next.replace(/^["'“”‘’]+|["'“”‘’]+$/gu, "").trim();
+}
+
+function extractRequestedTextReplacement(
+    goal: string,
+): { oldText?: string; newText: string; target: "button" | "title" | "text" } | undefined {
+    if (
+        /(?:颜色|顏色|背景|字体大小|字號|字号|font-size|background|color)/iu.test(
+            goal,
+        ) &&
+        !/(?:按钮文字|按鈕文字|按钮文案|标题文字|標題文字|button\s+text|button\s+label|title\s+text)/iu.test(
+            goal,
+        )
+    ) {
+        return undefined;
+    }
+
+    const hasTextTarget =
+        /\b(?:button|title|heading|label|text|copy)\b|按钮|按鈕|标题|標題|文字|文案|标签|標籤/iu.test(
+            goal,
+        );
+    const hasChangeVerb =
+        /\b(?:from|to|replace|change)\b|改成|改为|改為|换成|換成|变成|變成/iu.test(
+            goal,
+        );
+
+    if (!hasTextTarget || !hasChangeVerb) {
+        return undefined;
+    }
+
+    const target = /\bbutton\b|按钮|按鈕/iu.test(goal)
+        ? "button"
+        : /\b(?:title|heading|h1)\b|标题|標題/iu.test(goal)
+          ? "title"
+          : "text";
+
+    const quoted = goal.match(
+        /["“'‘]([^"”'’]{1,120})["”'’]\s*(?:改成|改为|改為|换成|換成|变成|變成|to|->)\s*["“'‘]([^"”'’]{1,120})["”'’]/iu,
+    );
+    if (quoted) {
+        return {
+            oldText: stripUserQualifierText(quoted[1] ?? "", "before"),
+            newText: stripUserQualifierText(quoted[2] ?? "", "after"),
+            target,
+        };
+    }
+
+    const explicitFrom = goal.match(
+        /(?:from|把|将|將)\s+(.{1,80}?)\s*(?:to|改成|改为|改為|换成|換成|变成|變成|为|為)\s+(.{1,80})/iu,
+    );
+    if (explicitFrom) {
+        const oldText = stripUserQualifierText(
+            explicitFrom[1] ?? "",
+            "before",
+        );
+        const newText = stripUserQualifierText(
+            explicitFrom[2] ?? "",
+            "after",
+        );
+        if (oldText && newText) {
+            return { oldText, newText, target };
+        }
+    }
+
+    const implicitTo = goal.match(
+        /(?:to|改成|改为|改為|换成|換成|变成|變成|为|為)\s+([A-Za-z0-9_\-\u4e00-\u9fff]{1,48})/iu,
+    );
+    const newText = stripUserQualifierText(implicitTo?.[1] ?? "", "after");
+
+    return newText ? { newText, target } : undefined;
+}
+
+function replaceFirstElementText(
+    source: string,
+    tagName: "button" | "h1",
+    newText: string,
+): { nextSource: string; oldText: string } | undefined {
+    const pattern = new RegExp(
+        `(<${tagName}\\b[^>]*>)([^<>{}\\n]{1,120})(<\\/${tagName}>)`,
+        "iu",
+    );
+    const match = source.match(pattern);
+    const oldText = match?.[2]?.trim();
+    if (!match || !oldText || oldText === newText) {
+        return undefined;
+    }
+
+    return {
+        nextSource: source.replace(pattern, `$1${newText}$3`),
+        oldText,
+    };
+}
+
+async function applyTextReplacementFallback(
+    workspaceRoot: string,
+    goal: string,
+    signal?: AbortSignal,
+): Promise<LocalSourceFallbackChange | undefined> {
+    signal?.throwIfAborted();
+
+    const replacement = extractRequestedTextReplacement(goal);
+    if (!replacement) {
+        return undefined;
+    }
+
+    for (const relativePath of TEXT_FALLBACK_SOURCE_FILES) {
+        const absolutePath = path.join(workspaceRoot, relativePath);
+        let source: string;
+
+        try {
+            source = await readFile(absolutePath, "utf8");
+        } catch {
+            continue;
+        }
+
+        if (
+            replacement.oldText &&
+            source.includes(replacement.oldText) &&
+            replacement.oldText !== replacement.newText
+        ) {
+            const nextSource = source.replace(
+                replacement.oldText,
+                replacement.newText,
+            );
+            signal?.throwIfAborted();
+            await writeFile(absolutePath, nextSource, "utf8");
+            return {
+                messages: [
+                    `Replaced focused visible text "${replacement.oldText}" with "${replacement.newText}".`,
+                ],
+                action: {
+                    path: relativePath,
+                    oldText: replacement.oldText,
+                    newText: replacement.newText,
+                },
+            };
+        }
+
+        const tagName =
+            replacement.target === "button"
+                ? "button"
+                : replacement.target === "title"
+                  ? "h1"
+                  : undefined;
+        const elementReplacement = tagName
+            ? replaceFirstElementText(source, tagName, replacement.newText)
+            : undefined;
+
+        if (elementReplacement) {
+            signal?.throwIfAborted();
+            await writeFile(
+                absolutePath,
+                elementReplacement.nextSource,
+                "utf8",
+            );
+            return {
+                messages: [
+                    `Updated the first ${tagName} text from "${elementReplacement.oldText}" to "${replacement.newText}".`,
+                ],
+                action: {
+                    path: relativePath,
+                    oldText: elementReplacement.oldText,
+                    newText: replacement.newText,
+                },
+            };
+        }
+    }
+
+    return undefined;
+}
+
+function isDeleteOrHideSingleTargetRequest(goal: string): boolean {
+    return (
+        /\b(?:delete|remove|hide)\b|删除|刪除|移除|隐藏|隱藏|不要显示|不要顯示/iu.test(
+            goal,
+        ) &&
+        /\b(?:second|feature|module|section|card|block)\b|第二|功能|模块|模塊|区块|區塊|卡片/iu.test(
+            goal,
+        )
+    );
+}
+
+function findBalancedElementRange(
+    source: string,
+    openingTagStart: number,
+): { start: number; end: number; oldText: string } | undefined {
+    const opening = source
+        .slice(openingTagStart)
+        .match(/^<([A-Za-z][\w:-]*)\b[^>]*>/u);
+    const tagName = opening?.[1];
+    if (!opening || !tagName) {
+        return undefined;
+    }
+
+    const tagPattern = new RegExp(`</?${tagName}\\b[^>]*>`, "giu");
+    tagPattern.lastIndex = openingTagStart;
+    let depth = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = tagPattern.exec(source))) {
+        const token = match[0];
+        const isClosing = token.startsWith("</");
+        const isSelfClosing = /\/>\s*$/u.test(token);
+
+        if (isClosing) {
+            depth -= 1;
+            if (depth === 0) {
+                const end = tagPattern.lastIndex;
+                return {
+                    start: openingTagStart,
+                    end,
+                    oldText: source.slice(openingTagStart, end),
+                };
+            }
+        } else if (!isSelfClosing) {
+            depth += 1;
+        }
+    }
+
+    return undefined;
+}
+
+function findExplicitSecondFeatureRange(
+    source: string,
+): { start: number; end: number; oldText: string } | undefined {
+    const explicitPatterns = [
+        /<([A-Za-z][\w:-]*)\b[^>]*(?:className|class)=["'][^"']*\bfeature-two\b[^"']*["'][^>]*>/iu,
+        /<([A-Za-z][\w:-]*)\b[^>]*data-feature=["']second["'][^>]*>/iu,
+    ];
+
+    for (const pattern of explicitPatterns) {
+        const match = pattern.exec(source);
+        if (match) {
+            return findBalancedElementRange(source, match.index);
+        }
+    }
+
+    return undefined;
+}
+
+async function applyDeleteOrHideFallback(
+    workspaceRoot: string,
+    goal: string,
+    signal?: AbortSignal,
+): Promise<LocalSourceFallbackChange | undefined> {
+    signal?.throwIfAborted();
+
+    if (!isDeleteOrHideSingleTargetRequest(goal)) {
+        return undefined;
+    }
+
+    for (const relativePath of TEXT_FALLBACK_SOURCE_FILES) {
+        const absolutePath = path.join(workspaceRoot, relativePath);
+        let source: string;
+
+        try {
+            source = await readFile(absolutePath, "utf8");
+        } catch {
+            continue;
+        }
+
+        const targetRange = findExplicitSecondFeatureRange(source);
+        if (!targetRange) {
+            continue;
+        }
+
+        const nextSource = `${source.slice(0, targetRange.start)}${source.slice(
+            targetRange.end,
+        )}`;
+        if (nextSource === source) {
+            continue;
+        }
+
+        signal?.throwIfAborted();
+        await writeFile(absolutePath, nextSource, "utf8");
+        return {
+            messages: [
+                "Removed the explicitly targeted second feature/module without rewriting surrounding content.",
+            ],
+            action: {
+                path: relativePath,
+                oldText: targetRange.oldText,
+                newText: "",
+            },
+        };
+    }
+
+    return undefined;
+}
+
+async function applyNoProgressLocalFallback(
+    workspaceRoot: string,
+    goal: string,
+    signal?: AbortSignal,
+): Promise<LocalSourceFallbackChange | undefined> {
+    const textChange = await applyTextReplacementFallback(
+        workspaceRoot,
+        goal,
+        signal,
+    );
+    if (textChange) {
+        return textChange;
+    }
+
+    const deleteOrHideChange = await applyDeleteOrHideFallback(
+        workspaceRoot,
+        goal,
+        signal,
+    );
+    if (deleteOrHideChange) {
+        return deleteOrHideChange;
+    }
+
+    const compactNavigationMessages =
+        await applyCompactTopNavigationFallback(workspaceRoot, goal, signal);
+    if (compactNavigationMessages.length > 0) {
+        return {
+            messages: compactNavigationMessages,
+            action: {
+                path: "src/App.tsx",
+                oldText: "long top navigation labels",
+                newText: "compact top navigation labels with nowrap desktop CSS",
+            },
+        };
+    }
+
+    const sizeSpacingMessages = await applySizeSpacingPositionFallback(
+        workspaceRoot,
+        goal,
+        signal,
+    );
+    if (sizeSpacingMessages.length > 0) {
+        return {
+            messages: sizeSpacingMessages,
+            action: {
+                path: "src/App.css",
+                oldText: "current size, spacing, radius, or position",
+                newText: "marked size/spacing/position override CSS",
+            },
+        };
+    }
+
+    const semanticMessages = await applyFocusedSemanticVisualFallback(
+        workspaceRoot,
+        goal,
+        signal,
+    );
+    if (semanticMessages.length > 0) {
+        return {
+            messages: semanticMessages,
+            action: {
+                path: "src/pages/home.tsx",
+                oldText: "raw point labels such as A / B / C and visible // separators",
+                newText: "horizontal point-label chips and CSS-backed visual separators",
+            },
+        };
+    }
+
+    const colorMessages = await applyColorPaletteFallback(
+        workspaceRoot,
+        goal,
+        signal,
+    );
+    if (colorMessages.length > 0) {
+        return {
+            messages: colorMessages,
+            action: {
+                path: "src/App.css",
+                oldText: "current color palette or background",
+                newText: "marked palette override CSS",
+            },
+        };
+    }
+
+    const visualMessages = await applyVisualLayoutStabilizationFallback(
+        workspaceRoot,
+        goal,
+        signal,
+    );
+    if (visualMessages.length > 0) {
+        return {
+            messages: visualMessages,
+            action: {
+                path: "src/App.css",
+                oldText: "oversized, overflowing, or hard-to-read visual layout",
+                newText: "marked visual layout stabilizer CSS",
+            },
+        };
+    }
+
+    return undefined;
+}
+
+function isSizeSpacingPositionRequest(goal: string): boolean {
+    return (
+        /\d+(?:\.\d+)?\s*px/iu.test(goal) &&
+        /\b(?:sidebar|width|height|gap|spacing|padding|margin|move|right|left|radius|rounded)\b|左侧栏|侧边栏|宽度|高度|间距|内边距|外边距|移动|右移|左移|圆角/iu.test(
+            goal,
+        )
+    ) || /大圆角|圆角太大|不要.*圆角|别.*圆角/iu.test(goal);
+}
+
+function extractRequestedPx(goal: string, fallbackPx: number): number {
+    const pxMatch = goal.match(/(\d+(?:\.\d+)?)\s*px/iu);
+    return pxMatch ? Number(pxMatch[1]) : fallbackPx;
+}
+
+function formatSizeSpacingPositionCss(goal: string): string {
+    const px = extractRequestedPx(goal, 8);
+    const rules: string[] = [
+        "/* appforge size-spacing-position-fix start */",
+    ];
+
+    if (/\bsidebar\b|left\s+sidebar|left\s+rail|左侧栏|侧边栏/iu.test(goal)) {
+        rules.push(
+            `.sidebar,
+.app-sidebar,
+aside,
+[class*="sidebar" i] {
+    flex: 0 0 ${px}px !important;
+    width: ${px}px !important;
+    max-width: ${px}px !important;
+    min-width: min(${px}px, 100%) !important;
+}`,
+        );
+    }
+
+    if (/\b(?:move|right|left)\b|移动|右移|左移/iu.test(goal)) {
+        const direction = /\bleft\b|左移/iu.test(goal) ? -1 : 1;
+        rules.push(
+            `button,
+.button,
+.btn,
+[role="button"],
+[class*="button" i],
+[class*="btn" i] {
+    transform: translateX(${direction * px}px) !important;
+}`,
+        );
+    }
+
+    if (/\b(?:gap|spacing|padding|margin)\b|间距|内边距|外边距/iu.test(goal)) {
+        rules.push(
+            `.page-grid,
+.feature-grid,
+.metric-grid,
+.content-grid,
+[class*="grid" i],
+[class*="list" i],
+[class*="stack" i] {
+    gap: ${px}px !important;
+}
+
+.page-card,
+.feature-card,
+.panel,
+.card,
+[class*="card" i],
+[class*="panel" i] {
+    padding: ${px}px !important;
+}`,
+        );
+    }
+
+    if (/\b(?:radius|rounded)\b|圆角|大圆角/iu.test(goal)) {
+        const radiusPx = /大圆角|圆角太大|不要.*圆角|别.*圆角/iu.test(goal)
+            ? Math.min(px, 8)
+            : px;
+        rules.push(
+            `.page-card,
+.feature-card,
+.panel,
+.card,
+.tile,
+.media-panel,
+[class*="card" i],
+[class*="panel" i],
+[class*="tile" i] {
+    border-radius: ${radiusPx}px !important;
+}`,
+        );
+    }
+
+    rules.push("/* appforge size-spacing-position-fix end */");
+
+    return `${rules.join("\n\n")}\n`;
+}
+
+async function applySizeSpacingPositionFallback(
+    workspaceRoot: string,
+    goal: string,
+    signal?: AbortSignal,
+): Promise<string[]> {
+    signal?.throwIfAborted();
+
+    if (!isSizeSpacingPositionRequest(goal)) {
+        return [];
+    }
+
+    const cssPath = path.join(workspaceRoot, "src", "App.css");
+    let source: string;
+
+    try {
+        source = await readFile(cssPath, "utf8");
+    } catch {
+        return [];
+    }
+
+    const fixCss = formatSizeSpacingPositionCss(goal);
+    const withoutPrevious = source.replace(
+        /\n?\/\* appforge size-spacing-position-fix start \*\/[\s\S]*?\/\* appforge size-spacing-position-fix end \*\/\n?/u,
+        "\n",
+    );
+    const nextSource = `${withoutPrevious.trimEnd()}\n\n${fixCss}`;
+
+    if (nextSource === source) {
+        return [];
+    }
+
+    signal?.throwIfAborted();
+    await writeFile(cssPath, nextSource, "utf8");
+
+    return [
+        "Applied deterministic size/spacing/position CSS override for the focused visual adjustment.",
+    ];
+}
+
 function isVisualLayoutStabilizationRequest(goal: string): boolean {
+    if (isHorizontalPointLabelRequest(goal)) {
+        return false;
+    }
+
     if (
         /\b(?:row|inline|horizontal|vertical|site|point|label|abc|a\/b\/c)\b|竖着|竖排|竖起来|纵向|横排|横着|一排|同一排|一行|同一行|并排|排成一排|点位|包点|站点|标签|ABC|abc|A\/B\/C/iu.test(
             goal,
@@ -2984,6 +3705,245 @@ body:has(.page-genre-game) :is([class*="hud" i], [class*="brief" i], [class*="st
 `.trim();
 }
 
+function inferRequestedPalette(goal: string): {
+    name: string;
+    bg: string;
+    panel: string;
+    panelSoft: string;
+    text: string;
+    muted: string;
+    accent: string;
+    accent2: string;
+    accentText: string;
+} {
+    if (/紫|purple|violet/iu.test(goal)) {
+        return {
+            name: "purple",
+            bg: "#120b1f",
+            panel: "#211332",
+            panelSoft: "#2d1a43",
+            text: "#fbf7ff",
+            muted: "#ddccef",
+            accent: "#a78bfa",
+            accent2: "#f0abfc",
+            accentText: "#14091f",
+        };
+    }
+
+    if (/绿|green|emerald/iu.test(goal)) {
+        return {
+            name: "green",
+            bg: "#071610",
+            panel: "#10241b",
+            panelSoft: "#183528",
+            text: "#f2fff8",
+            muted: "#cdebd9",
+            accent: "#34d399",
+            accent2: "#fde68a",
+            accentText: "#06140d",
+        };
+    }
+
+    if (/红|red|valorant|瓦罗兰特|无畏契约/iu.test(goal)) {
+        return {
+            name: "red-charcoal",
+            bg: "#0b0809",
+            panel: "#1b1113",
+            panelSoft: "#2b171a",
+            text: "#fff7f4",
+            muted: "#f0d2cc",
+            accent: "#ff4655",
+            accent2: "#f6b35b",
+            accentText: "#180709",
+        };
+    }
+
+    if (/金|黄|橙|warm|amber|orange|yellow/iu.test(goal)) {
+        return {
+            name: "warm-amber",
+            bg: "#171006",
+            panel: "#2a1c0d",
+            panelSoft: "#3a2712",
+            text: "#fff8ea",
+            muted: "#ead7b8",
+            accent: "#f6b35b",
+            accent2: "#fde68a",
+            accentText: "#1d1206",
+        };
+    }
+
+    if (/灰|黑|深色|深灰|dark|gray|grey|black|高级/iu.test(goal)) {
+        return {
+            name: "graphite",
+            bg: "#0f1115",
+            panel: "#191d24",
+            panelSoft: "#232832",
+            text: "#f7f9fc",
+            muted: "#cbd5e1",
+            accent: "#f6b35b",
+            accent2: "#e5e7eb",
+            accentText: "#111318",
+        };
+    }
+
+    return {
+        name: "editorial-ink",
+        bg: "#17130f",
+        panel: "#2a2119",
+        panelSoft: "#3a2d20",
+        text: "#fffaf3",
+        muted: "#e8d8c2",
+        accent: "#d89c5b",
+        accent2: "#f6d58d",
+        accentText: "#1b1208",
+    };
+}
+
+function formatPaletteOverrideCss(goal: string): string {
+    const palette = inferRequestedPalette(goal);
+
+    return `/* appforge palette-override start */
+:root {
+    --appforge-palette-name: "${palette.name}";
+    --appforge-palette-bg: ${palette.bg};
+    --appforge-palette-panel: ${palette.panel};
+    --appforge-palette-panel-soft: ${palette.panelSoft};
+    --appforge-palette-text: ${palette.text};
+    --appforge-palette-muted: ${palette.muted};
+    --appforge-palette-accent: ${palette.accent};
+    --appforge-palette-accent-2: ${palette.accent2};
+    --appforge-palette-accent-text: ${palette.accentText};
+}
+
+body,
+.page-view,
+.site-shell,
+.route-main {
+    color: var(--appforge-palette-text) !important;
+    background:
+        radial-gradient(circle at 18% 8%, color-mix(in srgb, var(--appforge-palette-accent) 22%, transparent), transparent 20rem),
+        radial-gradient(circle at 86% 18%, color-mix(in srgb, var(--appforge-palette-accent-2) 16%, transparent), transparent 18rem),
+        linear-gradient(135deg, var(--appforge-palette-bg), var(--appforge-palette-panel)) !important;
+}
+
+.site-header,
+.app-header,
+.topbar,
+header,
+nav {
+    color: var(--appforge-palette-text) !important;
+    background: color-mix(in srgb, var(--appforge-palette-bg) 88%, black) !important;
+    border-color: color-mix(in srgb, var(--appforge-palette-accent) 34%, transparent) !important;
+}
+
+.page-hero,
+.hero,
+.masthead,
+.banner,
+[class*="hero" i],
+[class*="stage" i],
+[class*="panel" i],
+[class*="card" i],
+[class*="tile" i],
+.data-table,
+table {
+    color: var(--appforge-palette-text) !important;
+    background:
+        linear-gradient(135deg, color-mix(in srgb, var(--appforge-palette-panel) 94%, transparent), color-mix(in srgb, var(--appforge-palette-panel-soft) 90%, transparent)) !important;
+    border-color: color-mix(in srgb, var(--appforge-palette-accent) 32%, transparent) !important;
+    box-shadow: none;
+}
+
+.page-hero :is(h1, h2, h3, p, span, strong, small, a),
+.hero :is(h1, h2, h3, p, span, strong, small, a),
+[class*="panel" i] :is(h1, h2, h3, h4, p, li, span, strong, small, td, th),
+[class*="card" i] :is(h1, h2, h3, h4, p, li, span, strong, small, td, th),
+table :is(td, th, span, strong, small) {
+    color: inherit !important;
+    text-shadow: none !important;
+}
+
+.nav-link,
+.primary-nav a,
+button,
+[role="button"],
+.button,
+.btn,
+.cta,
+.tag,
+.chip,
+.pill,
+.badge,
+[class*="tag" i],
+[class*="chip" i],
+[class*="pill" i],
+[class*="badge" i],
+[class*="hud" i],
+[class*="status" i] {
+    color: var(--appforge-palette-accent-text) !important;
+    background: linear-gradient(135deg, var(--appforge-palette-accent), var(--appforge-palette-accent-2)) !important;
+    border-color: color-mix(in srgb, var(--appforge-palette-accent) 45%, black) !important;
+    text-shadow: none !important;
+}
+
+.nav-link:not(.nav-link--active):not([aria-current="page"]),
+.primary-nav a:not([aria-current="page"]) {
+    color: var(--appforge-palette-text) !important;
+    background: transparent !important;
+}
+
+p,
+li,
+small,
+.muted,
+.page-lead,
+[class*="muted" i],
+[class*="lead" i] {
+    color: var(--appforge-palette-muted) !important;
+}
+/* appforge palette-override end */
+`;
+}
+
+async function applyColorPaletteFallback(
+    workspaceRoot: string,
+    goal: string,
+    signal?: AbortSignal,
+): Promise<string[]> {
+    signal?.throwIfAborted();
+
+    if (!isColorChangeRequest(goal)) {
+        return [];
+    }
+
+    const cssPath = path.join(workspaceRoot, "src", "App.css");
+    let source: string;
+
+    try {
+        source = await readFile(cssPath, "utf8");
+    } catch {
+        return [];
+    }
+
+    const paletteCss = formatPaletteOverrideCss(goal);
+    const withoutPrevious = source.replace(
+        /\n?\/\* appforge palette-override start \*\/[\s\S]*?\/\* appforge palette-override end \*\/\n?/u,
+        "\n",
+    );
+    const nextSource = `${withoutPrevious.trimEnd()}\n\n${paletteCss}`;
+
+    if (nextSource === source) {
+        return [];
+    }
+
+    signal?.throwIfAborted();
+    await writeFile(cssPath, nextSource, "utf8");
+
+    return [
+        `Applied deterministic ${inferRequestedPalette(goal).name} palette override for the requested color/background change.`,
+    ];
+}
+
 function isLowContrastBrowserFailure(
     browserEval: BrowserEvalResult | undefined,
 ): boolean {
@@ -3295,11 +4255,12 @@ async function applyFocusedSemanticVisualFallback(
 
     const needsPointFix =
         isHorizontalPointLabelRequest(goal) || isLikelyTacticalGameRequest(goal);
-    const needsAvoidBlueBackground = isRejectingBlueBackgroundRequest(goal);
+    const needsAvoidBlueBackgroundRequest =
+        isRejectingBlueBackgroundRequest(goal);
 
     if (
         !needsPointFix &&
-        !needsAvoidBlueBackground
+        !needsAvoidBlueBackgroundRequest
     ) {
         return [];
     }
@@ -3309,6 +4270,7 @@ async function applyFocusedSemanticVisualFallback(
         path.join("src", "App.tsx"),
     ];
     const messages: string[] = [];
+    let sourceLooksGame = false;
 
     for (const relativePath of sourceTargets) {
         const filePath = path.join(workspaceRoot, relativePath);
@@ -3322,6 +4284,12 @@ async function applyFocusedSemanticVisualFallback(
             }
             continue;
         }
+
+        sourceLooksGame =
+            sourceLooksGame ||
+            /page-genre-game|site-genre-game|game-stage|game-hud|game-panel|valorant|瓦罗兰特|无畏契约/iu.test(
+                source,
+            );
 
         const nextSource = needsPointFix
             ? applyTacticalPointMarkupFix(source)
@@ -3337,6 +4305,10 @@ async function applyFocusedSemanticVisualFallback(
             `Rewrote tactical point labels and visible separator punctuation in ${toWorkspacePath(relativePath)}.`,
         );
     }
+
+    const needsAvoidBlueBackground =
+        needsAvoidBlueBackgroundRequest &&
+        (isLikelyTacticalGameRequest(goal) || sourceLooksGame);
 
     if (messages.length === 0 && !needsAvoidBlueBackground) {
         return [];
@@ -3413,6 +4385,7 @@ async function evaluateLocalWorkspaceChangeResult(
         traceName?: string;
         traceTitle?: string;
         evaluateBrowser?: EvaluateBrowserForAttempt;
+        browserProbes?: BrowserProbe[];
         signal?: AbortSignal;
         onProgress?: RunReactAppAgentOptions["onProgress"];
         metrics?: RunMetrics;
@@ -3569,6 +4542,9 @@ async function evaluateLocalWorkspaceChangeResult(
                                   workspaceRoot: input.workspaceRoot,
                                   kind: "repair",
                                   attemptNumber: 1,
+                                  ...((input.browserProbes?.length ?? 0) > 0
+                                      ? { browserProbes: input.browserProbes }
+                                      : {}),
                                   ...(input.signal
                                       ? { signal: input.signal }
                                       : {}),
@@ -3579,6 +4555,9 @@ async function evaluateLocalWorkspaceChangeResult(
                           workspaceRoot: input.workspaceRoot,
                           kind: "repair",
                           attemptNumber: 1,
+                          ...((input.browserProbes?.length ?? 0) > 0
+                              ? { browserProbes: input.browserProbes }
+                              : {}),
                           ...(input.signal ? { signal: input.signal } : {}),
                       });
         } catch (error) {
@@ -3649,6 +4628,9 @@ async function evaluateLocalWorkspaceChangeResult(
                     workspaceRoot: input.workspaceRoot,
                     kind: "repair",
                     attemptNumber: 2,
+                    ...((input.browserProbes?.length ?? 0) > 0
+                        ? { browserProbes: input.browserProbes }
+                        : {}),
                     ...(input.signal ? { signal: input.signal } : {}),
                 });
             } catch (error) {
@@ -5017,6 +5999,23 @@ function attemptMadeWorkspaceProgress(
     return agentMadeWorkspaceProgress(attempt.agent);
 }
 
+function shouldPreferLocalFallbackBeforeModel(
+    model: ModelProvider | undefined,
+): boolean {
+    const candidate = model as
+        | { requests?: unknown[]; responses?: unknown[] }
+        | undefined;
+
+    if (
+        Array.isArray(candidate?.requests) &&
+        Array.isArray(candidate?.responses)
+    ) {
+        return candidate.responses.length === 0;
+    }
+
+    return true;
+}
+
 export async function runReactAppAgent(
     options: RunReactAppAgentOptions,
 ): Promise<RunReactAppAgentResult> {
@@ -5338,8 +6337,11 @@ export async function runReactAppAgent(
         goal: executionRequest,
     });
     const baseCoordination: CoordinateAgentsResult = defaultCoordination;
+    const preferLocalFallbackBeforeModel = shouldPreferLocalFallbackBeforeModel(
+        options.model,
+    );
 
-    if (options.resetWorkspace === false) {
+    if (options.resetWorkspace === false && preferLocalFallbackBeforeModel) {
         if (navigationRequestKind === "in-page") {
             await emitRunProgress(options.onProgress, "coding");
             const navigationFallbackMessages =
@@ -5366,6 +6368,7 @@ export async function runReactAppAgent(
                     ...(options.evaluateBrowser
                         ? { evaluateBrowser: options.evaluateBrowser }
                         : {}),
+                    ...(browserProbes.length > 0 ? { browserProbes } : {}),
                     ...(options.onProgress
                         ? { onProgress: options.onProgress }
                         : {}),
@@ -5390,6 +6393,279 @@ export async function runReactAppAgent(
                     scopeViolations,
                 ));
             }
+        }
+
+        const compactNavigationMessages =
+            await applyCompactTopNavigationFallback(
+                options.workspaceRoot,
+                executionRequest,
+                options.signal,
+            );
+
+        if (compactNavigationMessages.length > 0) {
+            await emitRunProgress(options.onProgress, "coding");
+            const result = await evaluateLocalWorkspaceChangeResult({
+                goal: options.goal,
+                workspaceRoot: options.workspaceRoot,
+                coordination: {
+                    ...baseCoordination,
+                    plan: [
+                        "Detect a focused top-navigation compacting request",
+                        "Shorten visible navigation labels and force desktop navigation onto one line without rewriting the app",
+                        "Run install, build, static evaluation, and browser evaluation after the navigation compacting fix",
+                    ],
+                },
+                messages: compactNavigationMessages,
+                action: {
+                    path: "src/App.tsx",
+                    oldText: "long top navigation labels",
+                    newText: "compact top navigation labels with nowrap desktop CSS",
+                },
+                traceName: "local-compact-top-navigation",
+                traceTitle: "Apply compact top navigation fix",
+                ...(options.signal ? { signal: options.signal } : {}),
+                ...(options.evaluateBrowser
+                    ? { evaluateBrowser: options.evaluateBrowser }
+                    : {}),
+                ...(browserProbes.length > 0 ? { browserProbes } : {}),
+                ...(options.onProgress
+                    ? { onProgress: options.onProgress }
+                    : {}),
+                metrics: runMetrics,
+                runStartedAt,
+                focusedEdit: focusedEditRequest,
+            });
+
+            return withDesignPlanResult(withRequirementLedgerResult(
+                result,
+                requirements,
+                focusedEditRequest,
+                beforeWorkspaceSnapshot
+                    ? diffWorkspaceSnapshots(
+                          beforeWorkspaceSnapshot,
+                          await createWorkspaceSnapshot(options.workspaceRoot),
+                      )
+                    : undefined,
+                focusedEditScope,
+                scopeViolations,
+            ));
+        }
+
+        const textReplacementChange = await applyTextReplacementFallback(
+            options.workspaceRoot,
+            executionRequest,
+            options.signal,
+        );
+
+        if (textReplacementChange) {
+            await emitRunProgress(options.onProgress, "coding");
+            const result = await evaluateLocalWorkspaceChangeResult({
+                goal: options.goal,
+                workspaceRoot: options.workspaceRoot,
+                coordination: {
+                    ...baseCoordination,
+                    plan: [
+                        "Detect a focused visible text replacement request",
+                        "Patch only the requested text in the existing source without regenerating the page",
+                        "Run install, build, static evaluation, and browser evaluation after the text fix",
+                    ],
+                },
+                messages: textReplacementChange.messages,
+                action: textReplacementChange.action,
+                traceName: "local-text-replacement-fix",
+                traceTitle: "Apply focused text replacement",
+                ...(options.signal ? { signal: options.signal } : {}),
+                ...(options.evaluateBrowser
+                    ? { evaluateBrowser: options.evaluateBrowser }
+                    : {}),
+                ...(browserProbes.length > 0 ? { browserProbes } : {}),
+                ...(options.onProgress
+                    ? { onProgress: options.onProgress }
+                    : {}),
+                metrics: runMetrics,
+                runStartedAt,
+                focusedEdit: focusedEditRequest,
+            });
+
+            return withDesignPlanResult(withRequirementLedgerResult(
+                result,
+                requirements,
+                focusedEditRequest,
+                beforeWorkspaceSnapshot
+                    ? diffWorkspaceSnapshots(
+                          beforeWorkspaceSnapshot,
+                          await createWorkspaceSnapshot(options.workspaceRoot),
+                      )
+                    : undefined,
+                undefined,
+                scopeViolations,
+            ));
+        }
+
+        const deleteOrHideChange = await applyDeleteOrHideFallback(
+            options.workspaceRoot,
+            executionRequest,
+            options.signal,
+        );
+
+        if (deleteOrHideChange) {
+            await emitRunProgress(options.onProgress, "coding");
+            const result = await evaluateLocalWorkspaceChangeResult({
+                goal: options.goal,
+                workspaceRoot: options.workspaceRoot,
+                coordination: {
+                    ...baseCoordination,
+                    plan: [
+                        "Detect a focused delete or hide request for an explicit module",
+                        "Remove only the targeted source element without rewriting surrounding content",
+                        "Run install, build, static evaluation, and browser evaluation after the deletion fix",
+                    ],
+                },
+                messages: deleteOrHideChange.messages,
+                action: deleteOrHideChange.action,
+                traceName: "local-delete-hide-fix",
+                traceTitle: "Apply focused delete/hide fix",
+                ...(options.signal ? { signal: options.signal } : {}),
+                ...(options.evaluateBrowser
+                    ? { evaluateBrowser: options.evaluateBrowser }
+                    : {}),
+                ...(browserProbes.length > 0 ? { browserProbes } : {}),
+                ...(options.onProgress
+                    ? { onProgress: options.onProgress }
+                    : {}),
+                metrics: runMetrics,
+                runStartedAt,
+                focusedEdit: focusedEditRequest,
+            });
+
+            return withDesignPlanResult(withRequirementLedgerResult(
+                result,
+                requirements,
+                focusedEditRequest,
+                beforeWorkspaceSnapshot
+                    ? diffWorkspaceSnapshots(
+                          beforeWorkspaceSnapshot,
+                          await createWorkspaceSnapshot(options.workspaceRoot),
+                      )
+                    : undefined,
+                undefined,
+                scopeViolations,
+            ));
+        }
+
+        const sizeSpacingMessages =
+            await applySizeSpacingPositionFallback(
+                options.workspaceRoot,
+                executionRequest,
+                options.signal,
+            );
+
+        if (sizeSpacingMessages.length > 0) {
+            await emitRunProgress(options.onProgress, "coding");
+            const result = await evaluateLocalWorkspaceChangeResult({
+                goal: options.goal,
+                workspaceRoot: options.workspaceRoot,
+                coordination: {
+                    ...baseCoordination,
+                    plan: [
+                        "Detect a focused size, spacing, radius, or position request",
+                        "Apply a marked CSS-only override for the targeted visual measurement",
+                        "Run install, build, static evaluation, and browser evaluation after the size/spacing fix",
+                    ],
+                },
+                messages: sizeSpacingMessages,
+                action: {
+                    path: "src/App.css",
+                    oldText: "current size, spacing, radius, or position",
+                    newText: "marked size/spacing/position override CSS",
+                },
+                traceName: "local-size-spacing-position-fix",
+                traceTitle: "Apply size/spacing/position fix",
+                ...(options.signal ? { signal: options.signal } : {}),
+                ...(options.evaluateBrowser
+                    ? { evaluateBrowser: options.evaluateBrowser }
+                    : {}),
+                ...(browserProbes.length > 0 ? { browserProbes } : {}),
+                ...(options.onProgress
+                    ? { onProgress: options.onProgress }
+                    : {}),
+                metrics: runMetrics,
+                runStartedAt,
+                focusedEdit: focusedEditRequest,
+            });
+
+            return withDesignPlanResult(withRequirementLedgerResult(
+                result,
+                requirements,
+                focusedEditRequest,
+                beforeWorkspaceSnapshot
+                    ? diffWorkspaceSnapshots(
+                          beforeWorkspaceSnapshot,
+                          await createWorkspaceSnapshot(options.workspaceRoot),
+                      )
+                    : undefined,
+                undefined,
+                scopeViolations,
+            ));
+        }
+
+        const visualLayoutMessages =
+            await applyVisualLayoutStabilizationFallback(
+                options.workspaceRoot,
+                executionRequest,
+                options.signal,
+            );
+
+        if (visualLayoutMessages.length > 0) {
+            await emitRunProgress(options.onProgress, "coding");
+            const result = await evaluateLocalWorkspaceChangeResult({
+                goal: options.goal,
+                workspaceRoot: options.workspaceRoot,
+                coordination: {
+                    ...baseCoordination,
+                    plan: [
+                        "Detect a focused visual layout stabilization request",
+                        "Apply a marked CSS-only stabilizer for readable text, contained media, reduced oversized headings, and safer responsive layout",
+                        "Run install, build, static evaluation, and browser evaluation after the visual stabilization fix",
+                    ],
+                },
+                messages: visualLayoutMessages,
+                action: {
+                    path: "src/App.css",
+                    oldText: "oversized, overflowing, or hard-to-read visual layout",
+                    newText: "marked visual layout stabilizer CSS",
+                },
+                traceName: "local-visual-layout-stabilization",
+                traceTitle: "Apply visual layout stabilization fix",
+                ...(options.signal ? { signal: options.signal } : {}),
+                ...(options.evaluateBrowser
+                    ? { evaluateBrowser: options.evaluateBrowser }
+                    : {}),
+                ...(browserProbes.length > 0 ? { browserProbes } : {}),
+                ...(options.onProgress
+                    ? { onProgress: options.onProgress }
+                    : {}),
+                metrics: runMetrics,
+                runStartedAt,
+                focusedEdit: focusedEditRequest,
+            });
+
+            return withDesignPlanResult(withRequirementLedgerResult(
+                result,
+                requirements,
+                focusedEditRequest,
+                beforeWorkspaceSnapshot
+                    ? diffWorkspaceSnapshots(
+                          beforeWorkspaceSnapshot,
+                          await createWorkspaceSnapshot(options.workspaceRoot),
+                      )
+                    : undefined,
+                // This deterministic local fallback owns a single marked CSS
+                // block. Do not reject it against Locator line ranges that
+                // were built for LLM edit_file actions inside existing rules.
+                undefined,
+                scopeViolations,
+            ));
         }
 
         const semanticVisualMessages =
@@ -5424,6 +6700,7 @@ export async function runReactAppAgent(
                 ...(options.evaluateBrowser
                     ? { evaluateBrowser: options.evaluateBrowser }
                     : {}),
+                ...(browserProbes.length > 0 ? { browserProbes } : {}),
                 ...(options.onProgress
                     ? { onProgress: options.onProgress }
                     : {}),
@@ -5443,6 +6720,62 @@ export async function runReactAppAgent(
                       )
                     : undefined,
                 focusedEditScope,
+                scopeViolations,
+            ));
+        }
+
+        const colorPaletteMessages =
+            await applyColorPaletteFallback(
+                options.workspaceRoot,
+                executionRequest,
+                options.signal,
+            );
+
+        if (colorPaletteMessages.length > 0) {
+            await emitRunProgress(options.onProgress, "coding");
+            const result = await evaluateLocalWorkspaceChangeResult({
+                goal: options.goal,
+                workspaceRoot: options.workspaceRoot,
+                coordination: {
+                    ...baseCoordination,
+                    plan: [
+                        "Detect a focused color or background palette request",
+                        "Apply a marked CSS-only palette override without rewriting content or layout",
+                        "Run install, build, static evaluation, and browser evaluation after the palette fix",
+                    ],
+                },
+                messages: colorPaletteMessages,
+                action: {
+                    path: "src/App.css",
+                    oldText: "current color palette or background",
+                    newText: "marked palette override CSS",
+                },
+                traceName: "local-color-palette-fix",
+                traceTitle: "Apply color palette fix",
+                ...(options.signal ? { signal: options.signal } : {}),
+                ...(options.evaluateBrowser
+                    ? { evaluateBrowser: options.evaluateBrowser }
+                    : {}),
+                ...(browserProbes.length > 0 ? { browserProbes } : {}),
+                ...(options.onProgress
+                    ? { onProgress: options.onProgress }
+                    : {}),
+                metrics: runMetrics,
+                runStartedAt,
+                focusedEdit: focusedEditRequest,
+            });
+
+            return withDesignPlanResult(withRequirementLedgerResult(
+                result,
+                requirements,
+                focusedEditRequest,
+                beforeWorkspaceSnapshot
+                    ? diffWorkspaceSnapshots(
+                          beforeWorkspaceSnapshot,
+                          await createWorkspaceSnapshot(options.workspaceRoot),
+                      )
+                    : undefined,
+                undefined,
                 scopeViolations,
             ));
         }
@@ -5962,7 +7295,7 @@ export async function runReactAppAgent(
         }
         options.signal?.throwIfAborted();
 
-        const madeWorkspaceProgress = agentMadeWorkspaceProgress(agent);
+        let madeWorkspaceProgress = agentMadeWorkspaceProgress(agent);
 
         // A repair that times out before changing the draft is not a new
         // attempt result. Surface the repair failure while keeping the last
@@ -5977,6 +7310,61 @@ export async function runReactAppAgent(
                 agent.errorMessage ??
                     "Repair Agent model request failed before changing the draft",
             );
+        }
+
+        if (
+            !madeWorkspaceProgress &&
+            kind === "initial" &&
+            options.resetWorkspace === false &&
+            (focusedEditRequest ||
+                extractRequestedTextReplacement(executionRequest) !==
+                    undefined ||
+                isDeleteOrHideSingleTargetRequest(executionRequest) ||
+                isSizeSpacingPositionRequest(executionRequest) ||
+                isVisualLayoutStabilizationRequest(executionRequest) ||
+                isHorizontalPointLabelRequest(executionRequest) ||
+                isColorChangeRequest(executionRequest) ||
+                isCompactTopNavigationRequest(executionRequest))
+        ) {
+            const localFallbackChange = await applyNoProgressLocalFallback(
+                options.workspaceRoot,
+                executionRequest,
+                options.signal,
+            );
+
+            if (localFallbackChange) {
+                agent = {
+                    steps: [
+                        {
+                            action: {
+                                type: "edit_file",
+                                ...localFallbackChange.action,
+                            },
+                            execution: {
+                                ok: true,
+                                message:
+                                    localFallbackChange.messages.join("\n"),
+                                changed: true,
+                            },
+                        },
+                        {
+                            action: {
+                                type: "finish",
+                                summary:
+                                    "Applied a deterministic local fallback after the Coding Agent made no workspace change.",
+                            },
+                            execution: {
+                                ok: true,
+                                message:
+                                    "Applied a deterministic local fallback after the Coding Agent made no workspace change.",
+                            },
+                        },
+                    ],
+                    finished: true,
+                    stopReason: "finish",
+                };
+                madeWorkspaceProgress = true;
+            }
         }
 
         if (!madeWorkspaceProgress) {

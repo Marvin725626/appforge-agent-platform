@@ -491,7 +491,7 @@ export function App() {
         expect(result.designPlan).toEqual(designPlan);
     }, 15_000);
 
-    it("uses the focused edit fast path for a small button text change", async () => {
+    it("uses a deterministic fallback when a small button text change produces no model draft", async () => {
         const templateRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-api-template-"),
         );
@@ -520,22 +520,7 @@ export function App() {
             "utf8",
         );
 
-        const model = new FakeModelProvider([
-            {
-                content: JSON.stringify({
-                    type: "edit_file",
-                    path: "src/App.tsx",
-                    oldText: "<button>Start</button>",
-                    newText: "<button>Submit</button>",
-                }),
-            },
-            {
-                content: JSON.stringify({
-                    type: "finish",
-                    summary: "Updated the button text only.",
-                }),
-            },
-        ]);
+        const model = new FakeModelProvider([]);
 
         const result = await runReactAppAgent({
             goal: "Create a simple button page",
@@ -579,10 +564,13 @@ export function App() {
             result.requirements?.find((item) => item.id === "PRESERVE-1")
                 ?.status,
         ).toBe("PASS");
-        expect(model.requests).toHaveLength(2);
-        expect(model.requests[0]?.messages[1]?.content).toContain(
-            "Focused Edit Fast Path",
-        );
+        expect(model.requests).toHaveLength(0);
+        const firstAction = result.agent.steps[0]?.action;
+        expect(firstAction?.type).toBe("edit_file");
+        if (firstAction?.type !== "edit_file") {
+            throw new Error("Expected local text fallback to edit App.tsx");
+        }
+        expect(firstAction.path).toBe("src/App.tsx");
     });
 
     it("does not launch another full attempt after the coding model times out", async () => {
@@ -1913,7 +1901,7 @@ export function App() {
         expect(appSource).toContain('<h1 id="学校概况">学校概况</h1>');
     }, 15_000);
 
-    it("routes readability feedback through the coding model instead of local CSS-only stabilization", async () => {
+    it("applies local visual stabilization for readability feedback after a no-change model result", async () => {
         const templateRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-api-template-"),
         );
@@ -1978,24 +1966,7 @@ export function App() {
             "utf8",
         );
 
-        const model = new FakeModelProvider([
-            PLANNER_RESPONSE,
-            {
-                content: JSON.stringify({
-                    type: "write_file",
-                    path: "src/App.css",
-                    content:
-                        ".route-main { width: min(100% - 2rem, 1120px); margin: auto; }\n.page-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1rem; }\n.page-card { min-width: 0; }\n.page-card h2 { font-size: clamp(1.18rem, 2vw, 1.8rem); overflow-wrap: anywhere; }\n.page-card img { width: 100%; max-height: clamp(9rem, 20vw, 15rem); object-fit: contain; }\n.metric strong { font-size: clamp(1.8rem, 5vw, 3rem); white-space: nowrap; }\n",
-                }),
-            },
-            {
-                content: JSON.stringify({
-                    type: "finish",
-                    summary: "Focused readability CSS update completed.",
-                }),
-            },
-            APPROVED_REVIEW_RESPONSE,
-        ]);
+        const model = new FakeModelProvider([]);
 
         const result = await runReactAppAgent({
             goal: "\u6587\u5316\u540d\u5b57\u91cc\u9762\u7684\u5b57\u770b\u4e0d\u89c1\uff0c\u6709\u4e9b\u5b57\u4f53\u592a\u5927\u4e86\u7f29\u5c0f\u70b9\uff0c\u6392\u7248\u91cd\u65b0\u641e\u4e00\u4e0b",
@@ -2015,14 +1986,16 @@ export function App() {
             "utf8",
         );
 
-        expect(model.requests.length).toBeGreaterThan(0);
+        expect(model.requests).toHaveLength(0);
         const firstAction = result.agent.steps[0]?.action;
-        expect(firstAction?.type).toBe("write_file");
-        if (firstAction?.type !== "write_file") {
-            throw new Error("Expected the focused visual iteration to write CSS");
+        expect(firstAction?.type).toBe("edit_file");
+        if (firstAction?.type !== "edit_file") {
+            throw new Error("Expected the local visual stabilizer to edit App.css");
         }
+        expect(result.review.accepted).toBe(true);
         expect(firstAction.path).toBe("src/App.css");
-        expect(cssSource).toContain("font-size: clamp(1.18rem");
+        expect(cssSource).toContain("appforge visual-iteration-stabilizer");
+        expect(cssSource).toContain("font-size: clamp(1rem, 1.45vw, 1.32rem)");
         expect(cssSource).toContain("max-height: clamp(9rem");
         expect(cssSource).toContain("object-fit: contain");
         expect(cssSource).toContain("white-space: nowrap");
@@ -2168,8 +2141,11 @@ export function App() {
                 "import './App.css';",
                 "export function App() {",
                 "  return <main className=\"route-main\">",
+                "    <h1>温州非遗文化导览</h1>",
+                "    <p>围绕瓯绣、木活字、城市街巷和江海生活组织专题内容，帮助访客快速理解温州文化脉络。</p>",
                 "    <article className=\"page-card\"><img src=\"/assets/craft.jpg\" alt=\"Craft\" /><h2>百工巧技</h2></article>",
                 "    <article className=\"metric\"><strong>2200+</strong><p>建城历史</p></article>",
+                "    <section><h2>现场体验</h2><p>页面需要让图片自然放进容器，同时让数据和标题保持正常阅读尺度。</p></section>",
                 "  </main>;",
                 "}",
             ].join("\n"),
@@ -2181,24 +2157,7 @@ export function App() {
             "utf8",
         );
 
-        const model = new FakeModelProvider([
-            {
-                content: JSON.stringify({
-                    type: "edit_file",
-                    path: "src/App.css",
-                    oldText:
-                        ".page-card img, .metric strong { object-fit: cover; height: 22rem; font-size: 5rem; }",
-                    newText:
-                        ".page-card img, .metric strong { object-fit: contain; width: 100%; max-height: clamp(9rem, 22vw, 15rem); height: auto; display: block; font-size: clamp(1.8rem, 5vw, 3rem); word-break: keep-all; }",
-                }),
-            },
-            {
-                content: JSON.stringify({
-                    type: "finish",
-                    summary: "Focused image and typography update completed.",
-                }),
-            },
-        ]);
+        const model = new FakeModelProvider([]);
 
         const result = await runReactAppAgent({
             goal: "\u56fe\u7247\u4e0d\u80fd\u5f88\u597d\u7684\u653e\u5728\u91cc\u9762\uff0c\u800c\u4e14\u5b57\u4f53\u5f88\u5927",
@@ -2244,11 +2203,338 @@ export function App() {
             "utf8",
         );
 
-        expect(model.requests.length).toBeGreaterThan(0);
+        expect(model.requests).toHaveLength(0);
         expect(result.review.accepted).toBe(true);
+        expect(result.agent.steps[0]?.action.type).toBe("edit_file");
+        expect(cssSource).toContain("appforge visual-iteration-stabilizer");
         expect(cssSource).toContain("object-fit: contain");
-        expect(cssSource).toContain("font-size: clamp(1.8rem");
+        expect(cssSource).toContain("font-size: clamp(1.8rem, 4vw, 3rem)");
         expect(cssSource).toContain("word-break: keep-all");
+    }, 15_000);
+
+    it("applies a local color palette override without calling the model", async () => {
+        const templateRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-template-"),
+        );
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-workspace-"),
+        );
+
+        temporaryDirectories.push(templateRoot, workspaceRoot);
+
+        await mkdir(path.join(templateRoot, "src"));
+        await mkdir(path.join(workspaceRoot, "src"));
+
+        const packageJson = JSON.stringify({
+            scripts: {
+                build: "node -e \"console.log('build ok')\"",
+            },
+        });
+
+        await writeFile(
+            path.join(templateRoot, "package.json"),
+            packageJson,
+            "utf8",
+        );
+        await writeFile(
+            path.join(workspaceRoot, "package.json"),
+            packageJson,
+            "utf8",
+        );
+        await writeFile(
+            path.join(templateRoot, "src", "App.tsx"),
+            "export function App() { return <main><h1>Starter</h1></main>; }",
+            "utf8",
+        );
+        await writeFile(
+            path.join(workspaceRoot, "src", "App.tsx"),
+            [
+                "import './App.css';",
+                "export function App() {",
+                "  return <main className=\"page-view\">",
+                "    <section className=\"page-hero\"><h1>服务器监控后台</h1><p>集中查看 CPU、内存、请求延迟、异常服务和告警处置流程。</p></section>",
+                "    <section className=\"dashboard-panel\"><h2>运行状态</h2><p>当前环境健康，但蓝色背景需要换成更高级的深灰配色。</p></section>",
+                "  </main>;",
+                "}",
+            ].join("\n"),
+            "utf8",
+        );
+        await writeFile(
+            path.join(workspaceRoot, "src", "App.css"),
+            ".page-view { background: #38bdf8; color: #082f49; } .dashboard-panel { background: #7dd3fc; }",
+            "utf8",
+        );
+
+        const model = new FakeModelProvider([]);
+
+        const result = await runReactAppAgent({
+            goal: "蓝色背景还在，我希望换成深灰高级一点的颜色",
+            currentRequest: "蓝色背景还在，我希望换成深灰高级一点的颜色",
+            workspaceRoot,
+            templateRoot,
+            model,
+            resetWorkspace: false,
+            evaluateBrowser: async () => ({
+                passed: true,
+                checks: [
+                    { name: "palette changed to dark graphite", passed: true },
+                ],
+            }),
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        const cssSource = await readFile(
+            path.join(workspaceRoot, "src", "App.css"),
+            "utf8",
+        );
+
+        expect(model.requests).toHaveLength(0);
+        expect(result.review.accepted).toBe(true);
+        expect(result.agent.steps[0]?.action.type).toBe("edit_file");
+        expect(cssSource).toContain("appforge palette-override");
+        expect(cssSource).toContain('--appforge-palette-name: "graphite"');
+        expect(cssSource).toContain("--appforge-palette-bg: #0f1115");
+    }, 15_000);
+
+    it("applies a local sidebar width override with browser probe evidence", async () => {
+        const templateRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-template-"),
+        );
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-workspace-"),
+        );
+
+        temporaryDirectories.push(templateRoot, workspaceRoot);
+
+        await mkdir(path.join(templateRoot, "src"));
+        await mkdir(path.join(workspaceRoot, "src"));
+
+        const packageJson = JSON.stringify({
+            scripts: {
+                build: "node -e \"console.log('build ok')\"",
+            },
+        });
+
+        await writeFile(
+            path.join(templateRoot, "package.json"),
+            packageJson,
+            "utf8",
+        );
+        await writeFile(
+            path.join(workspaceRoot, "package.json"),
+            packageJson,
+            "utf8",
+        );
+        await writeFile(
+            path.join(templateRoot, "src", "App.tsx"),
+            "export function App() { return <main><h1>Starter</h1></main>; }",
+            "utf8",
+        );
+        await writeFile(
+            path.join(workspaceRoot, "src", "App.tsx"),
+            [
+                "import './App.css';",
+                "export function App() {",
+                "  return <main className=\"app-layout\">",
+                "    <aside className=\"sidebar\">导航</aside>",
+                "    <section className=\"content\"><h1>监控后台</h1><p>主要内容保持不变。</p></section>",
+                "  </main>;",
+                "}",
+            ].join("\n"),
+            "utf8",
+        );
+        await writeFile(
+            path.join(workspaceRoot, "src", "App.css"),
+            ".app-layout { display: flex; } .sidebar { width: 260px; } .content { flex: 1; }",
+            "utf8",
+        );
+
+        const model = new FakeModelProvider([]);
+        let browserCallCount = 0;
+        const seenProbeCounts: number[] = [];
+
+        const result = await runReactAppAgent({
+            goal: "Change the left sidebar width to 220px, other areas do not modify",
+            currentRequest:
+                "Change the left sidebar width to 220px, other areas do not modify",
+            workspaceRoot,
+            templateRoot,
+            model,
+            resetWorkspace: false,
+            evaluateBrowser: async (input) => {
+                browserCallCount += 1;
+                seenProbeCounts.push(input.browserProbes?.length ?? 0);
+                const width = browserCallCount === 1 ? 260 : 220;
+
+                return {
+                    passed: true,
+                    checks: [
+                        {
+                            name: `sidebar width is ${width}px`,
+                            passed: true,
+                        },
+                    ],
+                    evidence: [
+                        {
+                            source: "computed_style",
+                            requirementId: "REQ-1",
+                            selector: ".sidebar",
+                            property: "width",
+                            expected: "220px",
+                            actual: `${width}px`,
+                        },
+                    ],
+                };
+            },
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        const cssSource = await readFile(
+            path.join(workspaceRoot, "src", "App.css"),
+            "utf8",
+        );
+
+        expect(model.requests).toHaveLength(0);
+        expect(browserCallCount).toBeGreaterThanOrEqual(2);
+        expect(seenProbeCounts.every((count) => count > 0)).toBe(true);
+        expect(result.review.accepted).toBe(true);
+        expect(result.agent.steps[0]?.action.type).toBe("edit_file");
+        expect(cssSource).toContain("appforge size-spacing-position-fix");
+        expect(cssSource).toContain("width: 220px !important");
+        expect(result.requirements?.[0]?.status).toBe("PASS");
+    }, 15_000);
+
+    it("removes an explicitly targeted second feature module without calling the model", async () => {
+        const templateRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-template-"),
+        );
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-workspace-"),
+        );
+
+        temporaryDirectories.push(templateRoot, workspaceRoot);
+
+        await mkdir(path.join(templateRoot, "src"));
+        await mkdir(path.join(workspaceRoot, "src"));
+
+        const packageJson = JSON.stringify({
+            scripts: {
+                build: "node -e \"console.log('build ok')\"",
+            },
+        });
+
+        await writeFile(
+            path.join(templateRoot, "package.json"),
+            packageJson,
+            "utf8",
+        );
+        await writeFile(
+            path.join(workspaceRoot, "package.json"),
+            packageJson,
+            "utf8",
+        );
+        await writeFile(
+            path.join(templateRoot, "src", "App.tsx"),
+            "export function App() { return <main><h1>Starter</h1></main>; }",
+            "utf8",
+        );
+        await writeFile(
+            path.join(workspaceRoot, "src", "App.tsx"),
+            [
+                "import './App.css';",
+                "export function App() {",
+                "  return <main className=\"page-view\">",
+                "    <section className=\"feature-list\">",
+                "      <article className=\"feature-card feature-one\">First feature</article>",
+                "      <article className=\"feature-card feature-two\">Second feature</article>",
+                "      <article className=\"feature-card feature-three\">Third feature</article>",
+                "    </section>",
+                "  </main>;",
+                "}",
+            ].join("\n"),
+            "utf8",
+        );
+        await writeFile(
+            path.join(workspaceRoot, "src", "App.css"),
+            ".feature-list { display: grid; gap: 12px; } .feature-card { padding: 12px; }",
+            "utf8",
+        );
+
+        const model = new FakeModelProvider([]);
+        let browserCallCount = 0;
+        const seenProbeCounts: number[] = [];
+
+        const result = await runReactAppAgent({
+            goal: "Delete the second feature module and do not modify other areas",
+            currentRequest:
+                "Delete the second feature module and do not modify other areas",
+            workspaceRoot,
+            templateRoot,
+            model,
+            resetWorkspace: false,
+            evaluateBrowser: async (input) => {
+                browserCallCount += 1;
+                seenProbeCounts.push(input.browserProbes?.length ?? 0);
+
+                return {
+                    passed: true,
+                    checks: [
+                        {
+                            name: "second feature module removed",
+                            passed: true,
+                        },
+                    ],
+                    evidence: [
+                        {
+                            source: "browser",
+                            requirementId: "REQ-1",
+                            selector: ".feature-two",
+                            property: "element_count",
+                            expected: "0",
+                            actual: "0",
+                        },
+                    ],
+                };
+            },
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        const appSource = await readFile(
+            path.join(workspaceRoot, "src", "App.tsx"),
+            "utf8",
+        );
+
+        expect(model.requests).toHaveLength(0);
+        expect(browserCallCount).toBeGreaterThanOrEqual(2);
+        expect(seenProbeCounts.every((count) => count > 0)).toBe(true);
+        expect(result.review.accepted).toBe(true);
+        const firstAction = result.agent.steps[0]?.action;
+        expect(firstAction?.type).toBe("edit_file");
+        if (firstAction?.type !== "edit_file") {
+            throw new Error("Expected local delete fallback to edit App.tsx");
+        }
+        expect(firstAction.path).toBe("src/App.tsx");
+        expect(appSource).toContain("First feature");
+        expect(appSource).not.toContain("Second feature");
+        expect(appSource).toContain("Third feature");
+        expect(result.metrics?.modifiedFiles).toEqual(["src/App.tsx"]);
+        expect(result.requirements?.[0]?.status).toBe("PASS");
+        expect(
+            result.requirements?.find((item) => item.id === "PRESERVE-1")
+                ?.status,
+        ).toBe("PASS");
     }, 15_000);
 
     it("applies game visual grammar stabilization for card-like oversized UI feedback", async () => {
@@ -2369,11 +2655,13 @@ export function App() {
             "utf8",
         );
 
-        expect(model.requests.length).toBeGreaterThan(0);
+        expect(model.requests).toHaveLength(0);
         expect(result.agent.steps[0]?.action.type).toBe("edit_file");
+        expect(result.review.accepted).toBe(true);
+        expect(cssSource).toContain("appforge visual-iteration-stabilizer");
         expect(cssSource).toContain(".page-genre-game .game-panel");
         expect(cssSource).toContain("clip-path: polygon");
-        expect(cssSource).toContain("font-size: clamp(1.05rem");
+        expect(cssSource).toContain("font-size: clamp(1.05rem, 1.55vw, 1.55rem)");
         expect(cssSource).toContain("border-radius: .35rem");
     }, 15_000);
 
@@ -2503,8 +2791,10 @@ export function App() {
             "utf8",
         );
 
-        expect(model.requests.length).toBeGreaterThan(0);
+        expect(model.requests).toHaveLength(0);
         expect(result.agent.steps[0]?.action.type).toBe("edit_file");
+        expect(result.review.accepted).toBe(true);
+        expect(cssSource).toContain("appforge visual-iteration-stabilizer");
         expect(cssSource).toContain(".feature-list strong");
         expect(cssSource).toContain(".place-name");
         expect(cssSource).toContain("font-size: clamp(1rem, 1.45vw, 1.32rem)");

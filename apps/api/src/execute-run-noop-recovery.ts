@@ -8,6 +8,7 @@ export type NoopRecoveryInput = {
     workspaceRoot: string;
     maxRepairAttempts?: number | undefined;
     resetWorkspace?: boolean | undefined;
+    memoryContext?: string | undefined;
 };
 
 const ROOT_FILES = new Set([
@@ -153,6 +154,15 @@ export function createNoopRecoveryRequest(currentRequest: string): string {
         .join("\n");
 }
 
+function appendNoopRecoveryContext(
+    existingMemoryContext: string | undefined,
+    currentRequest: string,
+): string {
+    return [existingMemoryContext, createNoopRecoveryRequest(currentRequest)]
+        .filter((part): part is string => Boolean(part?.trim()))
+        .join("\n\n");
+}
+
 export async function executeRunWithNoopRecovery<
     TInput extends NoopRecoveryInput,
     TResult,
@@ -184,7 +194,11 @@ export async function executeRunWithNoopRecovery<
 
         const recoveryInput = {
             ...input,
-            currentRequest: createNoopRecoveryRequest(currentRequest),
+            currentRequest,
+            memoryContext: appendNoopRecoveryContext(
+                input.memoryContext,
+                currentRequest,
+            ),
             maxRepairAttempts: Math.max(input.maxRepairAttempts ?? 0, 1),
             resetWorkspace: false,
         } as TInput;
@@ -202,7 +216,11 @@ export async function executeRunWithNoopRecovery<
 
     const recoveryInput = {
         ...input,
-        currentRequest: createNoopRecoveryRequest(currentRequest),
+        currentRequest,
+        memoryContext: appendNoopRecoveryContext(
+            input.memoryContext,
+            currentRequest,
+        ),
         maxRepairAttempts: Math.max(input.maxRepairAttempts ?? 0, 1),
         resetWorkspace: false,
     } as TInput;

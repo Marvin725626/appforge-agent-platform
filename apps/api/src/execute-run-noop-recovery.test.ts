@@ -8,6 +8,7 @@ import {
     executeRunWithNoopRecovery,
     fingerprintUserVisibleWorkspace,
 } from "./execute-run-noop-recovery.js";
+import type { NoopRecoveryInput } from "./execute-run-noop-recovery.js";
 
 const roots: string[] = [];
 
@@ -36,7 +37,7 @@ describe("V9.4.2.3 bounded continuation no-op recovery", () => {
         const calls: unknown[] = [];
 
         const result = await executeRunWithNoopRecovery(
-            async (input) => {
+            async (input: NoopRecoveryInput) => {
                 calls.push(input);
                 return "initial";
             },
@@ -52,7 +53,7 @@ describe("V9.4.2.3 bounded continuation no-op recovery", () => {
         const calls: Array<{ currentRequest?: string | undefined }> = [];
 
         const result = await executeRunWithNoopRecovery(
-            async (input) => {
+            async (input: NoopRecoveryInput) => {
                 calls.push(input);
                 await writeFile(
                     path.join(workspaceRoot, "src", "App.css"),
@@ -76,18 +77,20 @@ describe("V9.4.2.3 bounded continuation no-op recovery", () => {
         const workspaceRoot = await createWorkspace();
         const calls = [] as unknown as Array<{
             currentRequest?: string | undefined;
+            memoryContext?: string | undefined;
             maxRepairAttempts?: number | undefined;
             resetWorkspace?: boolean | undefined;
         }> & {
             1: {
                 currentRequest?: string | undefined;
+                memoryContext?: string | undefined;
                 maxRepairAttempts?: number | undefined;
                 resetWorkspace?: boolean | undefined;
             };
         };
 
         const result = await executeRunWithNoopRecovery(
-            async (input) => {
+            async (input: NoopRecoveryInput) => {
                 calls.push(input);
                 if (calls.length === 2) {
                     await writeFile(
@@ -110,12 +113,13 @@ describe("V9.4.2.3 bounded continuation no-op recovery", () => {
 
         expect(result).toBe(2);
         expect(calls).toHaveLength(2);
-        expect(calls[1].currentRequest).toContain(
+        expect(calls[1].memoryContext).toContain(
             "[NO-OP RECOVERY: SECOND AND FINAL ATTEMPT]",
         );
-        expect(calls[1].currentRequest).toContain("src/App.tsx");
-        expect(calls[1].currentRequest).toContain("src/App.css");
-        expect(calls[1].currentRequest).toContain("桌面导航保持单行");
+        expect(calls[1].memoryContext).toContain("src/App.tsx");
+        expect(calls[1].memoryContext).toContain("src/App.css");
+        expect(calls[1].currentRequest).toBe(calls[0]?.currentRequest);
+        expect(calls[1].memoryContext).toContain("桌面导航保持单行");
         expect(calls[1].maxRepairAttempts).toBeGreaterThanOrEqual(1);
         expect(calls[1].resetWorkspace).toBe(false);
     });
@@ -125,13 +129,14 @@ describe("V9.4.2.3 bounded continuation no-op recovery", () => {
         let callCount = 0;
 
         const result = await executeRunWithNoopRecovery(
-            async (input) => {
+            async (input: NoopRecoveryInput) => {
                 callCount += 1;
                 if (callCount === 1) {
                     throw new Error("edit_file oldText was not found");
                 }
 
-                expect(input.currentRequest).toContain("[NO-OP RECOVERY");
+                expect(input.currentRequest).toBe("修改 src/App.tsx 中的标题");
+                expect(input.memoryContext).toContain("[NO-OP RECOVERY");
                 await writeFile(
                     path.join(workspaceRoot, "src", "App.tsx"),
                     "export function App() { return <main>Recovered</main>; }\n",

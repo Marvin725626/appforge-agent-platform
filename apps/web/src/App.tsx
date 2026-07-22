@@ -59,6 +59,7 @@ type AgentReview = {
         buildPassed: boolean;
         evalPassed: boolean;
         browserPassed?: boolean;
+        browserVisualOnly?: boolean;
     };
 };
 
@@ -1134,8 +1135,13 @@ function hasQualityGateFailure(review: AgentReview): boolean {
     return (
         !review.checks.installPassed ||
         !review.checks.buildPassed ||
-        !review.checks.evalPassed
+        !review.checks.evalPassed ||
+        review.checks.browserPassed === false
     );
+}
+
+function hasBrowserGateFailure(review: AgentReview): boolean {
+    return review.checks.browserPassed === false;
 }
 
 function formatReviewReason(reason: string, language: Language): string {
@@ -1745,6 +1751,18 @@ function getReviewDispositionView(input: {
             };
         }
 
+        if (hasBrowserGateFailure(review)) {
+            return {
+                tone: run.status === "failed" ? "danger" : "warning",
+                title: review.checks.browserVisualOnly
+                    ? "浏览器视觉门禁未通过"
+                    : "浏览器运行验证失败",
+                detail: review.checks.browserVisualOnly
+                    ? "页面可以预览，但浏览器检查认为首屏、布局或需求匹配还不够好；这只是待人工判断草稿，不是已完成版本。"
+                    : "页面构建成功，但浏览器运行验证发现运行时、可见内容或控制台错误，需要修复后才能作为完成结果。",
+            };
+        }
+
         if (hasQualityGateFailure(review)) {
             return {
                 tone: run.status === "failed" ? "danger" : "warning",
@@ -1852,6 +1870,18 @@ function getReviewDispositionView(input: {
             tone: "danger",
             title: "No new draft was produced",
             detail: "The workspace is identical to the latest saved version, so this run was not moved into human review.",
+        };
+    }
+
+    if (hasBrowserGateFailure(review)) {
+        return {
+            tone: run.status === "failed" ? "danger" : "warning",
+            title: review.checks.browserVisualOnly
+                ? "Browser visual gate failed"
+                : "Browser runtime validation failed",
+            detail: review.checks.browserVisualOnly
+                ? "The page is previewable, but browser checks say the first screen, layout, or requirement fit still needs human judgment."
+                : "The build succeeded, but browser runtime validation found an error or missing visible content.",
         };
     }
 
@@ -3436,6 +3466,19 @@ export function App() {
         selectedDesignVersion?.designPlan ?? agentResult?.designPlan;
     const displayedDesignPlanSource =
         selectedDesignVersion?.designPlanSource ?? agentResult?.designPlanSource;
+    const resultAvailabilityMessage = terminalRunHasNoGeneratedOutput
+        ? null
+        : selectedVersionNumber !== null || currentReview?.accepted
+          ? copy.resultReady
+          : currentReview
+            ? hasBrowserGateFailure(currentReview)
+                ? language === "zh"
+                    ? "当前只是可预览草稿，还没有通过浏览器验证，不能当作已完成版本。"
+                    : "This is a previewable draft, but it has not passed browser validation yet."
+                : language === "zh"
+                  ? "当前有可预览草稿，但还没有通过最终验收，请根据下方原因决定批准或继续修改。"
+                  : "A draft is available to preview, but it has not passed final acceptance yet."
+            : copy.resultReady;
 
     return (
         <main className="app-shell workspace-shell">
@@ -4001,9 +4044,9 @@ export function App() {
                             ) : null}
                             {agentResult || selectedVersionNumber !== null ? (
                                 <>
-                                    {!terminalRunHasNoGeneratedOutput ? (
+                                    {resultAvailabilityMessage ? (
                                         <p className="muted-text">
-                                            {copy.resultReady}
+                                            {resultAvailabilityMessage}
                                         </p>
                                     ) : null}
                                     <div
