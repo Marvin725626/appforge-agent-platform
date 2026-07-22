@@ -78,6 +78,14 @@ describe("anti-template evaluator", () => {
         expect(report.level).toBe("pass");
         expect(report.score).toBeGreaterThanOrEqual(90);
         expect(report.metrics.operationalPanelCount).toBeGreaterThan(0);
+        expect(report.metrics.majorSurfaceCount).toBe(
+            report.metrics.majorContainerCount,
+        );
+        expect(report.metrics.roundedSurfaceRatio).toBeLessThan(0.5);
+        expect(report.metrics.shadowedSurfaceRatio).toBe(0);
+        expect(report.metrics.equalColumnGridCount).toBe(
+            report.metrics.threeColumnGridCount,
+        );
         expect(report.metrics.homogeneousThreeColumnGridCount).toBe(0);
         expect(report.metrics.largeRadiusContainerRatio).toBeLessThan(0.5);
     });
@@ -111,7 +119,7 @@ describe("anti-template evaluator", () => {
         const cssSource = `
             :root { --radius: 24px; }
             .feature-grid, .benefit-grid, .pricing-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-            .feature-row, .feature-card, .benefit-card, .pricing-card { background: #fff; border: 1px solid #ddd; border-radius: var(--radius); }
+            .feature-row, .feature-card, .benefit-card, .pricing-card { background: #fff; border: 1px solid #ddd; border-radius: var(--radius); box-shadow: 0 20px 40px rgba(0, 0, 0, .16); }
         `;
         const report = evaluateAntiTemplate({
             applicationType: "product",
@@ -124,7 +132,19 @@ describe("anti-template evaluator", () => {
         expect(report.score).toBeLessThan(60);
         expect(report.metrics.cardContainerRatio).toBeGreaterThanOrEqual(0.8);
         expect(report.metrics.largeRadiusContainerRatio).toBeGreaterThanOrEqual(0.7);
+        expect(report.metrics.majorSurfaceCount).toBe(
+            report.metrics.majorContainerCount,
+        );
+        expect(report.metrics.roundedSurfaceRatio).toBeGreaterThanOrEqual(0.7);
+        expect(report.metrics.shadowedSurfaceRatio).toBeGreaterThanOrEqual(0.7);
+        expect(report.metrics.equalColumnGridCount).toBe(3);
         expect(report.metrics.homogeneousThreeColumnGridCount).toBe(3);
+        expect(report.metrics.repeatedStructureCount).toBe(
+            report.metrics.repeatedDomPatternCount,
+        );
+        expect(report.metrics.largestRepeatedComponentGroup).toBeGreaterThanOrEqual(
+            2,
+        );
         expect(report.metrics.repeatedDomPatternRatio).toBe(1);
         expect(report.findings.map((finding) => finding.code)).toEqual(
             expect.arrayContaining([

@@ -47,17 +47,24 @@ export type AntiTemplateThresholds = {
 
 export type AntiTemplateMetrics = {
     majorContainerCount: number;
+    majorSurfaceCount: number;
     cardContainerCount: number;
     operationalPanelCount: number;
     cardContainerRatio: number;
     roundedContainerCount: number;
     largeRadiusContainerCount: number;
     largeRadiusContainerRatio: number;
+    roundedSurfaceRatio: number;
+    shadowedSurfaceCount: number;
+    shadowedSurfaceRatio: number;
     threeColumnGridCount: number;
     homogeneousThreeColumnGridCount: number;
+    equalColumnGridCount: number;
     domPatternCount: number;
     repeatedDomPatternCount: number;
     repeatedDomPatternRatio: number;
+    repeatedStructureCount: number;
+    largestRepeatedComponentGroup: number;
 };
 
 export type AntiTemplateReport = {
@@ -320,6 +327,7 @@ function sectionSignature(section: StablePageSection): string {
 function calculateRepeatedDomMetrics(sections: StablePageSection[]): {
     signatures: string[];
     repeatedCount: number;
+    largestGroup: number;
     ratio: number;
 } {
     const signatures = sections.map(sectionSignature);
@@ -335,6 +343,7 @@ function calculateRepeatedDomMetrics(sections: StablePageSection[]): {
     return {
         signatures,
         repeatedCount: duplicateExcess,
+        largestGroup: Math.max(0, ...counts.values()),
         ratio: duplicateExcess / denominator,
     };
 }
@@ -349,12 +358,14 @@ function activeContainerMetrics(
     operationalPanelCount: number;
     roundedContainerCount: number;
     largeRadiusContainerCount: number;
+    shadowedSurfaceCount: number;
 } {
     let majorContainerCount = 0;
     let cardContainerCount = 0;
     let operationalPanelCount = 0;
     let roundedContainerCount = 0;
     let largeRadiusContainerCount = 0;
+    let shadowedSurfaceCount = 0;
 
     for (const section of content.sections) {
         const selectors = SECTION_ITEM_SELECTORS[section.kind];
@@ -387,6 +398,9 @@ function activeContainerMetrics(
             if (radius >= 16) {
                 largeRadiusContainerCount += weight;
             }
+            if (declarations.has("box-shadow")) {
+                shadowedSurfaceCount += weight;
+            }
             if (cardLike && (!operational || radius >= 16)) {
                 cardContainerCount += weight;
             }
@@ -399,6 +413,7 @@ function activeContainerMetrics(
         operationalPanelCount,
         roundedContainerCount,
         largeRadiusContainerCount,
+        shadowedSurfaceCount,
     };
 }
 
@@ -512,16 +527,26 @@ export function evaluateAntiTemplate(
         containers.cardContainerCount / Math.max(1, containers.majorContainerCount);
     const largeRadiusContainerRatio =
         containers.largeRadiusContainerCount / Math.max(1, containers.majorContainerCount);
+    const roundedSurfaceRatio =
+        containers.roundedContainerCount / Math.max(1, containers.majorContainerCount);
+    const shadowedSurfaceRatio =
+        containers.shadowedSurfaceCount / Math.max(1, containers.majorContainerCount);
 
     const metrics: AntiTemplateMetrics = {
         ...containers,
+        majorSurfaceCount: containers.majorContainerCount,
         cardContainerRatio: round(cardContainerRatio),
         largeRadiusContainerRatio: round(largeRadiusContainerRatio),
+        roundedSurfaceRatio: round(roundedSurfaceRatio),
+        shadowedSurfaceRatio: round(shadowedSurfaceRatio),
         threeColumnGridCount: threeColumn.selectors.length,
         homogeneousThreeColumnGridCount: threeColumn.homogeneousSelectors.length,
+        equalColumnGridCount: threeColumn.selectors.length,
         domPatternCount: repeatedDom.signatures.length,
         repeatedDomPatternCount: repeatedDom.repeatedCount,
         repeatedDomPatternRatio: round(repeatedDom.ratio),
+        repeatedStructureCount: repeatedDom.repeatedCount,
+        largestRepeatedComponentGroup: repeatedDom.largestGroup,
     };
 
     const findings: AntiTemplateFinding[] = [];
