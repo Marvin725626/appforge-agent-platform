@@ -178,4 +178,50 @@ describe("stable page content", () => {
         ]);
     });
 
+    it("replaces generic game content with Valorant-specific stable content when requested", async () => {
+        const designPlan = createDesignPlan("game");
+        designPlan.designIntent.primaryGoal =
+            "做一个瓦罗兰特 / 无畏契约专题页，内容必须围绕特工、地图点位、回合经济、武器负载和版本情报。";
+        const fallback = await generateStablePageContent({
+            goal: "内容不是无畏契约的，请换成瓦罗兰特相关内容",
+            designPlan,
+        });
+        const genericContent = {
+            ...fallback.content,
+            brand: {
+                ...fallback.content.brand,
+                title: "通用战术档案",
+                summary: "介绍一个普通战术行动的阶段、路线和装备。",
+            },
+            sections: fallback.content.sections.map((section, index) => ({
+                ...section,
+                id: `generic-${index + 1}`,
+                title: `普通行动模块 ${index + 1}`,
+                description: "这里是通用战术内容，没有具体游戏名词。",
+                items: section.items.map((item, itemIndex) => ({
+                    ...item,
+                    title: `普通条目 ${itemIndex + 1}`,
+                    description: "通用任务说明，不包含具体游戏点位或武器。",
+                })),
+            })),
+        };
+        const model = new FakeModelProvider({
+            content: JSON.stringify(genericContent),
+        });
+
+        const result = await generateStablePageContent({
+            goal: "内容不是无畏契约的，请换成瓦罗兰特相关内容",
+            designPlan,
+            model,
+        });
+        const text = JSON.stringify(result.content);
+
+        expect(result.content.brand.name).toContain("VALORANT");
+        expect(text).toMatch(/瓦罗兰特|无畏契约/iu);
+        expect(text).toMatch(/特工/iu);
+        expect(text).toMatch(/Ascent|Haven|Bind|点位/iu);
+        expect(text).toMatch(/回合经济|手枪局|长枪局/iu);
+        expect(text).toMatch(/Vandal|Phantom|Operator/iu);
+    });
+
 });

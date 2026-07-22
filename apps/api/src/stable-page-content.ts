@@ -309,6 +309,231 @@ function normalizeApplicationType(designPlan?: DesignPlan): ApplicationType {
     return designPlan?.applicationType ?? "custom";
 }
 
+function isValorantRequest(goal: string, designPlan?: DesignPlan): boolean {
+    return /valorant|瓦罗兰特|无畏契约|无畏契约|spike|vandal|phantom|haven|ascent|bind|split|lotus|莲华古城|源工重镇|亚海悬城|隐世修所|回合经济|爆能器/iu.test(
+        `${goal}\n${designPlan?.designIntent.primaryGoal ?? ""}`,
+    );
+}
+
+function valorantRequirementBucketCount(content: StablePageContent): number {
+    const text = JSON.stringify(content);
+    const buckets = [
+        /瓦罗兰特|无畏契约|VALORANT/iu,
+        /捷风|雷兹|炼狱|幽影|贤者|奇乐|猎枭|芮娜|特工阵容|特工职责/iu,
+        /Ascent|Haven|Bind|Split|Lotus|亚海悬城|隐世修所|源工重镇|莲华古城|A\/B\/C/iu,
+        /回合经济|手枪局|奖励局|长枪局|强起|eco|FULL BUY|buy \/ save/iu,
+        /Vandal|Phantom|Operator|Spectre|Sheriff/iu,
+        /版本情报|Meta|补丁|赛季|PATCH/iu,
+    ];
+
+    return buckets.filter((pattern) => pattern.test(text)).length;
+}
+
+function createValorantStablePageContent(
+    base: StablePageContent,
+): StablePageContent {
+    return StablePageContentSchema.parse({
+        ...base,
+        applicationType: "game",
+        templateVariant: "command-console",
+        theme: {
+            palette: "tactical-amber",
+            fontPair: "condensed-mono",
+            density: "compact",
+        },
+        brand: {
+            name: "VALORANT 战术档案",
+            kicker: "TACTICAL HUD",
+            title: "瓦罗兰特战术情报中心",
+            summary:
+                "围绕特工职责、地图点位、回合经济、武器负载与版本情报组织内容，让玩家快速理解攻防节奏与实战选择。",
+            primaryAction: "查看点位",
+            secondaryAction: "研究经济",
+            statusLabel: "MATCH READY",
+        },
+        hero: {
+            imagePrompt:
+                "VALORANT inspired tactical HUD scene, dark red amber esports interface, agents silhouettes, map route overlays, no text, no logos, 16:9 web hero.",
+            imageAlt: "瓦罗兰特战术 HUD 主视觉",
+            stats: [
+                { label: "地图池", value: "Ascent / Haven" },
+                { label: "核心节奏", value: "13 回合换边" },
+                { label: "经济判断", value: "buy / save" },
+                { label: "版本情报", value: "Meta Watch" },
+            ],
+        },
+        sections: [
+            {
+                id: "agents",
+                kind: "feature-list",
+                eyebrow: "AGENT ROLES",
+                title: "特工阵容与职责轨道",
+                description:
+                    "把决斗、控场、哨卫和先锋按职责组织，说明进点、封烟、侦察和守点如何互相配合。",
+                items: [
+                    {
+                        title: "捷风 / 雷兹",
+                        meta: "ENTRY",
+                        description:
+                            "负责首轮进点和拉枪线，用位移或爆破技能打开包点空间。",
+                        value: "突破",
+                        status: "ACTIVE",
+                    },
+                    {
+                        title: "炼狱 / 幽影",
+                        meta: "SMOKE",
+                        description:
+                            "用烟雾切断长枪线，保护 Spike 安放并拖慢回防节奏。",
+                        value: "控场",
+                        status: "READY",
+                    },
+                    {
+                        title: "贤者 / 奇乐",
+                        meta: "SENTINEL",
+                        description:
+                            "通过墙、陷阱和延迟技能守住侧翼，稳定残局处理。",
+                        value: "守点",
+                        status: "ANCHOR",
+                    },
+                ],
+            },
+            {
+                id: "maps",
+                kind: "map",
+                eyebrow: "MAP MATRIX",
+                title: "地图点位战术矩阵",
+                description:
+                    "用 A/B/C 点、中路和转点路径描述地图决策，而不是泛泛的游戏介绍。",
+                items: [
+                    {
+                        title: "Ascent 亚海悬城",
+                        meta: "MID CONTROL",
+                        description:
+                            "中路门与 Market 连接 A/B 两点，控中决定转点速度和回防压力。",
+                        value: "A/B",
+                        status: "TACTICAL",
+                    },
+                    {
+                        title: "Haven 隐世修所",
+                        meta: "THREE SITES",
+                        description:
+                            "A/B/C 三包点让防守资源更分散，进攻可用假打拉扯轮转。",
+                        value: "A/B/C",
+                        status: "HIGH TEMPO",
+                    },
+                    {
+                        title: "Bind 源工重镇",
+                        meta: "TELEPORT",
+                        description:
+                            "传送门制造快速转点，但声音会暴露意图，需要道具同步掩护。",
+                        value: "TP",
+                        status: "ROTATE",
+                    },
+                ],
+            },
+            {
+                id: "economy",
+                kind: "timeline",
+                eyebrow: "ROUND ECONOMY",
+                title: "回合经济时间线",
+                description:
+                    "按手枪局、奖励局、长枪局、强起和 eco 解释资金如何影响胜负节奏。",
+                items: [
+                    {
+                        title: "手枪局",
+                        meta: "ROUND 01",
+                        description:
+                            "轻甲、技能和 Sheriff 的购买选择会决定前 2-3 回合的经济滚雪球。",
+                        value: "800 cred",
+                        status: "OPEN",
+                    },
+                    {
+                        title: "奖励局",
+                        meta: "ROUND 02-03",
+                        description:
+                            "用 Spectre、Bulldog 或保枪思路扩大优势，避免无意义换长枪。",
+                        value: "BONUS",
+                        status: "TEMPO",
+                    },
+                    {
+                        title: "长枪局",
+                        meta: "FULL BUY",
+                        description:
+                            "Vandal、Phantom、全甲与完整道具进入标准攻防执行阶段。",
+                        value: "3900+",
+                        status: "POWER",
+                    },
+                ],
+            },
+            {
+                id: "loadout",
+                kind: "matrix",
+                eyebrow: "LOADOUT",
+                title: "武器负载与距离选择",
+                description:
+                    "按地图距离、经济状态和特工职责选择 Vandal、Phantom、Operator 或冲锋枪。",
+                items: [
+                    {
+                        title: "Vandal",
+                        meta: "RIFLE",
+                        description:
+                            "全距离一枪爆头，适合长枪线和需要稳定首杀的默认控图。",
+                        value: "2900",
+                        status: "PRECISION",
+                    },
+                    {
+                        title: "Phantom",
+                        meta: "RIFLE",
+                        description:
+                            "近中距离控枪更舒服，穿烟压制和连续转火更稳定。",
+                        value: "2900",
+                        status: "CONTROL",
+                    },
+                    {
+                        title: "Operator",
+                        meta: "SNIPER",
+                        description:
+                            "用于长距离架点和首杀压迫，但失败会造成巨大经济风险。",
+                        value: "4700",
+                        status: "RISK",
+                    },
+                ],
+            },
+            {
+                id: "patch",
+                kind: "data-table",
+                eyebrow: "PATCH INTEL",
+                title: "版本情报与 Meta 提醒",
+                description:
+                    "记录特工强弱、地图轮换和武器调整，帮助玩家判断当前版本优先级。",
+                items: [
+                    {
+                        title: "特工 Meta",
+                        meta: "PATCH",
+                        description:
+                            "关注控场与先锋组合变化，避免只按旧阵容套战术。",
+                        value: "WATCH",
+                        status: "UPDATED",
+                    },
+                    {
+                        title: "地图轮换",
+                        meta: "POOL",
+                        description:
+                            "根据地图池准备默认战术、进点爆弹和防守站位。",
+                        value: "LIVE",
+                        status: "TRACK",
+                    },
+                ],
+            },
+        ],
+        footer: {
+            statement:
+                "瓦罗兰特专题以战术学习为核心，聚焦点位、经济、武器与版本判断。",
+            links: ["特工", "地图", "经济", "武器", "版本"],
+        },
+    });
+}
+
 function fallbackItems(
     applicationType: ApplicationType,
     sectionTitle: string,
@@ -401,7 +626,11 @@ function createFallbackStablePageContent(
         },
     };
 
-    return StablePageContentSchema.parse(content);
+    const parsed = StablePageContentSchema.parse(content);
+
+    return applicationType === "game" && isValorantRequest(goal, designPlan)
+        ? createValorantStablePageContent(parsed)
+        : parsed;
 }
 
 function formatValidationError(error: z.ZodError): string {
@@ -542,6 +771,14 @@ function enforceApplicationContentContract(
         return enforceDashboardContentContract(content, fallback);
     }
 
+    if (
+        content.applicationType === "game" &&
+        valorantRequirementBucketCount(fallback) >= 5 &&
+        valorantRequirementBucketCount(content) < 5
+    ) {
+        return fallback;
+    }
+
     return content;
 }
 
@@ -591,6 +828,8 @@ function createContentPrompt(
         "You are not writing code. Return one JSON object only.",
         "All visible copy must match the user's language and domain. Do not mention templates, DesignPlan, acceptance checks, forbidden patterns, source code, or AppForge runtime.",
         "Use concise, specific, non-placeholder copy. Avoid generic marketing filler.",
+        "If the current request says existing content is wrong, off-topic, or not related to the target subject, replace the visible copy with subject-specific names, entities, data, sections, and terminology.",
+        "Preserve and foreground named entities from the user goal, such as cities, universities, games, products, or brands.",
         "Choose exactly 4 to 6 substantive sections. Every section needs 2 to 8 useful items.",
         "Choose a templateVariant compatible with applicationType.",
         "Allowed applicationType values: editorial, institution, dashboard, commerce, product, portfolio, game, custom.",

@@ -1,4 +1,4 @@
-import type { DesignPlan } from "@appforge/protocol";
+﻿import type { DesignPlan } from "@appforge/protocol";
 
 import type { StablePageContent } from "./stable-page-content.js";
 import { deriveStableLayoutFamily } from "./layout-family-policy.js";
@@ -224,9 +224,9 @@ function HeroMedia() {
 
 function StatBand() {
     return (
-        <div className="stat-band" aria-label="页面关键信息">
-            {page.hero.stats.map((stat) => (
-                <div className="stat-readout" key={stat.label}>
+        <div className="stat-band" aria-label="椤甸潰鍏抽敭淇℃伅">
+            {page.hero.stats.map((stat, index) => (
+                <div className="stat-readout" key={stat.label + "-" + index}>
                     <span>{stat.label}</span>
                     <strong>{stat.value}</strong>
                 </div>
@@ -249,7 +249,7 @@ function FeatureList({ section }: { section: PageSection }) {
     return (
         <div className="feature-rail">
             {section.items.map((item, index) => (
-                <article className="feature-row" key={item.title}>
+                <article className="feature-row" key={item.title + "-" + index}>
                     <span className="item-index">{String(index + 1).padStart(2, "0")}</span>
                     <div><h3>{item.title}</h3><p>{item.description}</p></div>
                     <div className="item-meta"><b>{item.value || item.meta}</b><span>{item.status}</span></div>
@@ -263,7 +263,7 @@ function Timeline({ section }: { section: PageSection }) {
     return (
         <ol className="timeline-rail">
             {section.items.map((item, index) => (
-                <li key={item.title}>
+                <li key={item.title + "-" + index}>
                     <span className="timeline-marker">{String(index + 1).padStart(2, "0")}</span>
                     <div><p className="item-label">{item.meta}</p><h3>{item.title}</h3><p>{item.description}</p></div>
                     <strong>{item.status || item.value}</strong>
@@ -276,9 +276,9 @@ function Timeline({ section }: { section: PageSection }) {
 function Matrix({ section }: { section: PageSection }) {
     return (
         <div className="matrix-board">
-            <div className="matrix-head"><span>编号</span><span>主题</span><span>说明</span><span>状态</span></div>
+            <div className="matrix-head"><span>缂栧彿</span><span>涓婚</span><span>璇存槑</span><span>鐘舵€?/span></div>
             {section.items.map((item, index) => (
-                <div className="matrix-row" key={item.title}>
+                <div className="matrix-row" key={item.title + "-" + index}>
                     <span>{String(index + 1).padStart(2, "0")}</span>
                     <strong>{item.title}</strong>
                     <p>{item.description}</p>
@@ -293,7 +293,7 @@ function Gallery({ section }: { section: PageSection }) {
     return (
         <div className="gallery-flow">
             {section.items.map((item, index) => (
-                <article className="gallery-piece" key={item.title}>
+                <article className="gallery-piece" key={item.title + "-" + index}>
                     <div className="gallery-visual" aria-hidden="true"><span>{String(index + 1).padStart(2, "0")}</span></div>
                     <p className="item-label">{item.meta}</p>
                     <h3>{item.title}</h3>
@@ -308,9 +308,9 @@ function DataTable({ section }: { section: PageSection }) {
     return (
         <div className="table-wrap">
             <table>
-                <thead><tr><th>项目</th><th>说明</th><th>数值</th><th>状态</th></tr></thead>
-                <tbody>{section.items.map((item) => (
-                    <tr key={item.title}><th>{item.title}</th><td>{item.description}</td><td>{item.value}</td><td><span>{item.status}</span></td></tr>
+                <thead><tr><th>椤圭洰</th><th>璇存槑</th><th>鏁板€?/th><th>鐘舵€?/th></tr></thead>
+                <tbody>{section.items.map((item, index) => (
+                    <tr key={item.title + "-" + index}><th>{item.title}</th><td>{item.description}</td><td>{item.value}</td><td><span>{item.status}</span></td></tr>
                 ))}</tbody>
             </table>
         </div>
@@ -321,7 +321,7 @@ function Story({ section }: { section: PageSection }) {
     return (
         <div className="story-flow">
             {section.items.map((item, index) => (
-                <article key={item.title}>
+                <article key={item.title + "-" + index}>
                     <p className="item-label">{item.meta || \`0\${index + 1}\`}</p>
                     <h3>{item.title}</h3>
                     <p>{item.description}</p>
@@ -334,8 +334,8 @@ function Story({ section }: { section: PageSection }) {
 function Quotes({ section }: { section: PageSection }) {
     return (
         <div className="quote-flow">
-            {section.items.map((item) => (
-                <blockquote key={item.title}><p>“{item.description}”</p><footer><strong>{item.title}</strong><span>{item.meta}</span></footer></blockquote>
+            {section.items.map((item, index) => (
+                <blockquote key={item.title + "-" + index}><p>鈥渰item.description}鈥?/p><footer><strong>{item.title}</strong><span>{item.meta}</span></footer></blockquote>
             ))}
         </div>
     );
@@ -345,7 +345,7 @@ function Faq({ section }: { section: PageSection }) {
     return (
         <div className="faq-flow">
             {section.items.map((item, index) => (
-                <details key={item.title} open={index === 0}><summary>{item.title}</summary><p>{item.description}</p></details>
+                <details key={item.title + "-" + index} open={index === 0}><summary>{item.title}</summary><p>{item.description}</p></details>
             ))}
         </div>
     );
@@ -353,9 +353,9 @@ function Faq({ section }: { section: PageSection }) {
 
 function dashboardMetricKey(item: PageItem, index: number): string {
     const text = item.title + " " + item.meta + " " + item.description;
-    if (/\bCPU\b|处理器/i.test(text)) return "cpu";
-    if (/内存|memory/i.test(text)) return "memory";
-    if (/请求.{0,8}延迟|延迟|latency|P95/i.test(text)) return "latency";
+    if (/\bCPU\b|澶勭悊鍣?i.test(text)) return "cpu";
+    if (/鍐呭瓨|memory/i.test(text)) return "memory";
+    if (/璇锋眰.{0,8}寤惰繜|寤惰繜|latency|P95/i.test(text)) return "latency";
     return "metric-" + String(index + 1);
 }
 
@@ -380,10 +380,10 @@ function Metrics({ section, dashboard = false }: { section: PageSection; dashboa
 function MapSection({ section }: { section: PageSection }) {
     return (
         <div className="map-board">
-            <div className="map-surface" aria-label="主题点位示意图">
-                {section.items.map((item, index) => <span key={item.title} style={{ left: \`\${18 + (index * 23) % 70}%\`, top: \`\${18 + (index * 31) % 62}%\` }}><i />{String(index + 1).padStart(2, "0")}</span>)}
+            <div className="map-surface" aria-label="涓婚鐐逛綅绀烘剰鍥?>
+                {section.items.map((item, index) => <span key={item.title + "-" + index} style={{ left: \`\${18 + (index * 23) % 70}%\`, top: \`\${18 + (index * 31) % 62}%\` }}><i />{String(index + 1).padStart(2, "0")}</span>)}
             </div>
-            <div className="map-legend">{section.items.map((item, index) => <div key={item.title}><b>{String(index + 1).padStart(2, "0")}</b><span><strong>{item.title}</strong>{item.description}</span></div>)}</div>
+            <div className="map-legend">{section.items.map((item, index) => <div key={item.title + "-" + index}><b>{String(index + 1).padStart(2, "0")}</b><span><strong>{item.title}</strong>{item.description}</span></div>)}</div>
         </div>
     );
 }
@@ -409,8 +409,8 @@ function ContentSections({ sections = page.sections, startIndex = 0 }: { section
 
 function PrimaryNavigation() {
     return (
-        <nav className="primary-nav" aria-label="页面导航">
-            <a href="#top">概览</a>
+        <nav className="primary-nav" aria-label="椤甸潰瀵艰埅">
+            <a href="#top">姒傝</a>
             {page.sections.slice(0, 4).map((section) => <a href={\`#\${section.id}\`} key={section.id}>{section.title}</a>)}
         </nav>
     );
@@ -471,7 +471,7 @@ function DataRegionLayout() {
   const sections = orderedSections();
   const metricsSection = sections.find((section) => section.kind === "metrics");
   const remaining = metricsSection ? sections.filter((section) => section.id !== metricsSection.id) : sections;
-  return <div className="dashboard-shell layout-data-region"><aside className="dashboard-sidebar"><a className="brand-lockup" href="#top"><span>{page.brand.name.slice(0, 2)}</span><strong>{page.brand.name}</strong></a><PrimaryNavigation /><LayoutMotif /><div className="sidebar-status"><i />{page.brand.statusLabel}</div></aside><main className="dashboard-main"><header className="dashboard-topbar"><div><span>Layout family</span><strong>{page.layout.family}</strong></div><div><span>Data refresh</span><strong>{page.hero.stats.find((stat) => /刷新|refresh/i.test(stat.label))?.value || "10s"}</strong></div></header><section className="dashboard-overview" id="top" data-appforge-role="dashboard-overview"><div className="dashboard-overview-copy"><p className="eyebrow">{page.brand.kicker}</p><h1>{page.brand.title}</h1><p>{page.brand.summary}</p></div><StatBand />{metricsSection ? <div className="dashboard-core-metrics"><Metrics section={metricsSection} dashboard /></div> : null}</section><ContentSections sections={remaining} startIndex={metricsSection ? 1 : 0} /></main></div>;
+  return <div className="dashboard-shell layout-data-region"><aside className="dashboard-sidebar"><a className="brand-lockup" href="#top"><span>{page.brand.name.slice(0, 2)}</span><strong>{page.brand.name}</strong></a><PrimaryNavigation /><LayoutMotif /><div className="sidebar-status"><i />{page.brand.statusLabel}</div></aside><main className="dashboard-main"><header className="dashboard-topbar"><div><span>Layout family</span><strong>{page.layout.family}</strong></div><div><span>Data refresh</span><strong>{page.hero.stats.find((stat) => /鍒锋柊|refresh/i.test(stat.label))?.value || "10s"}</strong></div></header><section className="dashboard-overview" id="top" data-appforge-role="dashboard-overview"><div className="dashboard-overview-copy"><p className="eyebrow">{page.brand.kicker}</p><h1>{page.brand.title}</h1><p>{page.brand.summary}</p></div><StatBand />{metricsSection ? <div className="dashboard-core-metrics"><Metrics section={metricsSection} dashboard /></div> : null}</section><ContentSections sections={remaining} startIndex={metricsSection ? 1 : 0} /></main></div>;
 }
 function GalleryWallLayout() {
   return <><LayoutHeader /><main className="layout-gallery-wall"><Hero /><LayoutMotif /><ContentSections sections={orderedSections()} /></main></>;
@@ -489,7 +489,7 @@ function DashboardAdaptiveLayout() {
   const remaining = metricsSection ? sections.filter((section) => section.id !== metricsSection.id) : sections;
   if (page.layout.primaryPrimitive === "data-region") return <DataRegionLayout />;
   if (page.layout.primaryPrimitive === "workflow-lane") return <><StandardHeader /><main className="dashboard-variant dashboard-variant--incident"><section className="dashboard-overview" id="top"><div className="dashboard-overview-copy"><p className="eyebrow">{page.brand.kicker}</p><h1>{page.brand.title}</h1><p>{page.brand.summary}</p></div><StatBand />{metricsSection ? <Metrics section={metricsSection} dashboard /> : null}</section><div className="workflow-spine" aria-hidden="true">{remaining.map((section, index) => <span key={section.id}>{String(index + 1).padStart(2, "0")}</span>)}</div><ContentSections sections={remaining} startIndex={metricsSection ? 1 : 0} /></main></>;
-  if (page.layout.primaryPrimitive === "editorial-rail") return <><StandardHeader /><main className="dashboard-variant dashboard-variant--trend"><section className="dashboard-overview" id="top"><div className="dashboard-overview-copy"><p className="eyebrow">{page.brand.kicker}</p><h1>{page.brand.title}</h1><p>{page.brand.summary}</p></div>{metricsSection ? <Metrics section={metricsSection} dashboard /> : null}</section><LayoutMotif /><div className="dashboard-trend-grid"><aside>{page.hero.stats.map((stat) => <span key={stat.label}><b>{stat.value}</b>{stat.label}</span>)}</aside><div><ContentSections sections={remaining} startIndex={metricsSection ? 1 : 0} /></div></div></main></>;
+  if (page.layout.primaryPrimitive === "editorial-rail") return <><StandardHeader /><main className="dashboard-variant dashboard-variant--trend"><section className="dashboard-overview" id="top"><div className="dashboard-overview-copy"><p className="eyebrow">{page.brand.kicker}</p><h1>{page.brand.title}</h1><p>{page.brand.summary}</p></div>{metricsSection ? <Metrics section={metricsSection} dashboard /> : null}</section><LayoutMotif /><div className="dashboard-trend-grid"><aside>{page.hero.stats.map((stat, index) => <span key={stat.label + "-" + index}><b>{stat.value}</b>{stat.label}</span>)}</aside><div><ContentSections sections={remaining} startIndex={metricsSection ? 1 : 0} /></div></div></main></>;
   return <><StandardHeader /><main className="dashboard-variant dashboard-variant--table"><section className="dashboard-overview" id="top"><div className="dashboard-overview-copy"><p className="eyebrow">{page.brand.kicker}</p><h1>{page.brand.title}</h1><p>{page.brand.summary}</p></div>{metricsSection ? <Metrics section={metricsSection} dashboard /> : null}</section><ContentSections sections={remaining} startIndex={metricsSection ? 1 : 0} /></main></>;
 }
 function DesignDrivenLayout() {
@@ -543,7 +543,7 @@ export function App() {
         <div className={\`stable-app stable-app--\${page.applicationType} stable-app--\${page.templateVariant} layout-family--\${page.layout.family} primitive--\${page.layout.primaryPrimitive} surface--\${page.layout.surfaceMode} hero-mode--\${page.layout.heroMode} density--\${page.theme.density}\`} data-appforge-application-type={page.applicationType} data-appforge-layout-family={page.layout.family} data-appforge-layout-primitive={page.layout.primaryPrimitive} data-appforge-renderer={resolveAppforgeRendererName()}>
             <div className="ambient-layer" aria-hidden="true" />
             <PageLayout />
-            <footer className="site-footer"><div><strong>{page.brand.name}</strong><p>{page.footer.statement}</p></div><nav aria-label="页脚导航">{page.footer.links.map((link) => <a href="#top" key={link}>{link}</a>)}</nav><span>{page.brand.statusLabel}</span></footer>
+            <footer className="site-footer"><div><strong>{page.brand.name}</strong><p>{page.footer.statement}</p></div><nav aria-label="椤佃剼瀵艰埅">{page.footer.links.map((link, index) => <a href="#top" key={link + "-" + index}>{link}</a>)}</nav><span>{page.brand.statusLabel}</span></footer>
         </div>
     );
 }

@@ -36,4 +36,30 @@ describe("stable DesignPlan layout-family renderer", () => {
     expect(css).toContain(".layout-editorial-rail");
     expect(css).toContain(".map-list-frame");
   });
+
+  it("uses index-stable keys for repeated generated labels", () => {
+    const source = createStableAppSource(
+      {
+        ...content,
+        hero: {
+          ...content.hero,
+          stats: [
+            { label: "重复", value: "1" },
+            { label: "重复", value: "2" },
+            { label: "重复", value: "3" },
+          ],
+        },
+        footer: { ...content.footer, links: ["Overview", "Overview"] },
+        sections: content.sections.map((section) => ({
+          ...section,
+          items: section.items.map((item) => ({ ...item, title: "重复条目" })),
+        })),
+      },
+      { heroAlt: "expo" },
+    );
+
+    expect(source).toContain('key={stat.label + "-" + index}');
+    expect(source).toContain('key={item.title + "-" + index}');
+    expect(source).toContain('key={link + "-" + index}');
+  });
 });

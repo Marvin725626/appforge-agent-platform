@@ -5298,6 +5298,12 @@ function isFocusedVisualAdjustmentRequest(text: string): boolean {
     );
 }
 
+function isContentCorrectionRequest(text: string): boolean {
+    return /(?:content|copy|wording|text)\s+(?:is|are|feels?)\s+(?:wrong|generic|irrelevant|off-topic|not\s+about)|(?:make|change|rewrite|replace).{0,80}(?:content|copy|text).{0,40}(?:about|related\s+to|specific\s+to)|内容.{0,20}(?:不对|不相关|不符合|不是|太通用|没有相关|换成|改成|替换成)|文案.{0,20}(?:不对|不相关|不符合|不是|太通用|换成|改成)|文字内容.{0,30}(?:换成|改成|替换成|不是|不相关)|不是.{0,30}(?:相关|主题|内容)|没有.{0,20}相关.{0,20}内容/iu.test(
+        text,
+    );
+}
+
 function isExplicitFocusedEditRequest(text: string): boolean {
     const actionThenTarget =
         /\b(?:change|modify|update|set|move|delete|remove|hide|replace|swap)\b.{0,80}\b(?:button|sidebar|hero|background|color|width|height|font|title|image|photo|asset|module|section|route|\/about|mobile|desktop)\b/iu;
@@ -5651,13 +5657,20 @@ function evaluateRequirementLedger(input: {
             evidences.length === 0 &&
             (!input.workspaceDiff || changedFiles.length > 0) &&
             input.review.checks.buildPassed &&
-            input.review.checks.evalPassed
+            input.review.checks.evalPassed &&
+            input.review.checks.browserPassed !== false
         ) {
             evidences = [
                 {
                     source: "build",
-                    expected: "Structural generation passes build and static evaluation.",
-                    actual: "buildPassed=true; evalPassed=true",
+                    expected: "Structural generation passes build, static evaluation, and browser validation when available.",
+                    actual: [
+                        "buildPassed=true",
+                        "evalPassed=true",
+                        input.review.checks.browserPassed === undefined
+                            ? "browserPassed=not-run"
+                            : "browserPassed=true",
+                    ].join("; "),
                 },
             ];
         }
@@ -6162,8 +6175,11 @@ export async function runReactAppAgent(
         : options.resetWorkspace === false
           ? focusedRequest
           : options.goal;
+    const contentCorrectionRequest =
+        !genericRepairRequest && isContentCorrectionRequest(focusedRequest);
     let focusedEditRequest =
         !genericRepairRequest &&
+        !contentCorrectionRequest &&
         options.resetWorkspace === false &&
         (isFocusedVisualAdjustmentRequest(executionRequest) ||
             isExplicitFocusedEditRequest(executionRequest));
@@ -6350,6 +6366,7 @@ export async function runReactAppAgent(
         (options.resetWorkspace !== false ||
             genericRepairRequest ||
             isFreshPageGenerationRequest(executionRequest) ||
+            contentCorrectionRequest ||
             isFullApplicationCreationRequest(executionRequest) ||
             isExplicitRegenerationPrompt(executionRequest) ||
             complexPageRequest);
