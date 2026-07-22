@@ -89,6 +89,13 @@ export type EvaluateAntiTemplateInput = {
     thresholds?: Partial<AntiTemplateThresholds>;
 };
 
+export type EvaluateAntiTemplateSourceInput = {
+    applicationType?: ApplicationType;
+    appSource: string;
+    cssSource: string;
+    thresholds?: Partial<AntiTemplateThresholds>;
+};
+
 const DEFAULT_THRESHOLDS: AntiTemplateThresholds = {
     cardContainerRatio: {
         warning: 0.65,
@@ -297,6 +304,31 @@ function sourceHasMappedChildren(appSource: string, selector: string): boolean {
     const start = Math.min(...positions);
     const nearbySource = appSource.slice(start, start + 2200);
     return /\.map\s*\(/u.test(nearbySource) && /<(?:article|div|li|section)\b/u.test(nearbySource);
+}
+
+function sourceClassTokenCount(appSource: string, token: string): number {
+    const classNamePattern = /className=(?:"([^"]*)"|'([^']*)'|\{`([^`]*)`\})/gu;
+    let count = 0;
+    for (const match of appSource.matchAll(classNamePattern)) {
+        const classSource = match[1] ?? match[2] ?? match[3] ?? "";
+        if (new RegExp(`\\b${token}\\b`, "u").test(classSource)) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
+function isProjectSurfaceSelector(selector: string): boolean {
+    if (!selector.startsWith(".")) {
+        return selector === "table";
+    }
+    if (/[>+~]/u.test(selector)) {
+        return false;
+    }
+    if (/:(?:root|hover|focus|focus-visible|before|after|nth-|not|is|where)/u.test(selector)) {
+        return false;
+    }
+    return true;
 }
 
 function itemFieldPattern(section: StablePageSection): string {
@@ -631,6 +663,238 @@ export function evaluateAntiTemplate(
             homogeneousThreeColumnSelectors: threeColumn.homogeneousSelectors,
         },
     };
+}
+
+function hasVisibleSurfaceDeclaration(declarations: Map<string, string>): boolean {
+    return (
+        declarations.has("background") ||
+        declarations.has("background-color") ||
+        declarations.has("border") ||
+        declarations.has("box-shadow") ||
+        maximumPixelValue(declarations.get("padding"), new Map()) >= 12 ||
+        maximumPixelValue(declarations.get("padding-block"), new Map()) >= 12 ||
+        maximumPixelValue(declarations.get("padding-inline"), new Map()) >= 12
+    );
+}
+
+function sourceSurfaceScore(
+    declarations: Map<string, string>,
+    variables: Map<string, string>,
+): number {
+    let score = 0;
+    if (declarations.has("background") || declarations.has("background-color")) {
+        score += 1;
+    }
+    if (declarations.has("border") || declarations.has("outline")) {
+        score += 1;
+    }
+    if (declarations.has("box-shadow")) {
+        score += 1;
+    }
+    if (maximumPixelValue(declarations.get("border-radius"), variables) >= 8) {
+        score += 1;
+    }
+    if (
+        Math.max(
+            maximumPixelValue(declarations.get("padding"), variables),
+            maximumPixelValue(declarations.get("padding-block"), variables),
+            maximumPixelValue(declarations.get("padding-inline"), variables),
+        ) >= 12
+    ) {
+        score += 1;
+    }
+    return score;
+}
+
+function buildAntiTemplateReport(input: {
+    thresholds: AntiTemplateThresholds;
+    metrics: AntiTemplateMetrics;
+    sectionSignatures: string[];
+    threeColumnSelectors: string[];
+    homogeneousThreeColumnSelectors: string[];
+}): AntiTemplateReport {
+    const findings: AntiTemplateFinding[] = [];
+    addRatioFinding(
+        findings,
+        "card-container-ratio",
+        "Card-like major container ratio",
+        input.metrics.cardContainerRatio,
+        input.thresholds.cardContainerRatio.warning,
+        input.thresholds.cardContainerRatio.severe,
+    );
+    addRatioFinding(
+        findings,
+        "large-radius-container-ratio",
+        "Large-radius major container ratio",
+        input.metrics.largeRadiusContainerRatio,
+        input.thresholds.largeRadiusContainerRatio.warning,
+        input.thresholds.largeRadiusContainerRatio.severe,
+    );
+    addCountFinding(
+        findings,
+        "homogeneous-three-column-grid",
+        "Homogeneous three-column grid",
+        input.metrics.homogeneousThreeColumnGridCount,
+        input.thresholds.homogeneousThreeColumnGridCount.warning,
+        input.thresholds.homogeneousThreeColumnGridCount.severe,
+    );
+    addRatioFinding(
+        findings,
+        "repeated-dom-pattern",
+        "Repeated component pattern ratio",
+        input.metrics.repeatedDomPatternRatio,
+        input.thresholds.repeatedDomPatternRatio.warning,
+        input.thresholds.repeatedDomPatternRatio.severe,
+    );
+
+    const penalty =
+        normalizedPenalty(
+            input.metrics.cardContainerRatio,
+            input.thresholds.cardContainerRatio.warning,
+            input.thresholds.cardContainerRatio.severe,
+            24,
+        ) +
+        normalizedPenalty(
+            input.metrics.largeRadiusContainerRatio,
+            input.thresholds.largeRadiusContainerRatio.warning,
+            input.thresholds.largeRadiusContainerRatio.severe,
+            22,
+        ) +
+        normalizedPenalty(
+            input.metrics.homogeneousThreeColumnGridCount,
+            input.thresholds.homogeneousThreeColumnGridCount.warning,
+            input.thresholds.homogeneousThreeColumnGridCount.severe,
+            24,
+        ) +
+        normalizedPenalty(
+            input.metrics.repeatedDomPatternRatio,
+            input.thresholds.repeatedDomPatternRatio.warning,
+            input.thresholds.repeatedDomPatternRatio.severe,
+            30,
+        );
+    const score = Math.round(clamp(100 - penalty, 0, 100));
+    const hasSevereFinding = findings.some((finding) => finding.severity === "severe");
+    const hasWarningFinding = findings.some((finding) => finding.severity === "warning");
+    const level: AntiTemplateReport["level"] =
+        hasSevereFinding || score < input.thresholds.minimumScore.severe
+            ? "severe"
+            : hasWarningFinding || score < input.thresholds.minimumScore.warning
+              ? "warning"
+              : "pass";
+
+    return {
+        score,
+        level,
+        softGatePassed: level !== "severe",
+        thresholds: input.thresholds,
+        metrics: input.metrics,
+        findings,
+        fingerprints: {
+            sectionSignatures: input.sectionSignatures,
+            threeColumnSelectors: input.threeColumnSelectors,
+            homogeneousThreeColumnSelectors: input.homogeneousThreeColumnSelectors,
+        },
+    };
+}
+
+export function evaluateAntiTemplateSource(
+    input: EvaluateAntiTemplateSourceInput,
+): AntiTemplateReport {
+    const thresholds = mergeThresholds(input.thresholds);
+    const cssRules = parseCssRules(input.cssSource);
+    const cssVariables = parseCssVariables(input.cssSource);
+    const threeColumn = findThreeColumnGrids(input.appSource, cssRules);
+
+    let majorContainerCount = 0;
+    let cardContainerCount = 0;
+    let operationalPanelCount = 0;
+    let roundedContainerCount = 0;
+    let largeRadiusContainerCount = 0;
+    let shadowedSurfaceCount = 0;
+    const signatures: string[] = [];
+
+    for (const rule of cssRules) {
+        if (!isProjectSurfaceSelector(rule.selector) || !sourceUsesSelector(input.appSource, rule.selector)) {
+            continue;
+        }
+        if (!hasVisibleSurfaceDeclaration(rule.declarations)) {
+            continue;
+        }
+        const token = selectorClassToken(rule.selector);
+        const weight = token
+            ? Math.max(1, sourceClassTokenCount(input.appSource, token))
+            : 1;
+        const radius = Math.max(
+            maximumPixelValue(rule.declarations.get("border-radius"), cssVariables),
+            maximumPixelValue(rule.declarations.get("border-start-start-radius"), cssVariables),
+        );
+        const operational =
+            OPERATIONAL_SELECTOR_PATTERN.test(rule.selector) ||
+            input.applicationType === "dashboard";
+        const namedCard = CARD_NAME_PATTERN.test(rule.selector);
+        const cardLike = namedCard || sourceSurfaceScore(rule.declarations, cssVariables) >= 3;
+
+        majorContainerCount += weight;
+        signatures.push(`${rule.selector}|${weight}|${cardLike ? "card" : "surface"}`);
+        if (operational) {
+            operationalPanelCount += weight;
+        }
+        if (cardLike && (!operational || radius >= 16)) {
+            cardContainerCount += weight;
+        }
+        if (radius > 0) {
+            roundedContainerCount += weight;
+        }
+        if (radius >= 16) {
+            largeRadiusContainerCount += weight;
+        }
+        if (rule.declarations.has("box-shadow")) {
+            shadowedSurfaceCount += weight;
+        }
+    }
+
+    const repeatedStructureCount = signatures.reduce((sum, signature) => {
+        const parts = signature.split("|");
+        return sum + Math.max(0, Number(parts[1] ?? "1") - 1);
+    }, 0);
+    const largestRepeatedComponentGroup = Math.max(
+        0,
+        ...signatures.map((signature) => Number(signature.split("|")[1] ?? "1")),
+    );
+    const repeatedDomPatternRatio =
+        repeatedStructureCount / Math.max(1, majorContainerCount - 1);
+
+    const metrics: AntiTemplateMetrics = {
+        majorContainerCount,
+        majorSurfaceCount: majorContainerCount,
+        cardContainerCount,
+        operationalPanelCount,
+        cardContainerRatio: round(cardContainerCount / Math.max(1, majorContainerCount)),
+        roundedContainerCount,
+        largeRadiusContainerCount,
+        largeRadiusContainerRatio: round(
+            largeRadiusContainerCount / Math.max(1, majorContainerCount),
+        ),
+        roundedSurfaceRatio: round(roundedContainerCount / Math.max(1, majorContainerCount)),
+        shadowedSurfaceCount,
+        shadowedSurfaceRatio: round(shadowedSurfaceCount / Math.max(1, majorContainerCount)),
+        threeColumnGridCount: threeColumn.selectors.length,
+        homogeneousThreeColumnGridCount: threeColumn.homogeneousSelectors.length,
+        equalColumnGridCount: threeColumn.selectors.length,
+        domPatternCount: signatures.length,
+        repeatedDomPatternCount: repeatedStructureCount,
+        repeatedDomPatternRatio: round(repeatedDomPatternRatio),
+        repeatedStructureCount,
+        largestRepeatedComponentGroup,
+    };
+
+    return buildAntiTemplateReport({
+        thresholds,
+        metrics,
+        sectionSignatures: signatures,
+        threeColumnSelectors: threeColumn.selectors,
+        homogeneousThreeColumnSelectors: threeColumn.homogeneousSelectors,
+    });
 }
 
 export { DEFAULT_THRESHOLDS as DEFAULT_ANTI_TEMPLATE_THRESHOLDS };

@@ -11,6 +11,8 @@ export type ReactAppAgentReview = {
         evalPassed: boolean;
         browserPassed?: boolean;
         browserVisualOnly?: boolean;
+        antiTemplateLevel?: "pass" | "warning" | "severe";
+        antiTemplateWarning?: boolean;
     };
 };
 

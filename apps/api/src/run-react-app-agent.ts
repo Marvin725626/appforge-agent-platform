@@ -88,6 +88,10 @@ import {
     isGenericRepairRequest,
 } from "./stable-react-page-generator.js";
 import { isFreshPageGenerationRequest } from "./generation-request-intent.js";
+import {
+    evaluateAntiTemplateSource,
+    type AntiTemplateReport,
+} from "./anti-template-evaluator.js";
 import { evaluateSourceStyleContract } from "./source-style-contract.js";
 
 const INSTALL_COMMAND_TIMEOUT_MS = 5 * 60 * 1_000;
@@ -247,6 +251,7 @@ export type RunReactAppAgentAttempt = {
     typecheck?: RunReactAppAgentCommandResult;
     eval: ReactAppEvalResult;
     browserEval?: BrowserEvalResult;
+    antiTemplate?: AntiTemplateReport;
     llmReview?: ReviewerOutput;
     review: ReactAppAgentReview;
     parallelWorkstreams?: ParallelCodingWorkstreamResult[];
@@ -262,6 +267,7 @@ export type RunReactAppAgentResult = {
     typecheck?: RunReactAppAgentCommandResult;
     eval:ReactAppEvalResult;
     browserEval?: BrowserEvalResult;
+    antiTemplate?: AntiTemplateReport;
     review: ReactAppAgentReview;
     attempts: RunReactAppAgentAttempt[];
     trace?: TraceEvent[];
@@ -1227,6 +1233,55 @@ async function readAllWorkspaceSourceFiles(
     }
 
     return sourceFiles;
+}
+
+async function evaluateWorkspaceAntiTemplate(input: {
+    workspaceRoot: string;
+    designPlan?: DesignPlan;
+}): Promise<AntiTemplateReport | undefined> {
+    const sourceFiles = await readAllWorkspaceSourceFiles(input.workspaceRoot);
+    const appSource = sourceFiles
+        .filter((file) => /\.(?:tsx|jsx|ts|js)$/iu.test(file.path))
+        .map((file) => `--- ${file.path} ---\n${file.content}`)
+        .join("\n\n");
+    const cssSource = sourceFiles
+        .filter((file) => /\.(?:css|scss)$/iu.test(file.path))
+        .map((file) => `--- ${file.path} ---\n${file.content}`)
+        .join("\n\n");
+
+    if (!appSource.trim() || !cssSource.trim()) {
+        return undefined;
+    }
+
+    return evaluateAntiTemplateSource({
+        ...(input.designPlan
+            ? { applicationType: input.designPlan.applicationType }
+            : {}),
+        appSource,
+        cssSource,
+    });
+}
+
+function markReviewWithAntiTemplateWarning(
+    review: ReactAppAgentReview,
+    antiTemplate: AntiTemplateReport | undefined,
+): ReactAppAgentReview {
+    if (!antiTemplate || antiTemplate.level === "pass") {
+        return review;
+    }
+
+    return {
+        ...review,
+        reason: [
+            review.reason,
+            `Anti-template diagnostic warning: ${antiTemplate.level} templating risk, score ${antiTemplate.score}.`,
+        ].join(" "),
+        checks: {
+            ...review.checks,
+            antiTemplateLevel: antiTemplate.level,
+            antiTemplateWarning: true,
+        },
+    };
 }
 
 async function formatReviewerSourceEvidence(
@@ -7851,6 +7906,16 @@ export async function runReactAppAgent(
             }
         }
 
+        const antiTemplate =
+            !focusedEditRequest && install.exitCode === 0 && build.exitCode === 0
+                ? await evaluateWorkspaceAntiTemplate({
+                      workspaceRoot: options.workspaceRoot,
+                      ...(resolvedDesignPlan
+                          ? { designPlan: resolvedDesignPlan }
+                          : {}),
+                  }).catch(() => undefined)
+                : undefined;
+
         const deterministicRepairCompletion =
             kind === "repair" &&
             !agent.finished &&
@@ -7944,7 +8009,10 @@ export async function runReactAppAgent(
         const review = await enforceFocusedVisualSemanticReview({
             workspaceRoot: options.workspaceRoot,
             executionRequest,
-            review: reviewedResult,
+            review: markReviewWithAntiTemplateWarning(
+                reviewedResult,
+                antiTemplate,
+            ),
         });
 
         return {
@@ -7955,6 +8023,7 @@ export async function runReactAppAgent(
             ...(typecheck ? { typecheck } : {}),
             eval: evalResult,
             ...(browserEval ? { browserEval } : {}),
+            ...(antiTemplate ? { antiTemplate } : {}),
             ...(llmReview ? { llmReview } : {}),
             review,
             metrics: cloneRunMetrics(runMetrics),
@@ -8185,6 +8254,9 @@ export async function runReactAppAgent(
         eval: latestAttempt.eval,
         ...(latestAttempt.browserEval
             ? { browserEval: latestAttempt.browserEval }
+            : {}),
+        ...(latestAttempt.antiTemplate
+            ? { antiTemplate: latestAttempt.antiTemplate }
             : {}),
         ...(latestAttempt.llmReview
             ? { llmReview: latestAttempt.llmReview }

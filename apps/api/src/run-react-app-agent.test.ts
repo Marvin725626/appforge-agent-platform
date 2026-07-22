@@ -214,6 +214,86 @@ describe("runReactAppAgent", () => {
         );
     }, 15_000);
 
+    it("adds anti-template diagnostics as warnings without blocking acceptance", async () => {
+        const templateRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-template-"),
+        );
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-workspace-"),
+        );
+
+        temporaryDirectories.push(templateRoot, workspaceRoot);
+
+        await mkdir(path.join(templateRoot, "src"));
+        await writeFile(
+            path.join(templateRoot, "package.json"),
+            JSON.stringify({
+                scripts: {
+                    build: "node -e \"console.log('build ok')\"",
+                },
+            }),
+            "utf8",
+        );
+        await writeFile(
+            path.join(templateRoot, "src", "App.tsx"),
+            "export function App() { return null; }",
+            "utf8",
+        );
+
+        const model = new FakeModelProvider([
+            PLANNER_RESPONSE,
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.tsx",
+                    content: [
+                        "export function App() {",
+                        "  const cards = ['Speed', 'Design', 'Scale', 'Trust', 'Flow', 'Signal'];",
+                        "  return <main className=\"template-shell\"><h1>Card heavy product page</h1><p>A complete generated page with repeated feature cards.</p><section className=\"feature-grid\">{cards.map((card) => <article className=\"feature-card\" key={card}><h2>{card}</h2><p>Reusable card content with the same visual structure.</p></article>)}</section></main>;",
+                        "}",
+                    ].join("\n"),
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.css",
+                    content: [
+                        ".template-shell { padding: 48px; background: #f7f8fb; color: #111827; }",
+                        ".feature-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }",
+                        ".feature-card { padding: 28px; background: #ffffff; border: 1px solid #d7dce8; border-radius: 28px; box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18); }",
+                    ].join("\n"),
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "Done",
+                }),
+            },
+            APPROVED_REVIEW_RESPONSE,
+        ]);
+
+        const result = await runReactAppAgent({
+            goal: "Create a product page with repeated feature cards",
+            workspaceRoot,
+            templateRoot,
+            model,
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        expect(result.review.accepted).toBe(true);
+        expect(result.antiTemplate?.level).not.toBe("pass");
+        expect(result.antiTemplate?.metrics.roundedSurfaceRatio).toBeGreaterThan(0);
+        expect(result.antiTemplate?.metrics.equalColumnGridCount).toBeGreaterThan(0);
+        expect(result.attempts[0]?.antiTemplate).toEqual(result.antiTemplate);
+        expect(result.review.checks.antiTemplateWarning).toBe(true);
+    }, 15_000);
+
     it("hard-gates non-entrypoint actions before a fresh page can change the workspace", async () => {
         const templateRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-api-template-"),
