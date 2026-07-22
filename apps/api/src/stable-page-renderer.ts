@@ -224,7 +224,7 @@ function HeroMedia() {
 
 function StatBand() {
     return (
-        <div className="stat-band" aria-label="椤甸潰鍏抽敭淇℃伅">
+        <div className="stat-band" aria-label="页面关键信息">
             {page.hero.stats.map((stat, index) => (
                 <div className="stat-readout" key={stat.label + "-" + index}>
                     <span>{stat.label}</span>
@@ -276,7 +276,7 @@ function Timeline({ section }: { section: PageSection }) {
 function Matrix({ section }: { section: PageSection }) {
     return (
         <div className="matrix-board">
-            <div className="matrix-head"><span>缂栧彿</span><span>涓婚</span><span>璇存槑</span><span>鐘舵€?/span></div>
+            <div className="matrix-head"><span>编号</span><span>主题</span><span>说明</span><span>状态</span></div>
             {section.items.map((item, index) => (
                 <div className="matrix-row" key={item.title + "-" + index}>
                     <span>{String(index + 1).padStart(2, "0")}</span>
@@ -308,7 +308,7 @@ function DataTable({ section }: { section: PageSection }) {
     return (
         <div className="table-wrap">
             <table>
-                <thead><tr><th>椤圭洰</th><th>璇存槑</th><th>鏁板€?/th><th>鐘舵€?/th></tr></thead>
+                <thead><tr><th>项目</th><th>说明</th><th>数值</th><th>状态</th></tr></thead>
                 <tbody>{section.items.map((item, index) => (
                     <tr key={item.title + "-" + index}><th>{item.title}</th><td>{item.description}</td><td>{item.value}</td><td><span>{item.status}</span></td></tr>
                 ))}</tbody>
@@ -335,7 +335,7 @@ function Quotes({ section }: { section: PageSection }) {
     return (
         <div className="quote-flow">
             {section.items.map((item, index) => (
-                <blockquote key={item.title + "-" + index}><p>鈥渰item.description}鈥?/p><footer><strong>{item.title}</strong><span>{item.meta}</span></footer></blockquote>
+                <blockquote key={item.title + "-" + index}><p>“{item.description}”</p><footer><strong>{item.title}</strong><span>{item.meta}</span></footer></blockquote>
             ))}
         </div>
     );
@@ -353,9 +353,9 @@ function Faq({ section }: { section: PageSection }) {
 
 function dashboardMetricKey(item: PageItem, index: number): string {
     const text = item.title + " " + item.meta + " " + item.description;
-    if (/\bCPU\b|澶勭悊鍣?i.test(text)) return "cpu";
-    if (/鍐呭瓨|memory/i.test(text)) return "memory";
-    if (/璇锋眰.{0,8}寤惰繜|寤惰繜|latency|P95/i.test(text)) return "latency";
+    if (/\bCPU\b|处理器/i.test(text)) return "cpu";
+    if (/内存|memory/i.test(text)) return "memory";
+    if (/请求.{0,8}延迟|延迟|latency|P95/i.test(text)) return "latency";
     return "metric-" + String(index + 1);
 }
 
@@ -380,7 +380,7 @@ function Metrics({ section, dashboard = false }: { section: PageSection; dashboa
 function MapSection({ section }: { section: PageSection }) {
     return (
         <div className="map-board">
-            <div className="map-surface" aria-label="涓婚鐐逛綅绀烘剰鍥?>
+            <div className="map-surface" aria-label="主题点位示意图">
                 {section.items.map((item, index) => <span key={item.title + "-" + index} style={{ left: \`\${18 + (index * 23) % 70}%\`, top: \`\${18 + (index * 31) % 62}%\` }}><i />{String(index + 1).padStart(2, "0")}</span>)}
             </div>
             <div className="map-legend">{section.items.map((item, index) => <div key={item.title + "-" + index}><b>{String(index + 1).padStart(2, "0")}</b><span><strong>{item.title}</strong>{item.description}</span></div>)}</div>
@@ -409,8 +409,8 @@ function ContentSections({ sections = page.sections, startIndex = 0 }: { section
 
 function PrimaryNavigation() {
     return (
-        <nav className="primary-nav" aria-label="椤甸潰瀵艰埅">
-            <a href="#top">姒傝</a>
+        <nav className="primary-nav" aria-label="页面导航">
+            <a href="#top">概览</a>
             {page.sections.slice(0, 4).map((section) => <a href={\`#\${section.id}\`} key={section.id}>{section.title}</a>)}
         </nav>
     );
@@ -471,7 +471,7 @@ function DataRegionLayout() {
   const sections = orderedSections();
   const metricsSection = sections.find((section) => section.kind === "metrics");
   const remaining = metricsSection ? sections.filter((section) => section.id !== metricsSection.id) : sections;
-  return <div className="dashboard-shell layout-data-region"><aside className="dashboard-sidebar"><a className="brand-lockup" href="#top"><span>{page.brand.name.slice(0, 2)}</span><strong>{page.brand.name}</strong></a><PrimaryNavigation /><LayoutMotif /><div className="sidebar-status"><i />{page.brand.statusLabel}</div></aside><main className="dashboard-main"><header className="dashboard-topbar"><div><span>Layout family</span><strong>{page.layout.family}</strong></div><div><span>Data refresh</span><strong>{page.hero.stats.find((stat) => /鍒锋柊|refresh/i.test(stat.label))?.value || "10s"}</strong></div></header><section className="dashboard-overview" id="top" data-appforge-role="dashboard-overview"><div className="dashboard-overview-copy"><p className="eyebrow">{page.brand.kicker}</p><h1>{page.brand.title}</h1><p>{page.brand.summary}</p></div><StatBand />{metricsSection ? <div className="dashboard-core-metrics"><Metrics section={metricsSection} dashboard /></div> : null}</section><ContentSections sections={remaining} startIndex={metricsSection ? 1 : 0} /></main></div>;
+  return <div className="dashboard-shell layout-data-region"><aside className="dashboard-sidebar"><a className="brand-lockup" href="#top"><span>{page.brand.name.slice(0, 2)}</span><strong>{page.brand.name}</strong></a><PrimaryNavigation /><LayoutMotif /><div className="sidebar-status"><i />{page.brand.statusLabel}</div></aside><main className="dashboard-main"><header className="dashboard-topbar"><div><span>Layout family</span><strong>{page.layout.family}</strong></div><div><span>Data refresh</span><strong>{page.hero.stats.find((stat) => /刷新|refresh/i.test(stat.label))?.value || "10s"}</strong></div></header><section className="dashboard-overview" id="top" data-appforge-role="dashboard-overview"><div className="dashboard-overview-copy"><p className="eyebrow">{page.brand.kicker}</p><h1>{page.brand.title}</h1><p>{page.brand.summary}</p></div><StatBand />{metricsSection ? <div className="dashboard-core-metrics"><Metrics section={metricsSection} dashboard /></div> : null}</section><ContentSections sections={remaining} startIndex={metricsSection ? 1 : 0} /></main></div>;
 }
 function GalleryWallLayout() {
   return <><LayoutHeader /><main className="layout-gallery-wall"><Hero /><LayoutMotif /><ContentSections sections={orderedSections()} /></main></>;
@@ -543,7 +543,7 @@ export function App() {
         <div className={\`stable-app stable-app--\${page.applicationType} stable-app--\${page.templateVariant} layout-family--\${page.layout.family} primitive--\${page.layout.primaryPrimitive} surface--\${page.layout.surfaceMode} hero-mode--\${page.layout.heroMode} density--\${page.theme.density}\`} data-appforge-application-type={page.applicationType} data-appforge-layout-family={page.layout.family} data-appforge-layout-primitive={page.layout.primaryPrimitive} data-appforge-renderer={resolveAppforgeRendererName()}>
             <div className="ambient-layer" aria-hidden="true" />
             <PageLayout />
-            <footer className="site-footer"><div><strong>{page.brand.name}</strong><p>{page.footer.statement}</p></div><nav aria-label="椤佃剼瀵艰埅">{page.footer.links.map((link, index) => <a href="#top" key={link + "-" + index}>{link}</a>)}</nav><span>{page.brand.statusLabel}</span></footer>
+            <footer className="site-footer"><div><strong>{page.brand.name}</strong><p>{page.footer.statement}</p></div><nav aria-label="页脚导航">{page.footer.links.map((link, index) => <a href="#top" key={link + "-" + index}>{link}</a>)}</nav><span>{page.brand.statusLabel}</span></footer>
         </div>
     );
 }
@@ -626,13 +626,13 @@ a:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px soli
 .primary-nav { display: flex; justify-content: center; flex-wrap: wrap; gap: 4px; }
 .primary-nav a { padding: 10px 12px; color: var(--muted); text-decoration: none; font-size: .76rem; }
 .primary-nav a:hover { color: var(--text); background: color-mix(in srgb, var(--accent-alt) 9%, transparent); }
-.status-signal, .sidebar-status { display: inline-flex; align-items: center; gap: 8px; color: var(--accent-alt); font: 700 .68rem var(--font-data); letter-spacing: .12em; }
+.status-signal, .sidebar-status { display: inline-flex; align-items: center; gap: 8px; color: var(--accent-alt); font: 700 .75rem var(--font-data); letter-spacing: .12em; }
 .status-signal i, .sidebar-status i { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-alt); box-shadow: 0 0 16px var(--accent-alt); animation: pulse 1.8s ease-in-out infinite; }
 main { width: min(1480px, 100%); margin: 0 auto; padding: 0 clamp(18px, 4vw, 56px) 72px; }
 .hero { position: relative; display: grid; align-items: center; gap: clamp(34px, 7vw, 92px); min-height: min(820px, calc(100vh - 72px)); padding: clamp(76px, 10vw, 150px) 0 70px; border-bottom: 1px solid var(--line); }
 .hero--split { grid-template-columns: minmax(0, 1fr) minmax(320px, .82fr); }
 .hero-copy { position: relative; z-index: 2; }
-.eyebrow, .item-label { margin: 0; color: var(--accent-alt); font: 700 .7rem var(--font-data); letter-spacing: .2em; text-transform: uppercase; }
+.eyebrow, .item-label { margin: 0; color: var(--accent-alt); font: 700 .75rem var(--font-data); letter-spacing: .18em; text-transform: uppercase; }
 h1, h2, h3 { font-family: var(--font-display); }
 h1 { max-width: min(20ch, 920px); margin: 14px 0 0; font-size: clamp(2.45rem, 5.6vw, 5.4rem); line-height: 1.02; letter-spacing: -.035em; text-wrap: balance; }
 .hero-summary { max-width: 68ch; margin: 25px 0 0; color: var(--muted); font-size: clamp(1rem, 1.4vw, 1.2rem); line-height: 1.85; }
@@ -743,7 +743,7 @@ td span { color: var(--accent-alt); font: 700 .7rem var(--font-data); }
 .metric-rail--dashboard article::before { content: ""; position: absolute; inset: 0 0 auto; height: 3px; background: var(--accent); }
 .metric-rail--dashboard strong { margin: 14px 0 10px; font-size: clamp(1.8rem, 3vw, 3.2rem); }
 .metric-rail--dashboard p { margin: 0; color: var(--muted); line-height: 1.55; }
-.metric-rail--dashboard small { display: block; margin-top: 12px; color: var(--accent-alt); font: .66rem var(--font-data); }
+.metric-rail--dashboard small { display: block; margin-top: 12px; color: var(--accent-alt); font: .72rem var(--font-data); }
 .dashboard-main > .content-section { padding-block: clamp(52px, 6vw, 84px); }
 .stable-app--editorial h1, .stable-app--commerce h1 { max-width: 16ch; line-height: .98; }
 .stable-app--editorial .hero { max-width: 1040px; }

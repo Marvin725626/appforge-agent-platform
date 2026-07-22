@@ -62,4 +62,18 @@ describe("stable DesignPlan layout-family renderer", () => {
     expect(source).toContain('key={item.title + "-" + index}');
     expect(source).toContain('key={link + "-" + index}');
   });
+
+  it("emits valid static Chinese labels without mojibake JSX fragments", () => {
+    const source = createStableAppSource(content, { heroAlt: "expo" });
+
+    expect(source).toContain('aria-label="页面关键信息"');
+    expect(source).toContain("<span>状态</span>");
+    expect(source).toContain("<th>数值</th>");
+    expect(source).toContain('aria-label="主题点位示意图"');
+    expect(source).toContain('aria-label="页脚导航"');
+    expect(source).not.toContain("?/span");
+    expect(source).not.toContain("?/th");
+    expect(source).not.toContain("鈥");
+    expect(source).not.toContain("椤");
+  });
 });
