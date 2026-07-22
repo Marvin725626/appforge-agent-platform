@@ -6177,6 +6177,16 @@ export async function runReactAppAgent(
           : options.goal;
     const contentCorrectionRequest =
         !genericRepairRequest && isContentCorrectionRequest(focusedRequest);
+    const iterationContextRequest =
+        contentCorrectionRequest && options.resetWorkspace === false
+            ? [
+                  "Original product goal:",
+                  extractStableProductGoal(options.goal),
+                  "",
+                  "Current user correction:",
+                  focusedRequest,
+              ].join("\n")
+            : executionRequest;
     let focusedEditRequest =
         !genericRepairRequest &&
         !contentCorrectionRequest &&
@@ -7318,7 +7328,7 @@ export async function runReactAppAgent(
             ) {
                 const stableResult = await generateStableReactPage({
                     workspaceRoot: options.workspaceRoot,
-                    goal: executionRequest,
+                    goal: iterationContextRequest,
                     contentModel: codingModel,
                     ...(attemptImageAssetTool
                         ? { imageAssetTool: attemptImageAssetTool }
@@ -7528,7 +7538,7 @@ export async function runReactAppAgent(
         ) {
             const stableResult = await generateStableReactPage({
                 workspaceRoot: options.workspaceRoot,
-                goal: executionRequest,
+                goal: iterationContextRequest,
                 ...(resolvedDesignPlan
                     ? { designPlan: resolvedDesignPlan }
                     : {}),
