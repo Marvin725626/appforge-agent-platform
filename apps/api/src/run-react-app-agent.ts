@@ -6311,11 +6311,17 @@ export async function runReactAppAgent(
     );
     const complexPageRequest =
         !focusedEditRequest && isComplexReactAppRequest(executionRequest);
-    const stableScaffoldRequested =
-        (options.stableGeneration ?? (options.model === undefined)) &&
+    const stableGenerationEnabled =
+        options.stableGeneration ?? (options.model === undefined);
+    const stableStructuralGenerationRequested =
+        stableGenerationEnabled &&
+        !focusedEditRequest &&
         navigationRequestKind !== "routes" &&
-        isFreshPageGenerationRequest(executionRequest) &&
-        (options.resetWorkspace !== false || genericRepairRequest);
+        (options.resetWorkspace !== false ||
+            genericRepairRequest ||
+            isFreshPageGenerationRequest(executionRequest));
+    const stableScaffoldRequested =
+        stableStructuralGenerationRequested;
     const useParallelCodingAgents =
         !stableScaffoldRequested &&
         shouldUseParallelCodingAgents({

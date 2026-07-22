@@ -8,6 +8,26 @@ import {
 
 describe("generation request intent", () => {
     it.each([
+        "做一个瓦罗兰特专题页，要像游戏官网和战术 HUD",
+        "生成一个服务器运行监控后台，包含 CPU、内存、请求延迟和告警列表",
+        "帮我创建一个介绍温州的文化网页",
+        "整体重做首页，换成高密度运维控制台",
+    ])("recognizes readable Chinese full-page generation: %s", (request) => {
+        expect(isFreshPageGenerationRequest(request)).toBe(true);
+        expect(isFullApplicationCreationRequest(request)).toBe(true);
+        expect(isExplicitRegenerationPrompt(request)).toBe(true);
+    });
+
+    it.each([
+        "把按钮文字改成提交",
+        "赛前负载面板这个框有问题，调整一下",
+        "顶部导航字太多，缩短成一行",
+    ])("does not treat readable Chinese focused edits as full regeneration: %s", (request) => {
+        expect(isFullApplicationCreationRequest(request)).toBe(false);
+        expect(isExplicitRegenerationPrompt(request)).toBe(false);
+    });
+
+    it.each([
         "创建一个服务器运行监控后台，包含 CPU、内存和告警列表",
         "创建一个高密度运营数据后台",
         "生成一个销售数据看板",
