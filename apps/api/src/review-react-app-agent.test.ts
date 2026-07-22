@@ -46,6 +46,8 @@ describe("reviewReactAppAgentResult", () => {
             },
             build: {
                 exitCode: 1,
+                stdout: "",
+                stderr: "src/App.tsx(12,9): error TS2304: Cannot find name 'features'.",
             },
             eval: {
                 passed: true,
@@ -53,7 +55,8 @@ describe("reviewReactAppAgentResult", () => {
         });
 
         expect(review.accepted).toBe(false);
-        expect(review.reason).toBe("Rejected because npm build failed.");
+        expect(review.reason).toContain("Rejected because npm build failed");
+        expect(review.reason).toContain("Cannot find name 'features'");
         expect(review.checks.buildPassed).toBe(false);
     });
 

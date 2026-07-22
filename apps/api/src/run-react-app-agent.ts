@@ -8457,7 +8457,6 @@ export async function runReactAppAgent(
     }
 
     if (
-        options.resetWorkspace === false &&
         stableGenerationEnabled &&
         navigationRequestKind !== "routes" &&
         iterationRequestKind !== "dependency_change" &&

@@ -153,12 +153,18 @@ export type ReviewReactAppAgentInput = {
     };
     install: {
         exitCode: number;
+        stdout?: string;
+        stderr?: string;
     };
     build: {
         exitCode: number;
+        stdout?: string;
+        stderr?: string;
     };
     typecheck?: {
         exitCode: number;
+        stdout?: string;
+        stderr?: string;
     };
     eval:{
         passed:boolean;
@@ -267,6 +273,20 @@ function formatBrowserRuntimeFailureReason(
     ].join(" ");
 }
 
+function formatCommandFailureDetail(command: {
+    stdout?: string;
+    stderr?: string;
+}): string {
+    const detail = [command.stderr?.trim() ?? "", command.stdout?.trim() ?? ""]
+        .filter((part) => part.length > 0)
+        .join("\n")
+        .replace(/\s+/gu, " ")
+        .slice(0, 800)
+        .trim();
+
+    return detail.length > 0 ? ` (${detail})` : "";
+}
+
 export function reviewReactAppAgentResult(
     input: ReviewReactAppAgentInput,
 ): ReactAppAgentReview {
@@ -324,9 +344,19 @@ export function reviewReactAppAgentResult(
 
     const qualityFailures = [
         checks.agentFinished ? "" : "agent did not finish",
-        checks.installPassed ? "" : "npm install failed",
-        checks.buildPassed ? "" : "npm build failed",
-        checks.typecheckPassed === false ? "typecheck failed" : "",
+        checks.installPassed
+            ? ""
+            : `npm install failed${formatCommandFailureDetail(input.install)}`,
+        checks.buildPassed
+            ? ""
+            : `npm build failed${formatCommandFailureDetail(input.build)}`,
+        checks.typecheckPassed === false
+            ? `typecheck failed${
+                  input.typecheck
+                      ? formatCommandFailureDetail(input.typecheck)
+                      : ""
+              }`
+            : "",
         checks.evalPassed ? "":"eval failed",
         checks.browserPassed === false
             ? formatBrowserRuntimeFailureReason(input)

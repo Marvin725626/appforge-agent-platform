@@ -1019,6 +1019,106 @@ export function App() {
         ).resolves.toContain("VALORANT");
     }, 15_000);
 
+    it("uses terminal stable recovery when an initial draft fails build", async () => {
+        const templateRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-template-"),
+        );
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-initial-build-failed-stable-"),
+        );
+        temporaryDirectories.push(templateRoot, workspaceRoot);
+
+        await mkdir(path.join(templateRoot, "src"));
+        await writeFile(
+            path.join(templateRoot, "package.json"),
+            JSON.stringify({
+                scripts: {
+                    build:
+                        "node -e \"const fs=require('fs'); const source=fs.readFileSync('src/App.tsx','utf8'); if(source.includes('BROKEN_BUILD')) process.exit(1); console.log('build ok')\"",
+                },
+            }),
+            "utf8",
+        );
+        await writeFile(
+            path.join(templateRoot, "src", "App.tsx"),
+            "export function App() { return null; }",
+            "utf8",
+        );
+
+        const model = new FakeModelProvider([
+            PLANNER_RESPONSE,
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.tsx",
+                    content:
+                        "export function App() { return <main>BROKEN_BUILD</main>; }",
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "Broken initial draft",
+                }),
+            },
+            APPROVED_REVIEW_RESPONSE,
+        ]);
+
+        const result = await runReactAppAgent({
+            goal: "Create a Valorant tactical page",
+            workspaceRoot,
+            templateRoot,
+            model,
+            stableGeneration: false,
+            maxRepairAttempts: 0,
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        expect(result.review.reason).toContain("npm build failed");
+        expect(result.build.exitCode).not.toBe(0);
+
+        const recovered = await runReactAppAgent({
+            goal: "Create a Valorant tactical page",
+            workspaceRoot,
+            templateRoot,
+            model: new FakeModelProvider([
+                PLANNER_RESPONSE,
+                {
+                    content: JSON.stringify({
+                        type: "write_file",
+                        path: "src/App.tsx",
+                        content:
+                            "export function App() { return <main>BROKEN_BUILD</main>; }",
+                    }),
+                },
+                {
+                    content: JSON.stringify({
+                        type: "finish",
+                        summary: "Broken initial draft",
+                    }),
+                },
+                APPROVED_REVIEW_RESPONSE,
+            ]),
+            stableGeneration: true,
+            maxRepairAttempts: 0,
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        expect(recovered.review.reason).not.toContain("npm build failed");
+        expect(recovered.build.exitCode).toBe(0);
+        expect(recovered.agent.steps.some((step) =>
+            step.execution.message.includes("Generated schema-driven"),
+        )).toBe(true);
+    }, 20_000);
+
     it("escalates no-change focused edits to stable recovery instead of failing", async () => {
         const templateRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-api-template-"),
