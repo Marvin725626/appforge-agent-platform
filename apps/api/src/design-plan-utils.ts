@@ -305,8 +305,8 @@ export async function evaluateDesignPlanCompliance(input: {
         "src/App.tsx",
         "src/content.ts",
     ]);
-    const source = sourceFiles.join("\n");
-    const css = sourceFiles[0] ?? "";
+    const source = stripAppForgeSystemRepairBlocks(sourceFiles.join("\n"));
+    const css = stripAppForgeSystemRepairBlocks(sourceFiles[0] ?? "");
     const lowerSource = source.toLowerCase();
     const lowerCss = css.toLowerCase();
     const forbidden = input.designPlan.visualDNA.forbiddenPatterns;
@@ -369,6 +369,13 @@ export async function evaluateDesignPlanCompliance(input: {
     ];
 }
 
+
+function stripAppForgeSystemRepairBlocks(source: string): string {
+    return source.replace(
+        /\/\* appforge (browser-contrast-hardening|palette-override) start \*\/[\s\S]*?\/\* appforge \1 end \*\//giu,
+        "",
+    );
+}
 
 function isCardGridForbiddenPattern(pattern: string): boolean {
     return /(?:card\s*grid|rounded\s*cards?|saas[^\n]{0,24}cards?|feature\s*cards?|generic\s*saas|product\s*cards?|marketing\s*cards?|普通产品卡片|重复圆角卡片|通用\s*saas\s*功能卡片|营销式?卡片|卡片宫格)/iu.test(

@@ -4165,6 +4165,19 @@ function formatBrowserContrastHardeningCss(goal: string): string {
     background: transparent !important;
     text-shadow: none !important;
 }
+
+.page-genre-game :is([class*="round" i], [class*="phase" i], [class*="timeline" i], [class*="economy" i], [class*="loadout" i], [class*="weapon" i], [class*="rifle" i], [class*="pistol" i]) {
+    color: #f8fbff !important;
+    background: #071018 !important;
+    border-color: rgba(124, 247, 255, .35) !important;
+    text-shadow: none !important;
+}
+
+.page-genre-game :is([class*="round" i], [class*="phase" i], [class*="timeline" i], [class*="economy" i], [class*="loadout" i], [class*="weapon" i], [class*="rifle" i], [class*="pistol" i]) :is(h1, h2, h3, h4, p, li, span, strong, small, b, em, th, td) {
+    color: #f8fbff !important;
+    background: transparent !important;
+    text-shadow: none !important;
+}
 `
         : "";
 
@@ -4265,6 +4278,19 @@ body :is(.card, .panel, .tile, .stat, .data-table, table, [class*="card" i], [cl
     text-shadow: none !important;
 }
 
+body :is([class*="round" i], [class*="phase" i], [class*="timeline" i], [class*="economy" i], [class*="loadout" i], [class*="weapon" i], [class*="rifle" i], [class*="pistol" i]) {
+    color: var(--appforge-readable-ink) !important;
+    background-color: var(--appforge-readable-panel) !important;
+    border-color: rgba(124, 247, 255, .30) !important;
+    text-shadow: none !important;
+}
+
+body :is([class*="round" i], [class*="phase" i], [class*="timeline" i], [class*="economy" i], [class*="loadout" i], [class*="weapon" i], [class*="rifle" i], [class*="pistol" i]) :is(h1, h2, h3, h4, p, li, td, th, span, strong, small, b, em) {
+    color: var(--appforge-readable-ink) !important;
+    background: transparent !important;
+    text-shadow: none !important;
+}
+
 body :is(section, article, aside, main) :is(h1, h2, h3, h4, p, li, td, th, span, strong, small):not(header *):not(nav *):not(.hero *):not(.page-hero *):not(.game-hero *):not(.banner *):not(.masthead *) {
     text-shadow: none;
 }
@@ -4303,7 +4329,7 @@ async function applyBrowserContrastHardeningFallback(
 ): Promise<string[]> {
     signal?.throwIfAborted();
 
-    if (process.env.APPFORGE_AUTO_CONTRAST_HARDENING !== "1") {
+    if (process.env.APPFORGE_AUTO_CONTRAST_HARDENING === "0") {
         return [];
     }
 

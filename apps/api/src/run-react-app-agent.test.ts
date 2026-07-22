@@ -4174,6 +4174,117 @@ export function App() {
         );
     }, 15_000);
 
+    it("auto hardens contrast for game round content before accepting", async () => {
+        const templateRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-template-"),
+        );
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-contrast-hardening-"),
+        );
+        temporaryDirectories.push(templateRoot, workspaceRoot);
+
+        await mkdir(path.join(templateRoot, "src"));
+        await writeFile(
+            path.join(templateRoot, "package.json"),
+            JSON.stringify({
+                scripts: {
+                    build: "node -e \"console.log('build ok')\"",
+                },
+            }),
+            "utf8",
+        );
+        await writeFile(
+            path.join(templateRoot, "src", "App.tsx"),
+            "export function App() { return null; }",
+            "utf8",
+        );
+
+        const appSource =
+            "import './App.css'; export function App() { return <main className=\"page-genre-game\"><section className=\"round-timeline\"><h1>ROUND 01</h1><h2>手枪局</h2><p>默认轻甲+技能，守点方先买陷阱和烟雾，进攻方留钱买闪光抢首杀。</p></section></main>; }";
+        const cssSource =
+            ".page-genre-game { min-height: 100vh; background: #071018; color: #344052; } .round-timeline { color: #344052; background: #111827; padding: 24px; }";
+
+        const model = new FakeModelProvider([
+            PLANNER_RESPONSE,
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.tsx",
+                    content: appSource,
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.css",
+                    content: cssSource,
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "Game content updated",
+                }),
+            },
+            APPROVED_REVIEW_RESPONSE,
+        ]);
+        let browserEvalCount = 0;
+
+        const result = await runReactAppAgent({
+            goal: "把里面文字内容换成瓦罗兰特游戏相关的回合经济内容",
+            workspaceRoot,
+            templateRoot,
+            model,
+            designPlanning: false,
+            evaluateBrowser: async () => {
+                browserEvalCount += 1;
+                const css = await readFile(
+                    path.join(workspaceRoot, "src", "App.css"),
+                    "utf8",
+                );
+                const hardened = css.includes(
+                    "appforge browser-contrast-hardening start",
+                );
+
+                return hardened
+                    ? {
+                          passed: true,
+                          checks: [
+                              {
+                                  name: "visible text has sufficient contrast",
+                                  passed: true,
+                              },
+                          ],
+                      }
+                    : {
+                          passed: false,
+                          checks: [
+                              {
+                                  name: "visible text has sufficient contrast",
+                                  passed: false,
+                                  message:
+                                      'Low-contrast visible text detected: "ROUND 01" 1.95:1 (needs 4.5:1); "默认轻甲+技能" 1.14:1 (needs 4.5:1).',
+                              },
+                          ],
+                      };
+            },
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        expect(result.review.accepted).toBe(true);
+        expect(browserEvalCount).toBe(2);
+        expect(result.agent.steps.some((step) =>
+            step.execution.message.includes("WCAG contrast hardening"),
+        )).toBe(true);
+        await expect(
+            readFile(path.join(workspaceRoot, "src", "App.css"), "utf8"),
+        ).resolves.toContain("[class*=\"round\" i]");
+    }, 15_000);
+
     it("runs typecheck and repairs undefined TypeScript references before accepting", async () => {
         const templateRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-api-template-"),

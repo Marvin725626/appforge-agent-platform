@@ -339,6 +339,62 @@ describe("Phase 4.1 DesignPlan", () => {
         }
     });
 
+    it("ignores AppForge system contrast hardening selectors in forbidden pattern evidence", async () => {
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-design-plan-system-css-test-"),
+        );
+        try {
+            await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+            const designPlan = createFallbackDesignPlan({
+                goal: "做一个瓦罗兰特专题页，不要通用 SaaS 功能卡片",
+                plannerOutput: PLANNER_OUTPUT,
+                routes: [{ path: "/", purpose: "战术游戏首页" }],
+            });
+            designPlan.visualDNA.forbiddenPatterns = ["不要通用 SaaS 功能卡片"];
+
+            await writeFile(
+                path.join(workspaceRoot, "src", "App.css"),
+                [
+                    formatProjectStyles({
+                        designPlan,
+                        pages: [{ id: "home", path: "/", label: "首页" }],
+                    }),
+                    "/* appforge browser-contrast-hardening start */",
+                    'body :is(.card, .panel, [class*="card" i], [class*="panel" i]) { color: #f8fbff !important; }',
+                    "/* appforge browser-contrast-hardening end */",
+                ].join("\n"),
+                "utf8",
+            );
+            await writeFile(
+                path.join(workspaceRoot, "src", "App.tsx"),
+                'export function App() { return <main className="match-hud"><section className="round-timeline">ROUND 01</section></main>; }',
+                "utf8",
+            );
+            await writeFile(
+                path.join(workspaceRoot, "src", "content.ts"),
+                "export const routes = [];",
+                "utf8",
+            );
+
+            const compliance = await evaluateDesignPlanCompliance({
+                workspaceRoot,
+                designPlan,
+                designPlanSource: "fallback",
+            });
+
+            expect(compliance).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        criterion: "forbiddenPatterns are avoided",
+                        status: "PASS",
+                    }),
+                ]),
+            );
+        } finally {
+            await rm(workspaceRoot, { recursive: true, force: true });
+        }
+    });
+
     it("does not treat forbidden-pattern wording in acceptance copy as implementation evidence", async () => {
         const workspaceRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-design-plan-copy-test-"),
