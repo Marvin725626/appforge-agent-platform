@@ -27,6 +27,7 @@ describe("design quality benchmark", () => {
         expect(generatedCaseIds).toHaveLength(24);
         expect(report.summary.passRate).toBeGreaterThanOrEqual(0.95);
         expect(report.summary.averageScore).toBeGreaterThanOrEqual(82);
+        expect(report.summary.designGatePassed).toBe(true);
         expect(report.summary.gatePassed).toBe(true);
         expect(report.summary.uniqueTemplates.length).toBeGreaterThanOrEqual(8);
         expect(report.cases.every((result) => result.contentSource === "fallback")).toBe(true);
@@ -34,11 +35,30 @@ describe("design quality benchmark", () => {
         expect(report.summary.antiTemplate.averageScore).toBeGreaterThanOrEqual(75);
         expect(report.summary.antiTemplate.severeCases).toEqual([]);
         expect(formatDesignBenchmarkMarkdown(report)).toContain("AppForge Design Quality Benchmark");
+        expect(formatDesignBenchmarkMarkdown(report)).toContain("Design gate: PASS");
         const antiTemplateReport = createAntiTemplateBenchmarkReport(report);
         expect(antiTemplateReport.cases).toHaveLength(24);
         expect(formatAntiTemplateBenchmarkMarkdown(antiTemplateReport)).toContain(
             "AppForge Anti-Template Static Benchmark",
         );
+    });
+
+    it("fails the overall strict gate when anti-template metrics are severe", async () => {
+        const report = await runDesignQualityBenchmark({
+            mode: "fallback",
+            limit: 1,
+            minimumCaseScore: 0,
+            minimumAverageScore: 0,
+            minimumPassRate: 0,
+            antiTemplateThresholds: {
+                cardContainerRatio: { warning: 0, severe: 0 },
+            },
+        });
+
+        expect(report.summary.designGatePassed).toBe(true);
+        expect(report.summary.antiTemplate.softGatePassed).toBe(false);
+        expect(report.summary.antiTemplate.severeCases).toHaveLength(1);
+        expect(report.summary.gatePassed).toBe(false);
     });
 
     it("selects deterministic and type-compatible fallback variants", () => {

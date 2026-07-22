@@ -15,6 +15,7 @@ import {
 import {
     evaluateAntiTemplate,
     type AntiTemplateReport,
+    type AntiTemplateThresholds,
 } from "./anti-template-evaluator.js";
 import { BenchmarkScreenshotSession } from "./benchmark-screenshot-renderer.js";
 import {
@@ -56,6 +57,7 @@ export type DesignBenchmarkReport = {
         failed: number;
         passRate: number;
         averageScore: number;
+        designGatePassed: boolean;
         gatePassed: boolean;
         uniqueTemplates: string[];
         uniquePalettes: string[];
@@ -103,6 +105,7 @@ export type RunDesignQualityBenchmarkOptions = {
     minimumCaseScore?: number;
     minimumPassRate?: number;
     minimumAverageScore?: number;
+    antiTemplateThresholds?: Partial<AntiTemplateThresholds>;
     model?: ModelProvider;
     onCaseGenerated?: (
         artifact: DesignBenchmarkGeneratedArtifact,
@@ -256,6 +259,9 @@ export async function runDesignQualityBenchmark(
             content: generated.content,
             appSource,
             cssSource,
+            ...(options.antiTemplateThresholds
+                ? { thresholds: options.antiTemplateThresholds }
+                : {}),
         });
 
         if (options.onCaseGenerated) {
@@ -351,6 +357,15 @@ export async function runDesignQualityBenchmark(
         }),
     ) as DesignBenchmarkReport["byType"];
 
+    const designGatePassed =
+        cases.length > 0 &&
+        passRate >= minimumPassRate &&
+        averageScore >= minimumAverageScore;
+    const antiTemplateSoftGatePassed =
+        cases.length > 0 &&
+        antiTemplateSevereCases.length === 0 &&
+        antiTemplateAverageScore >= 75;
+
     return {
         version: 2,
         generatedAt: new Date().toISOString(),
@@ -366,10 +381,8 @@ export async function runDesignQualityBenchmark(
             failed: cases.length - passed,
             passRate: round(passRate),
             averageScore,
-            gatePassed:
-                cases.length > 0 &&
-                passRate >= minimumPassRate &&
-                averageScore >= minimumAverageScore,
+            designGatePassed,
+            gatePassed: designGatePassed && antiTemplateSoftGatePassed,
             uniqueTemplates: [
                 ...new Set(cases.map((result) => result.quality.metadata.templateVariant)),
             ].sort(),
@@ -388,10 +401,7 @@ export async function runDesignQualityBenchmark(
                 largeRadiusCases,
                 homogeneousGridCases,
                 highDomRepetitionCases,
-                softGatePassed:
-                    cases.length > 0 &&
-                    antiTemplateSevereCases.length === 0 &&
-                    antiTemplateAverageScore >= 75,
+                softGatePassed: antiTemplateSoftGatePassed,
             },
         },
         byType,
@@ -406,6 +416,7 @@ export function formatDesignBenchmarkMarkdown(report: DesignBenchmarkReport): st
         `- Generated: ${report.generatedAt}`,
         `- Mode: ${report.mode}`,
         `- Gate: ${report.summary.gatePassed ? "PASS" : "FAIL"}`,
+        `- Design gate: ${report.summary.designGatePassed ? "PASS" : "FAIL"}`,
         `- Cases: ${report.summary.passed}/${report.summary.total} passed`,
         `- Pass rate: ${(report.summary.passRate * 100).toFixed(1)}%`,
         `- Average score: ${report.summary.averageScore}/100`,
