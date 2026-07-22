@@ -245,6 +245,7 @@ export function createFallbackDesignPlan(input: {
 }
 
 export function formatDesignPlanForPrompt(designPlan: DesignPlan): string {
+    const layoutFamilyGuide = formatDesignPlanLayoutFamilyGuide(designPlan);
     return [
         "Structured DesignPlan v1:",
         `applicationType: ${designPlan.applicationType}`,
@@ -260,7 +261,34 @@ export function formatDesignPlanForPrompt(designPlan: DesignPlan): string {
         `mediaStrategy: ${designPlan.visualDNA.mediaStrategy}`,
         `uniqueMotifs: ${designPlan.visualDNA.uniqueMotifs.join(", ")}`,
         `forbiddenPatterns: ${designPlan.visualDNA.forbiddenPatterns.join(", ") || "none"}`,
+        layoutFamilyGuide,
     ].join("\n");
+}
+
+function formatDesignPlanLayoutFamilyGuide(designPlan: DesignPlan): string {
+    const common = [
+        "Layout family router:",
+        "First choose a subject-specific layout family from the DesignPlan instead of defaulting to Hero + three columns + rounded cards + CTA.",
+        "Cards, panels, tiles, or modules are allowed when they are native to the chosen family, but they must not become the universal page skeleton.",
+        "The output must change DOM structure, section silhouettes, spacing rhythm, and class vocabulary for different subjects; changing only copy, colors, or images is not enough.",
+    ];
+    const family =
+        designPlan.applicationType === "game"
+            ? "Selected family: immersive game interface; prefer cinematic stage, match-hud, tactical map/lane, loadout strip, round timeline, angular dividers, and compact status chips."
+            : designPlan.applicationType === "dashboard"
+              ? "Selected family: operational console; prefer app shell, status rail, KPI band, chart/data region, filters, table rows, incident feed, and workflow steps."
+              : designPlan.applicationType === "editorial" ||
+                  designPlan.applicationType === "institution"
+                ? "Selected family: editorial/institution guide; prefer masthead, story rail, route timeline, map/list hybrid, captioned media strip, index rail, and text-led bands."
+                : designPlan.applicationType === "commerce"
+                  ? "Selected family: commerce decision surface; prefer product stage, gallery wall, buy/spec panel, comparison strip, trust row, and catalog shelves."
+                  : designPlan.applicationType === "portfolio"
+                    ? "Selected family: portfolio/case-study wall; prefer project wall, asymmetrical gallery, case-study rail, profile block, process timeline, and showcase strip."
+                    : designPlan.applicationType === "product"
+                      ? "Selected family: product/workflow surface; prefer product screen, workflow lane, feature strip, proof row, integration rail, and conversion band."
+                      : "Selected family: custom subject interface; derive the structure from the subject's real spatial metaphor and user task.";
+
+    return [...common, family].join("\n");
 }
 
 export function designPlanSourceLabel(source: DesignPlanSource): string {

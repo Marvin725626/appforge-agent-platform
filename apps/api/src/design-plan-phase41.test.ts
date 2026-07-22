@@ -186,6 +186,50 @@ describe("Phase 4.1 DesignPlan", () => {
         expect(prompt).toContain("Structured DesignPlan v1");
         expect(prompt).toContain("composition:");
         expect(prompt).toContain("forbiddenPatterns: card grid");
+        expect(prompt).toContain("Layout family router:");
+        expect(prompt).toContain("editorial/institution guide");
+        expect(prompt).toContain("changing only copy, colors, or images is not enough");
+    });
+
+    it("routes different application types to different layout families instead of one card template", () => {
+        const gamePlan = createFallbackDesignPlan({
+            goal: "Create a Valorant game guide with maps, A/B/C sites, and tactical rounds",
+            plannerOutput: PLANNER_OUTPUT,
+            routes: [{ path: "/", purpose: "Game tactics" }],
+        });
+        const dashboardPlan = createFallbackDesignPlan({
+            goal: "Create a server monitoring dashboard with CPU, memory, latency, alerts, and incident workflow",
+            plannerOutput: PLANNER_OUTPUT,
+            routes: [{ path: "/", purpose: "Operations dashboard" }],
+        });
+        const productPlan = createFallbackDesignPlan({
+            goal: "Create a SaaS product page for an Agent debugging platform",
+            plannerOutput: PLANNER_OUTPUT,
+            routes: [{ path: "/", purpose: "Product overview" }],
+        });
+
+        const gamePrompt = formatDesignPlanForPrompt(gamePlan);
+        const dashboardPrompt = formatDesignPlanForPrompt(dashboardPlan);
+        const productPrompt = formatDesignPlanForPrompt(productPlan);
+
+        expect(gamePlan.applicationType).toBe("game");
+        expect(dashboardPlan.applicationType).toBe("dashboard");
+        expect(productPlan.applicationType).toBe("product");
+        expect(gamePrompt).toContain("Selected family: immersive game interface");
+        expect(gamePrompt).toContain("match-hud");
+        expect(dashboardPrompt).toContain("Selected family: operational console");
+        expect(dashboardPrompt).toContain("KPI band");
+        expect(productPrompt).toContain("Selected family: product/workflow surface");
+        expect(productPrompt).toContain("product screen");
+        expect(new Set([gamePrompt, dashboardPrompt, productPrompt]).size).toBe(3);
+        for (const prompt of [gamePrompt, dashboardPrompt, productPrompt]) {
+            expect(prompt).toContain(
+                "Cards, panels, tiles, or modules are allowed when they are native to the chosen family",
+            );
+            expect(prompt).toContain(
+                "must not become the universal page skeleton",
+            );
+        }
     });
 
     it("formats project CSS from DesignPlan instead of the old shared visual skeleton", () => {
