@@ -397,7 +397,7 @@ const scenarios: Scenario[] = [
         name: "whole_redo",
         request: "Completely redo the entire homepage with a new structure",
         expectedMode: "structural_edit",
-        expectedAccepted: true,
+        expectedAccepted: false,
         responses: [
             PLANNER_RESPONSE,
             editFile("src/App.tsx", "<h1>Welcome</h1>", "<h1>New homepage</h1>"),
@@ -409,7 +409,7 @@ const scenarios: Scenario[] = [
         name: "package_json",
         request: "Modify package.json build script to echo changed",
         expectedMode: "structural_edit",
-        expectedAccepted: true,
+        expectedAccepted: false,
         responses: [
             PLANNER_RESPONSE,
             editFile(
