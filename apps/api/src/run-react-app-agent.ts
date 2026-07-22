@@ -87,7 +87,11 @@ import {
     generateStableReactPage,
     isGenericRepairRequest,
 } from "./stable-react-page-generator.js";
-import { isFreshPageGenerationRequest } from "./generation-request-intent.js";
+import {
+    isExplicitRegenerationPrompt,
+    isFreshPageGenerationRequest,
+    isFullApplicationCreationRequest,
+} from "./generation-request-intent.js";
 import {
     evaluateAntiTemplateSource,
     type AntiTemplateReport,
@@ -6319,7 +6323,10 @@ export async function runReactAppAgent(
         navigationRequestKind !== "routes" &&
         (options.resetWorkspace !== false ||
             genericRepairRequest ||
-            isFreshPageGenerationRequest(executionRequest));
+            isFreshPageGenerationRequest(executionRequest) ||
+            isFullApplicationCreationRequest(executionRequest) ||
+            isExplicitRegenerationPrompt(executionRequest) ||
+            complexPageRequest);
     const stableScaffoldRequested =
         stableStructuralGenerationRequested;
     const useParallelCodingAgents =
