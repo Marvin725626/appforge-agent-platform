@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+﻿import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -930,6 +930,93 @@ export function App() {
         await expect(
             readFile(path.join(workspaceRoot, "src", "main.tsx"), "utf8"),
         ).resolves.toContain("createRoot");
+    }, 15_000);
+
+    it("uses terminal stable recovery when an iteration draft fails build", async () => {
+        const templateRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-template-"),
+        );
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-build-failed-stable-"),
+        );
+        temporaryDirectories.push(templateRoot, workspaceRoot);
+
+        await mkdir(path.join(templateRoot, "src"));
+        await writeFile(
+            path.join(templateRoot, "package.json"),
+            JSON.stringify({
+                scripts: {
+                    build:
+                        "node -e \"const fs=require('fs'); const source=fs.readFileSync('src/App.tsx','utf8'); if(source.includes('BROKEN_BUILD')) process.exit(1); console.log('build ok')\"",
+                },
+            }),
+            "utf8",
+        );
+        await writeFile(
+            path.join(templateRoot, "src", "App.tsx"),
+            "export function App() { return null; }",
+            "utf8",
+        );
+        await mkdir(path.join(workspaceRoot, "src"));
+        await writeFile(
+            path.join(workspaceRoot, "package.json"),
+            JSON.stringify({
+                scripts: {
+                    build:
+                        "node -e \"const fs=require('fs'); const source=fs.readFileSync('src/App.tsx','utf8'); if(source.includes('BROKEN_BUILD')) process.exit(1); console.log('build ok')\"",
+                },
+            }),
+            "utf8",
+        );
+        await writeFile(
+            path.join(workspaceRoot, "src", "App.tsx"),
+            "export function App() { return <main>Existing Valorant draft</main>; }",
+            "utf8",
+        );
+
+        const model = new FakeModelProvider([
+            PLANNER_RESPONSE,
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.tsx",
+                    content:
+                        "export function App() { return <main>BROKEN_BUILD</main>; }",
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "Broken draft",
+                }),
+            },
+            APPROVED_REVIEW_RESPONSE,
+        ]);
+
+        const result = await runReactAppAgent({
+            goal: "Create a Valorant tactical page",
+            currentRequest: "继续完善这个页面，加入战术档案内容",
+            workspaceRoot,
+            templateRoot,
+            model,
+            stableGeneration: true,
+            resetWorkspace: false,
+            maxRepairAttempts: 0,
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        expect(result.review.reason).not.toContain("npm build failed");
+        expect(result.build.exitCode).toBe(0);
+        expect(result.agent.steps.some((step) =>
+            step.execution.message.includes("Generated schema-driven"),
+        )).toBe(true);
+        await expect(
+            readFile(path.join(workspaceRoot, "src", "App.tsx"), "utf8"),
+        ).resolves.toContain("VALORANT");
     }, 15_000);
 
     it("continues a changed draft with one bounded repair after a model timeout", async () => {

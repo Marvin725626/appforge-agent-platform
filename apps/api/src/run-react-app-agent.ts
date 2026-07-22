@@ -7386,6 +7386,7 @@ export async function runReactAppAgent(
         kind: RunReactAppAgentAttempt["kind"],
         context: string,
         attemptNumber: number,
+        attemptOptions: { forceStableScaffold?: boolean } = {},
     ): Promise<RunReactAppAgentAttempt> {
         options.signal?.throwIfAborted();
         await emitRunProgress(
@@ -7433,8 +7434,10 @@ export async function runReactAppAgent(
 
         try {
             if (
-                stableScaffoldRequested &&
+                (stableScaffoldRequested ||
+                    attemptOptions.forceStableScaffold === true) &&
                 (kind === "initial" ||
+                    attemptOptions.forceStableScaffold === true ||
                     genericRepairRequest ||
                     (options.resetWorkspace === false &&
                         attemptNumber === 1 &&
@@ -7444,8 +7447,30 @@ export async function runReactAppAgent(
             ) {
                 const stableResult = await generateStableReactPage({
                     workspaceRoot: options.workspaceRoot,
-                    goal: iterationContextRequest,
-                    contentModel: codingModel,
+                    goal:
+                        attemptOptions.forceStableScaffold === true
+                            ? [
+                                  "Original product goal:",
+                                  extractStableProductGoal(options.goal),
+                                  "",
+                                  "Current user request:",
+                                  focusedRequest,
+                                  "",
+                                  "Failure context:",
+                                  context,
+                              ].join("\n")
+                            : options.resetWorkspace === false
+                              ? [
+                                    "Original product goal:",
+                                    extractStableProductGoal(options.goal),
+                                    "",
+                                    "Current user request:",
+                                    focusedRequest,
+                                ].join("\n")
+                            : iterationContextRequest,
+                    ...(attemptOptions.forceStableScaffold === true
+                        ? {}
+                        : { contentModel: codingModel }),
                     ...(attemptImageAssetTool
                         ? { imageAssetTool: attemptImageAssetTool }
                         : {}),
@@ -8416,6 +8441,67 @@ export async function runReactAppAgent(
         }
 
         repairAttempt += 1;
+    }
+
+    if (
+        options.resetWorkspace === false &&
+        stableGenerationEnabled &&
+        !focusedEditRequest &&
+        navigationRequestKind !== "routes" &&
+        iterationRequestKind !== "dependency_change" &&
+        !latestAttempt.review.accepted &&
+        (/No new draft was produced|Coding Agent did not change|npm build failed|required requirement\(s\) failed|unverified/iu.test(
+            latestAttempt.review.reason,
+        ) ||
+            latestAttempt.build.exitCode !== 0 ||
+            latestAttempt.eval.passed === false)
+    ) {
+        options.signal?.throwIfAborted();
+        const terminalStableContext = [
+            "Terminal stable recovery mode:",
+            "The normal iteration/edit path failed or produced no accepted draft.",
+            "Do not continue the failed patch. Rebuild the generated React source through the stable schema-driven generator using the original product goal plus the latest user correction.",
+            "The result must write src/App.tsx, src/App.css, and src/main.tsx, then pass install, build, static evaluation, and browser validation if available.",
+            "",
+            "Iteration request package:",
+            iterationContextRequest,
+            "",
+            formatRepairContext({
+                build: latestAttempt.build,
+                ...(latestAttempt.typecheck
+                    ? { typecheck: latestAttempt.typecheck }
+                    : {}),
+                eval: latestAttempt.eval,
+                ...(latestAttempt.browserEval
+                    ? { browserEval: latestAttempt.browserEval }
+                    : {}),
+                review: latestAttempt.review,
+            }),
+        ].join("\n\n");
+
+        try {
+            runMetrics.retryCalls += 1;
+            const terminalStableAttempt = await runAttempt(
+                "repair",
+                terminalStableContext,
+                attempts.length + 1,
+                { forceStableScaffold: true },
+            );
+            attempts.push(terminalStableAttempt);
+            latestAttempt = terminalStableAttempt;
+        } catch (error) {
+            if (options.signal?.aborted) {
+                options.signal.throwIfAborted();
+            }
+            latestAttempt = {
+                ...latestAttempt,
+                review: markReviewWithRepairFailure(
+                    latestAttempt.review,
+                    error,
+                ),
+            };
+            attempts[attempts.length - 1] = latestAttempt;
+        }
     }
 
     options.signal?.throwIfAborted();
