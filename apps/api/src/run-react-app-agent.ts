@@ -7676,12 +7676,25 @@ export async function runReactAppAgent(
                 contentCorrectionRequest ||
                 layoutRepairIterationRequest ||
                 complexPageRequest ||
-                requirements.length >= 3) &&
-            !(focusedEditRequest && requirements.length < 3)
+                requirements.length >= 3 ||
+                focusedEditRequest) &&
+            iterationRequestKind !== "dependency_change"
         ) {
             const stableResult = await generateStableReactPage({
                 workspaceRoot: options.workspaceRoot,
-                goal: iterationContextRequest,
+                goal:
+                    options.resetWorkspace === false
+                        ? [
+                              "Original product goal:",
+                              extractStableProductGoal(options.goal),
+                              "",
+                              "Current user request:",
+                              focusedRequest,
+                              "",
+                              "No-progress edit context:",
+                              iterationContextRequest,
+                          ].join("\n")
+                        : iterationContextRequest,
                 ...(resolvedDesignPlan
                     ? { designPlan: resolvedDesignPlan }
                     : {}),

@@ -1019,6 +1019,81 @@ export function App() {
         ).resolves.toContain("VALORANT");
     }, 15_000);
 
+    it("escalates no-change focused edits to stable recovery instead of failing", async () => {
+        const templateRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-template-"),
+        );
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-focused-no-change-stable-"),
+        );
+        temporaryDirectories.push(templateRoot, workspaceRoot);
+
+        await mkdir(path.join(templateRoot, "src"));
+        await writeFile(
+            path.join(templateRoot, "package.json"),
+            JSON.stringify({
+                scripts: {
+                    build: "node -e \"console.log('build ok')\"",
+                },
+            }),
+            "utf8",
+        );
+        await writeFile(
+            path.join(templateRoot, "src", "App.tsx"),
+            "export function App() { return null; }",
+            "utf8",
+        );
+        await mkdir(path.join(workspaceRoot, "src"));
+        await writeFile(
+            path.join(workspaceRoot, "package.json"),
+            JSON.stringify({
+                scripts: {
+                    build: "node -e \"console.log('build ok')\"",
+                },
+            }),
+            "utf8",
+        );
+        await writeFile(
+            path.join(workspaceRoot, "src", "App.tsx"),
+            "export function App() { return <main><button>Start</button><p>Existing Valorant draft</p></main>; }",
+            "utf8",
+        );
+
+        const model = new FakeModelProvider([
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "No changes made",
+                }),
+            },
+            APPROVED_REVIEW_RESPONSE,
+        ]);
+
+        const result = await runReactAppAgent({
+            goal: "Create a Valorant tactical page",
+            currentRequest: "把按钮文字改成 Submit",
+            workspaceRoot,
+            templateRoot,
+            model,
+            stableGeneration: true,
+            resetWorkspace: false,
+            maxRepairAttempts: 0,
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        expect(result.review.reason).not.toContain(
+            "Coding Agent did not change the workspace",
+        );
+        expect(result.build.exitCode).toBe(0);
+        expect(result.agent.steps.some((step) =>
+            step.execution.message.includes("Generated schema-driven"),
+        )).toBe(true);
+    }, 15_000);
+
     it("continues a changed draft with one bounded repair after a model timeout", async () => {
         const templateRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-api-template-"),
