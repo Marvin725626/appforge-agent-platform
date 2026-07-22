@@ -174,6 +174,17 @@ export type ReviewReactAppAgentInput = {
 };
 
 function isAdvisoryVisualBrowserCheckName(name: string): boolean {
+    if (
+        name.startsWith("visual quality:") &&
+        (name.includes("has no page horizontal overflow") ||
+            name.includes("has no critical element overlap") ||
+            name.includes("keeps key content inside the viewport") ||
+            name.includes("interactive controls have usable targets") ||
+            name.includes("visible text is not excessively small"))
+    ) {
+        return false;
+    }
+
     return (
         name.startsWith("visual contract: dashboard ") ||
         name.startsWith("visual quality:")

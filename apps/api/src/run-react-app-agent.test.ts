@@ -3983,6 +3983,121 @@ export function App() {
         ).resolves.toContain('const features = ["Trace viewer"]');
     }, 15_000);
 
+    it("auto repairs blocking browser visual overlap failures before accepting", async () => {
+        const templateRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-template-"),
+        );
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-visual-overlap-repair-"),
+        );
+        temporaryDirectories.push(templateRoot, workspaceRoot);
+
+        await mkdir(path.join(templateRoot, "src"));
+        await writeFile(
+            path.join(templateRoot, "package.json"),
+            JSON.stringify({
+                scripts: {
+                    build: "node -e \"console.log('build ok')\"",
+                },
+            }),
+            "utf8",
+        );
+        await writeFile(
+            path.join(templateRoot, "src", "App.tsx"),
+            "export function App() { return null; }",
+            "utf8",
+        );
+
+        const brokenApp =
+            "export function App() { const weapons = ['Vandal', 'Phantom', 'Operator']; return <main><section className=\"loadout-panel\"><h1>赛前负载面板</h1><h2>步枪层</h2><p>按距离与经济选枪，避免文字挤压。</p><p>近距离优先 Phantom，中远距离选择 Vandal，长枪线由 Operator 控制。</p>{weapons.map((weapon) => <p key={weapon}>{weapon} 装备建议</p>)}</section></main>; }";
+        const fixedApp =
+            "export function App() { const weapons = ['Vandal', 'Phantom', 'Operator']; return <main><section className=\"loadout-panel loadout-panel--fixed\"><h1>赛前负载面板</h1><h2>步枪层</h2><p>按距离与经济选枪，避免文字挤压。</p><p>近距离优先 Phantom，中远距离选择 Vandal，长枪线由 Operator 控制。</p>{weapons.map((weapon) => <p key={weapon}>{weapon} 装备建议</p>)}</section></main>; }";
+
+        const model = new FakeModelProvider([
+            PLANNER_RESPONSE,
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.tsx",
+                    content: brokenApp,
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "Initial visually broken draft",
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "edit_file",
+                    path: "src/App.tsx",
+                    oldText: 'className="loadout-panel"',
+                    newText: 'className="loadout-panel loadout-panel--fixed"',
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "Visual overlap repair done",
+                }),
+            },
+            APPROVED_REVIEW_RESPONSE,
+        ]);
+
+        const result = await runReactAppAgent({
+            goal: "创建一个瓦罗兰特赛前负载面板页面，文字不能重叠",
+            workspaceRoot,
+            templateRoot,
+            model,
+            maxRepairAttempts: 1,
+            evaluateBrowser: async () => {
+                const source = await readFile(
+                    path.join(workspaceRoot, "src", "App.tsx"),
+                    "utf8",
+                );
+                const fixed = source.includes("loadout-panel--fixed");
+
+                return fixed
+                    ? {
+                          passed: true,
+                          checks: [
+                              {
+                                  name: "visual quality: 1280x720 has no critical element overlap",
+                                  passed: true,
+                              },
+                          ],
+                      }
+                    : {
+                          passed: false,
+                          checks: [
+                              {
+                                  name: "visual quality: 1280x720 has no critical element overlap",
+                                  passed: false,
+                                  message:
+                                      "2 critical overlap(s) detected. h2 ↔ p: 80% overlap.",
+                              },
+                          ],
+                      };
+            },
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        expect(result.review.accepted).toBe(true);
+        expect(result.attempts).toHaveLength(2);
+        expect(result.attempts[0]?.review.checks.browserVisualOnly).not.toBe(true);
+        expect(result.attempts[0]?.browserEval?.passed).toBe(false);
+        expect(result.attempts[1]?.kind).toBe("repair");
+        expect(result.metrics?.retryCalls).toBe(1);
+        expect(model.requests[3]?.messages[1]?.content).toContain(
+            "critical overlap",
+        );
+    }, 15_000);
+
     it("runs typecheck and repairs undefined TypeScript references before accepting", async () => {
         const templateRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-api-template-"),

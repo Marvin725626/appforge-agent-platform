@@ -530,7 +530,7 @@ describe("visual-only browser review handling", () => {
 
 
 
-    it("treats multi-viewport visual quality failures as advisory human-review issues", () => {
+    it("auto repairs structural visual quality failures such as overflow and overlap", () => {
         const review = reviewReactAppAgentResult({
             agent: {
                 finished: true,
@@ -549,6 +549,40 @@ describe("visual-only browser review handling", () => {
                         passed: false,
                         message: "The document is 24px wider than the viewport.",
                     },
+                    {
+                        name: "visual quality: 768x1024 has no critical element overlap",
+                        passed: false,
+                        message: "2 critical overlap(s) detected. h2 ↔ p: 80% overlap.",
+                    },
+                ],
+            },
+        });
+
+        expect(review.accepted).toBe(false);
+        expect(review.checks.browserVisualOnly).not.toBe(true);
+        expect(
+            decideReviewDisposition({
+                review,
+                repairAttempt: 0,
+                maxRepairAttempts: 2,
+            }),
+        ).toBe("auto_repair");
+    });
+
+    it("keeps contrast-only visual quality failures as advisory human-review issues", () => {
+        const review = reviewReactAppAgentResult({
+            agent: {
+                finished: true,
+                madeProgress: true,
+                stopReason: "finish",
+            },
+            install: { exitCode: 0 },
+            build: { exitCode: 0 },
+            typecheck: { exitCode: 0 },
+            eval: { passed: true },
+            browserEval: {
+                passed: false,
+                checks: [
                     {
                         name: "visual quality: 768x1024 text contrast is readable",
                         passed: false,
