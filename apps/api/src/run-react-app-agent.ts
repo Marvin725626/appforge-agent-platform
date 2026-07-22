@@ -8459,7 +8459,6 @@ export async function runReactAppAgent(
     if (
         options.resetWorkspace === false &&
         stableGenerationEnabled &&
-        !focusedEditRequest &&
         navigationRequestKind !== "routes" &&
         iterationRequestKind !== "dependency_change" &&
         !latestAttempt.review.accepted &&
