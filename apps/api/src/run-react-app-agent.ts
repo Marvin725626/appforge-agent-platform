@@ -5304,6 +5304,81 @@ function isContentCorrectionRequest(text: string): boolean {
     );
 }
 
+type IterationRequestKind =
+    | "fresh_generation"
+    | "fast_edit"
+    | "content_correction"
+    | "layout_repair"
+    | "structural_regen"
+    | "dependency_change";
+
+function isNoChangeCorrectionRequest(text: string): boolean {
+    return /(?:no\s+change|unchanged|still\s+(?:same|wrong|broken)|did\s+not\s+change|not\s+applied|ignored)|(?:还是一样|没有变化|没变化|没有改|没改|改不了|没有效果|没用|不生效|还是不对|还是错|没听懂|不听需求)/iu.test(
+        text,
+    );
+}
+
+function isLayoutRepairIterationRequest(text: string): boolean {
+    return /(?:layout|ui|screen|page).{0,40}(?:broken|messy|chaotic|unreadable|collapsed|overflow|too\s+large)|(?:界面|页面|排版|布局).{0,30}(?:乱|搞乱|坏|炸|崩|不合理|显示不全|看不清|太大|溢出|挤压)|(?:字体|标题|文字).{0,20}(?:太大|显示不全|挤在一起|压住|看不清)/iu.test(
+        text,
+    );
+}
+
+function isDependencyChangeRequest(text: string): boolean {
+    return /(?:package\.json|package-lock|dependency|dependencies|npm\s+install|install\s+(?:a\s+)?package|add\s+(?:a\s+)?library)|(?:依赖|安装包|加库|package\.json|lockfile)/iu.test(
+        text,
+    );
+}
+
+export function classifyIterationRequest(input: {
+    currentRequest: string;
+    executionRequest: string;
+    resetWorkspace?: boolean;
+    genericRepairRequest: boolean;
+    navigationRequestKind: NavigationRequestKind;
+}): IterationRequestKind {
+    if (input.resetWorkspace !== false) {
+        return "fresh_generation";
+    }
+
+    if (isDependencyChangeRequest(input.currentRequest)) {
+        return "dependency_change";
+    }
+
+    if (
+        !input.genericRepairRequest &&
+        isContentCorrectionRequest(input.currentRequest)
+    ) {
+        return "content_correction";
+    }
+
+    if (
+        !input.genericRepairRequest &&
+        (isLayoutRepairIterationRequest(input.currentRequest) ||
+            isNoChangeCorrectionRequest(input.currentRequest))
+    ) {
+        return "layout_repair";
+    }
+
+    if (
+        isExplicitRegenerationPrompt(input.executionRequest) ||
+        isFullApplicationCreationRequest(input.executionRequest)
+    ) {
+        return "structural_regen";
+    }
+
+    if (
+        !input.genericRepairRequest &&
+        (isFocusedVisualAdjustmentRequest(input.executionRequest) ||
+            isExplicitFocusedEditRequest(input.executionRequest) ||
+            input.navigationRequestKind === "in-page")
+    ) {
+        return "fast_edit";
+    }
+
+    return "structural_regen";
+}
+
 function isExplicitFocusedEditRequest(text: string): boolean {
     const actionThenTarget =
         /\b(?:change|modify|update|set|move|delete|remove|hide|replace|swap)\b.{0,80}\b(?:button|sidebar|hero|background|color|width|height|font|title|image|photo|asset|module|section|route|\/about|mobile|desktop)\b/iu;
@@ -6175,24 +6250,36 @@ export async function runReactAppAgent(
         : options.resetWorkspace === false
           ? focusedRequest
           : options.goal;
+    let navigationRequestKind = classifyNavigationRequest(executionRequest);
+    const iterationRequestKind = classifyIterationRequest({
+        currentRequest: focusedRequest,
+        executionRequest,
+        ...(options.resetWorkspace !== undefined
+            ? { resetWorkspace: options.resetWorkspace }
+            : {}),
+        genericRepairRequest,
+        navigationRequestKind,
+    });
     const contentCorrectionRequest =
-        !genericRepairRequest && isContentCorrectionRequest(focusedRequest);
+        iterationRequestKind === "content_correction";
+    const layoutRepairIterationRequest =
+        iterationRequestKind === "layout_repair";
     const iterationContextRequest =
-        contentCorrectionRequest && options.resetWorkspace === false
+        (contentCorrectionRequest || layoutRepairIterationRequest) &&
+        options.resetWorkspace === false
             ? [
                   "Original product goal:",
                   extractStableProductGoal(options.goal),
                   "",
-                  "Current user correction:",
+                  "Current user correction or failure report:",
                   focusedRequest,
+                  "",
+                  "Iteration strategy:",
+                  iterationRequestKind,
               ].join("\n")
             : executionRequest;
     let focusedEditRequest =
-        !genericRepairRequest &&
-        !contentCorrectionRequest &&
-        options.resetWorkspace === false &&
-        (isFocusedVisualAdjustmentRequest(executionRequest) ||
-            isExplicitFocusedEditRequest(executionRequest));
+        iterationRequestKind === "fast_edit";
     let requirements = parseRequirementLedger({
         currentRequest: executionRequest,
         focusedEdit: focusedEditRequest,
@@ -6352,7 +6439,6 @@ export async function runReactAppAgent(
         : imageAssetTool;
     let activeImageAssetModes = focusedEditRequest ? [] : imageAssetModes;
     let imageToolContext = formatImageToolContext(activeImageAssetModes);
-    let navigationRequestKind = classifyNavigationRequest(executionRequest);
     if (
         focusedEditRequest &&
         navigationRequestKind !== "none" &&
@@ -6377,6 +6463,7 @@ export async function runReactAppAgent(
             genericRepairRequest ||
             isFreshPageGenerationRequest(executionRequest) ||
             contentCorrectionRequest ||
+            layoutRepairIterationRequest ||
             isFullApplicationCreationRequest(executionRequest) ||
             isExplicitRegenerationPrompt(executionRequest) ||
             complexPageRequest);
@@ -6499,7 +6586,12 @@ export async function runReactAppAgent(
         options.model,
     );
 
-    if (options.resetWorkspace === false && preferLocalFallbackBeforeModel) {
+    if (
+        options.resetWorkspace === false &&
+        preferLocalFallbackBeforeModel &&
+        !contentCorrectionRequest &&
+        !layoutRepairIterationRequest
+    ) {
         if (navigationRequestKind === "in-page") {
             await emitRunProgress(options.onProgress, "coding");
             const navigationFallbackMessages =
@@ -6988,7 +7080,7 @@ export async function runReactAppAgent(
         options.resetWorkspace === false
             ? await formatContinuationWorkspaceContext(
                   options.workspaceRoot,
-                  executionRequest,
+                  iterationContextRequest,
               )
             : "";
     const continuationPlanningContext =
@@ -7014,10 +7106,10 @@ export async function runReactAppAgent(
         ? createFocusedEditPlannerOutput(requirements)
         : await (async () => {
               await emitRunProgress(options.onProgress, "planning");
-              return timeRunPhase(runMetrics, "plannerDurationMs", () =>
+                  return timeRunPhase(runMetrics, "plannerDurationMs", () =>
                   createPlannerOutputWithFallback({
                       plannerAgent,
-                      goal: executionRequest,
+                      goal: iterationContextRequest,
                       ...(options.signal ? { signal: options.signal } : {}),
                       context: [
                           formatSkillInstructions(reactViteAppSkill),
@@ -7532,6 +7624,8 @@ export async function runReactAppAgent(
             stableGenerationEnabled &&
             (stableStructuralGenerationRequested ||
                 genericRepairRequest ||
+                contentCorrectionRequest ||
+                layoutRepairIterationRequest ||
                 complexPageRequest ||
                 requirements.length >= 3) &&
             !(focusedEditRequest && requirements.length < 3)

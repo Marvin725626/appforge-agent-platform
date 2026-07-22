@@ -10,6 +10,7 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+    classifyIterationRequest,
     classifyNavigationRequest,
     createBrowserProbesForRequirement,
     formatBuildErrorSourceExcerpt,
@@ -55,6 +56,38 @@ describe("runReactAppAgent", () => {
         );
 
         temporaryDirectories.length = 0;
+    });
+
+    it("classifies correction iterations before selecting an edit path", () => {
+        expect(
+            classifyIterationRequest({
+                currentRequest: "内容不是无畏契约的，换成瓦罗兰特相关内容",
+                executionRequest: "内容不是无畏契约的，换成瓦罗兰特相关内容",
+                resetWorkspace: false,
+                genericRepairRequest: false,
+                navigationRequestKind: "none",
+            }),
+        ).toBe("content_correction");
+
+        expect(
+            classifyIterationRequest({
+                currentRequest: "还是没有变化，页面排版还是乱的",
+                executionRequest: "还是没有变化，页面排版还是乱的",
+                resetWorkspace: false,
+                genericRepairRequest: false,
+                navigationRequestKind: "none",
+            }),
+        ).toBe("layout_repair");
+
+        expect(
+            classifyIterationRequest({
+                currentRequest: "把按钮文字改成 Submit",
+                executionRequest: "把按钮文字改成 Submit",
+                resetWorkspace: false,
+                genericRepairRequest: false,
+                navigationRequestKind: "none",
+            }),
+        ).toBe("fast_edit");
     });
 
     it.each([
