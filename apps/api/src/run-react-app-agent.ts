@@ -7459,6 +7459,45 @@ export async function runReactAppAgent(
             }
         }
 
+        if (
+            !madeWorkspaceProgress &&
+            (kind === "initial" || attemptNumber === 1) &&
+            !focusedEditRequest &&
+            navigationRequestKind !== "routes" &&
+            (options.stableGeneration === true || options.model === undefined)
+        ) {
+            const stableResult = await generateStableReactPage({
+                workspaceRoot: options.workspaceRoot,
+                goal: executionRequest,
+                ...(resolvedDesignPlan
+                    ? { designPlan: resolvedDesignPlan }
+                    : {}),
+                ...(options.signal ? { signal: options.signal } : {}),
+            });
+            agent = {
+                ...stableResult.agent,
+                steps: [
+                    ...agent.steps,
+                    {
+                        action: {
+                            type: "finish",
+                            summary:
+                                "Coding Agent made no workspace change; switched to deterministic stable generation safety net.",
+                        },
+                        execution: {
+                            ok: true,
+                            changed: false,
+                            message:
+                                "Coding Agent made no workspace change; switched to deterministic stable generation safety net.",
+                        },
+                    },
+                    ...stableResult.agent.steps,
+                ],
+            };
+            madeWorkspaceProgress = true;
+            usedStableScaffold = true;
+        }
+
         if (!madeWorkspaceProgress) {
             const failureDetail =
                 agent.errorMessage ??

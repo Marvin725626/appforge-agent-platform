@@ -803,6 +803,82 @@ export function App() {
         expect(model.requests).toHaveLength(2);
     }, 15_000);
 
+    it("uses stable generation as a safety net when structural coding makes no workspace change", async () => {
+        const templateRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-template-"),
+        );
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-no-change-stable-"),
+        );
+        temporaryDirectories.push(templateRoot, workspaceRoot);
+
+        await mkdir(path.join(templateRoot, "src"));
+        await writeFile(
+            path.join(templateRoot, "package.json"),
+            JSON.stringify({
+                scripts: {
+                    build: "node -e \"console.log('build ok')\"",
+                },
+            }),
+            "utf8",
+        );
+        await writeFile(
+            path.join(templateRoot, "src", "App.tsx"),
+            "export function App() { return <main>Baseline</main>; }",
+            "utf8",
+        );
+
+        const model = new FakeModelProvider([
+            PLANNER_RESPONSE,
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "No changes needed",
+                }),
+            },
+            {
+                content: JSON.stringify({
+                    type: "finish",
+                    summary: "Still no changes",
+                }),
+            },
+            APPROVED_REVIEW_RESPONSE,
+        ]);
+
+        const result = await runReactAppAgent({
+            goal: "Create an operations dashboard",
+            currentRequest:
+                "整体重做首页，创建一个服务器运行监控后台，包含 CPU、内存、请求延迟、异常服务、告警列表和故障处理流程",
+            workspaceRoot,
+            templateRoot,
+            model,
+            stableGeneration: true,
+            resetWorkspace: false,
+            maxRepairAttempts: 0,
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        expect(result.review.reason).not.toContain(
+            "Coding Agent did not change the workspace",
+        );
+        expect(result.agent.steps.some((step) =>
+            step.execution.message.includes("stable generation safety net"),
+        )).toBe(true);
+        await expect(
+            readFile(path.join(workspaceRoot, "src", "App.tsx"), "utf8"),
+        ).resolves.toContain("function App");
+        await expect(
+            readFile(path.join(workspaceRoot, "src", "App.css"), "utf8"),
+        ).resolves.toContain(":root");
+        await expect(
+            readFile(path.join(workspaceRoot, "src", "main.tsx"), "utf8"),
+        ).resolves.toContain("createRoot");
+    }, 15_000);
+
     it("continues a changed draft with one bounded repair after a model timeout", async () => {
         const templateRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-api-template-"),
