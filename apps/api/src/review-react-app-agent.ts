@@ -13,6 +13,7 @@ export type ReactAppAgentReview = {
         browserVisualOnly?: boolean;
         antiTemplateLevel?: "pass" | "warning" | "severe";
         antiTemplateWarning?: boolean;
+        antiTemplateBlocking?: boolean;
     };
 };
 
@@ -28,7 +29,8 @@ export function hasReviewQualityFailure(
         review.checks.typecheckPassed === false ||
         !review.checks.evalPassed ||
         (review.checks.browserPassed === false &&
-            review.checks.browserVisualOnly !== true)
+            review.checks.browserVisualOnly !== true) ||
+        review.checks.antiTemplateBlocking === true
     );
 }
 

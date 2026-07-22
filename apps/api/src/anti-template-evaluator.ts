@@ -11,7 +11,8 @@ export type AntiTemplateFindingCode =
     | "card-container-ratio"
     | "large-radius-container-ratio"
     | "homogeneous-three-column-grid"
-    | "repeated-dom-pattern";
+    | "repeated-dom-pattern"
+    | "layout-family-mismatch";
 
 export type AntiTemplateFinding = {
     code: AntiTemplateFindingCode;
@@ -43,6 +44,10 @@ export type AntiTemplateThresholds = {
         warning: number;
         severe: number;
     };
+    layoutFamilyMismatchScore: {
+        warning: number;
+        severe: number;
+    };
 };
 
 export type AntiTemplateMetrics = {
@@ -65,6 +70,9 @@ export type AntiTemplateMetrics = {
     repeatedDomPatternRatio: number;
     repeatedStructureCount: number;
     largestRepeatedComponentGroup: number;
+    genericTemplateTokenCount: number;
+    layoutFamilySignalCount: number;
+    layoutFamilyMismatchScore: number;
 };
 
 export type AntiTemplateReport = {
@@ -117,6 +125,10 @@ const DEFAULT_THRESHOLDS: AntiTemplateThresholds = {
         warning: 75,
         severe: 60,
     },
+    layoutFamilyMismatchScore: {
+        warning: 0.5,
+        severe: 0.8,
+    },
 };
 
 const SECTION_ITEM_SELECTORS: Record<StablePageSection["kind"], readonly string[]> = {
@@ -143,6 +155,33 @@ const OPERATIONAL_SELECTOR_PATTERN = /(?:metric|stat|kpi|dashboard|data|table|al
 const MEDIA_SELECTOR_PATTERN = /(?:gallery|media|image|logo|photo|map)/iu;
 const CARD_NAME_PATTERN = /(?:card|panel|tile|box)/iu;
 const GENERIC_GRID_PATTERN = /(?:grid|feature|benefit|pricing|card|panel|tile)/iu;
+const GENERIC_TEMPLATE_TOKEN_PATTERN = /\b(?:page-card|page-grid|feature-card|feature-grid|benefit-card|benefit-grid|pricing-card|pricing-grid|generic-card|template-card|template-grid)\b/giu;
+const LAYOUT_FAMILY_SIGNAL_PATTERNS: Record<ApplicationType, readonly RegExp[]> = {
+    game: [
+        /\b(?:game-stage|game-map|game-sites|game-site|site-letter|game-lane|game-loadout|game-round|game-strip|match-hud|hud-pill|tactical-rail)\b/iu,
+    ],
+    dashboard: [
+        /\b(?:dashboard-shell|dashboard-kpis|dashboard-panel|dashboard-main|kpi-tile|metric-band|chart-frame|activity-feed|status-rail|incident-feed|filter-bar|data-table)\b/iu,
+    ],
+    editorial: [
+        /\b(?:editorial-flow|story-band|story-rail|route-timeline|route-stop|map-panel|map-list|culture-timeline|caption-rail|media-strip|index-rail)\b/iu,
+    ],
+    institution: [
+        /\b(?:editorial-flow|campus-rail|admission-timeline|story-band|route-timeline|map-panel|program-list|faculty-strip|index-rail)\b/iu,
+    ],
+    commerce: [
+        /\b(?:commerce-stage|product-stage|product-gallery|buy-panel|spec-panel|comparison-strip|trust-row|catalog-shelf|price-rail)\b/iu,
+    ],
+    product: [
+        /\b(?:product-stage|product-screen|workflow-lane|feature-strip|proof-row|integration-rail|conversion-band|agent-runtime-stage|trace-flow)\b/iu,
+    ],
+    portfolio: [
+        /\b(?:portfolio-wall|project-wall|project-tile|case-study-rail|showcase-strip|profile-block|gallery-wall|process-timeline)\b/iu,
+    ],
+    custom: [
+        /\b(?:layout-|stage|rail|timeline|flow|region|shell|canvas|map|wall|strip)\b/iu,
+    ],
+};
 
 function clamp(value: number, minimum: number, maximum: number): number {
     return Math.max(minimum, Math.min(maximum, value));
@@ -175,6 +214,10 @@ function mergeThresholds(
         minimumScore: {
             ...DEFAULT_THRESHOLDS.minimumScore,
             ...overrides?.minimumScore,
+        },
+        layoutFamilyMismatchScore: {
+            ...DEFAULT_THRESHOLDS.layoutFamilyMismatchScore,
+            ...overrides?.layoutFamilyMismatchScore,
         },
     };
 }
@@ -304,6 +347,59 @@ function sourceHasMappedChildren(appSource: string, selector: string): boolean {
     const start = Math.min(...positions);
     const nearbySource = appSource.slice(start, start + 2200);
     return /\.map\s*\(/u.test(nearbySource) && /<(?:article|div|li|section)\b/u.test(nearbySource);
+}
+
+function countMatches(source: string, pattern: RegExp): number {
+    return [...source.matchAll(pattern)].length;
+}
+
+function countLayoutFamilySignals(
+    appSource: string,
+    applicationType: ApplicationType | undefined,
+): number {
+    const patterns =
+        LAYOUT_FAMILY_SIGNAL_PATTERNS[applicationType ?? "custom"] ??
+        LAYOUT_FAMILY_SIGNAL_PATTERNS.custom;
+    return patterns.reduce(
+        (sum, pattern) => sum + (pattern.test(appSource) ? 1 : 0),
+        0,
+    );
+}
+
+function calculateLayoutFamilyMismatch(input: {
+    appSource: string;
+    applicationType?: ApplicationType;
+    genericTemplateTokenCount: number;
+    homogeneousThreeColumnGridCount: number;
+}): {
+    genericTemplateTokenCount: number;
+    layoutFamilySignalCount: number;
+    layoutFamilyMismatchScore: number;
+} {
+    const layoutFamilySignalCount = countLayoutFamilySignals(
+        input.appSource,
+        input.applicationType,
+    );
+    const expectsSpecificFamily =
+        input.applicationType !== undefined && input.applicationType !== "custom";
+    if (!expectsSpecificFamily || layoutFamilySignalCount > 0) {
+        return {
+            genericTemplateTokenCount: input.genericTemplateTokenCount,
+            layoutFamilySignalCount,
+            layoutFamilyMismatchScore: 0,
+        };
+    }
+
+    const genericWeight = Math.min(1, input.genericTemplateTokenCount / 4);
+    const gridWeight = Math.min(1, input.homogeneousThreeColumnGridCount / 2);
+    const layoutFamilyMismatchScore = round(
+        clamp(genericWeight + gridWeight, 0, 1),
+    );
+    return {
+        genericTemplateTokenCount: input.genericTemplateTokenCount,
+        layoutFamilySignalCount,
+        layoutFamilyMismatchScore,
+    };
 }
 
 function sourceClassTokenCount(appSource: string, token: string): number {
@@ -563,6 +659,15 @@ export function evaluateAntiTemplate(
         containers.roundedContainerCount / Math.max(1, containers.majorContainerCount);
     const shadowedSurfaceRatio =
         containers.shadowedSurfaceCount / Math.max(1, containers.majorContainerCount);
+    const layoutFamily = calculateLayoutFamilyMismatch({
+        appSource: input.appSource,
+        ...(input.applicationType ? { applicationType: input.applicationType } : {}),
+        genericTemplateTokenCount: countMatches(
+            input.appSource,
+            GENERIC_TEMPLATE_TOKEN_PATTERN,
+        ),
+        homogeneousThreeColumnGridCount: threeColumn.homogeneousSelectors.length,
+    });
 
     const metrics: AntiTemplateMetrics = {
         ...containers,
@@ -579,6 +684,7 @@ export function evaluateAntiTemplate(
         repeatedDomPatternRatio: round(repeatedDom.ratio),
         repeatedStructureCount: repeatedDom.repeatedCount,
         largestRepeatedComponentGroup: repeatedDom.largestGroup,
+        ...layoutFamily,
     };
 
     const findings: AntiTemplateFinding[] = [];
@@ -614,6 +720,14 @@ export function evaluateAntiTemplate(
         thresholds.repeatedDomPatternRatio.warning,
         thresholds.repeatedDomPatternRatio.severe,
     );
+    addRatioFinding(
+        findings,
+        "layout-family-mismatch",
+        "Subject layout-family mismatch",
+        layoutFamily.layoutFamilyMismatchScore,
+        thresholds.layoutFamilyMismatchScore.warning,
+        thresholds.layoutFamilyMismatchScore.severe,
+    );
 
     const penalty =
         normalizedPenalty(
@@ -639,6 +753,12 @@ export function evaluateAntiTemplate(
             thresholds.repeatedDomPatternRatio.warning,
             thresholds.repeatedDomPatternRatio.severe,
             30,
+        ) +
+        normalizedPenalty(
+            layoutFamily.layoutFamilyMismatchScore,
+            thresholds.layoutFamilyMismatchScore.warning,
+            thresholds.layoutFamilyMismatchScore.severe,
+            28,
         );
     const score = Math.round(clamp(100 - penalty, 0, 100));
     const hasSevereFinding = findings.some((finding) => finding.severity === "severe");
@@ -746,6 +866,14 @@ function buildAntiTemplateReport(input: {
         input.thresholds.repeatedDomPatternRatio.warning,
         input.thresholds.repeatedDomPatternRatio.severe,
     );
+    addRatioFinding(
+        findings,
+        "layout-family-mismatch",
+        "Subject layout-family mismatch",
+        input.metrics.layoutFamilyMismatchScore,
+        input.thresholds.layoutFamilyMismatchScore.warning,
+        input.thresholds.layoutFamilyMismatchScore.severe,
+    );
 
     const penalty =
         normalizedPenalty(
@@ -771,6 +899,12 @@ function buildAntiTemplateReport(input: {
             input.thresholds.repeatedDomPatternRatio.warning,
             input.thresholds.repeatedDomPatternRatio.severe,
             30,
+        ) +
+        normalizedPenalty(
+            input.metrics.layoutFamilyMismatchScore,
+            input.thresholds.layoutFamilyMismatchScore.warning,
+            input.thresholds.layoutFamilyMismatchScore.severe,
+            28,
         );
     const score = Math.round(clamp(100 - penalty, 0, 100));
     const hasSevereFinding = findings.some((finding) => finding.severity === "severe");
@@ -863,6 +997,15 @@ export function evaluateAntiTemplateSource(
     );
     const repeatedDomPatternRatio =
         repeatedStructureCount / Math.max(1, majorContainerCount - 1);
+    const layoutFamily = calculateLayoutFamilyMismatch({
+        appSource: input.appSource,
+        ...(input.applicationType ? { applicationType: input.applicationType } : {}),
+        genericTemplateTokenCount: countMatches(
+            input.appSource,
+            GENERIC_TEMPLATE_TOKEN_PATTERN,
+        ),
+        homogeneousThreeColumnGridCount: threeColumn.homogeneousSelectors.length,
+    });
 
     const metrics: AntiTemplateMetrics = {
         majorContainerCount,
@@ -886,6 +1029,7 @@ export function evaluateAntiTemplateSource(
         repeatedDomPatternRatio: round(repeatedDomPatternRatio),
         repeatedStructureCount,
         largestRepeatedComponentGroup,
+        ...layoutFamily,
     };
 
     return buildAntiTemplateReport({

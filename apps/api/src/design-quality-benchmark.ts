@@ -505,11 +505,11 @@ export function formatAntiTemplateBenchmarkMarkdown(
         "",
         "## Case metrics",
         "",
-        "| Case | Type | Template | Score | Level | Card ratio | Rounded surfaces | Shadowed surfaces | Equal-column grids | Largest repeated group | DOM repetition |",
-        "|---|---|---|---:|---|---:|---:|---:|---:|---:|---:|",
+        "| Case | Type | Template | Score | Level | Card ratio | Rounded surfaces | Shadowed surfaces | Equal-column grids | Largest repeated group | DOM repetition | Layout-family mismatch | Family signals | Generic tokens |",
+        "|---|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ...report.cases.map((result) => {
             const metrics = result.antiTemplate.metrics;
-            return `| ${result.id} | ${result.applicationType} | ${result.templateVariant} | ${result.antiTemplate.score} | ${result.antiTemplate.level} | ${(metrics.cardContainerRatio * 100).toFixed(1)}% | ${(metrics.roundedSurfaceRatio * 100).toFixed(1)}% | ${(metrics.shadowedSurfaceRatio * 100).toFixed(1)}% | ${metrics.equalColumnGridCount} | ${metrics.largestRepeatedComponentGroup} | ${(metrics.repeatedDomPatternRatio * 100).toFixed(1)}% |`;
+            return `| ${result.id} | ${result.applicationType} | ${result.templateVariant} | ${result.antiTemplate.score} | ${result.antiTemplate.level} | ${(metrics.cardContainerRatio * 100).toFixed(1)}% | ${(metrics.roundedSurfaceRatio * 100).toFixed(1)}% | ${(metrics.shadowedSurfaceRatio * 100).toFixed(1)}% | ${metrics.equalColumnGridCount} | ${metrics.largestRepeatedComponentGroup} | ${(metrics.repeatedDomPatternRatio * 100).toFixed(1)}% | ${(metrics.layoutFamilyMismatchScore * 100).toFixed(1)}% | ${metrics.layoutFamilySignalCount} | ${metrics.genericTemplateTokenCount} |`;
         }),
         "",
         "## Findings",

@@ -1262,24 +1262,61 @@ async function evaluateWorkspaceAntiTemplate(input: {
     });
 }
 
+function explicitlyRequestsVisualStructureDiversity(input: {
+    request: string;
+    designPlan?: DesignPlan;
+}): boolean {
+    const text = [
+        input.request,
+        input.designPlan?.visualDNA.forbiddenPatterns.join(" ") ?? "",
+    ].join(" ");
+    return /模板|模版|模板化|模版化|卡片化|方块化|格子|卡片|不同风格|自己的特色|每个.*特点|每个.*风格|不要.*一样|不能.*一样|只是.*换色|只是.*文字|same-looking|same template|generic template|card grid|rounded cards|different styles|visual variety/iu.test(text);
+}
+
+function formatAntiTemplateReviewMessage(
+    antiTemplate: AntiTemplateReport,
+): string {
+    const metrics = antiTemplate.metrics;
+    const findings = antiTemplate.findings
+        .map((finding) => finding.code)
+        .join(", ");
+    return [
+        `${antiTemplate.level} templating risk, score ${antiTemplate.score}.`,
+        `layoutFamilyMismatch=${metrics.layoutFamilyMismatchScore}, genericTemplateTokens=${metrics.genericTemplateTokenCount}, familySignals=${metrics.layoutFamilySignalCount}, roundedSurfaceRatio=${metrics.roundedSurfaceRatio}, equalColumnGridCount=${metrics.equalColumnGridCount}, largestRepeatedGroup=${metrics.largestRepeatedComponentGroup}.`,
+        findings ? `findings=${findings}.` : "",
+    ]
+        .filter(Boolean)
+        .join(" ");
+}
+
 function markReviewWithAntiTemplateWarning(
     review: ReactAppAgentReview,
     antiTemplate: AntiTemplateReport | undefined,
+    input?: {
+        blockOnSevere?: boolean;
+    },
 ): ReactAppAgentReview {
     if (!antiTemplate || antiTemplate.level === "pass") {
         return review;
     }
+    const blocking =
+        input?.blockOnSevere === true && antiTemplate.level === "severe";
+    const diagnostic = formatAntiTemplateReviewMessage(antiTemplate);
 
     return {
         ...review,
+        accepted: blocking ? false : review.accepted,
         reason: [
             review.reason,
-            `Anti-template diagnostic warning: ${antiTemplate.level} templating risk, score ${antiTemplate.score}.`,
+            blocking
+                ? `Anti-template blocking failure: ${diagnostic} The user requested distinct visual structure, so AppForge must repair the layout family instead of accepting another generic template.`
+                : `Anti-template diagnostic warning: ${diagnostic}`,
         ].join(" "),
         checks: {
             ...review.checks,
             antiTemplateLevel: antiTemplate.level,
             antiTemplateWarning: true,
+            ...(blocking ? { antiTemplateBlocking: true } : {}),
         },
     };
 }
@@ -8012,6 +8049,14 @@ export async function runReactAppAgent(
             review: markReviewWithAntiTemplateWarning(
                 reviewedResult,
                 antiTemplate,
+                {
+                    blockOnSevere: explicitlyRequestsVisualStructureDiversity({
+                        request: executionRequest,
+                        ...(resolvedDesignPlan
+                            ? { designPlan: resolvedDesignPlan }
+                            : {}),
+                    }),
+                },
             ),
         });
 

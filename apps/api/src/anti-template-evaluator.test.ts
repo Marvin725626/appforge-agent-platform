@@ -1,7 +1,10 @@
 import { DesignPlanSchema } from "@appforge/protocol";
 import { describe, expect, it } from "vitest";
 
-import { evaluateAntiTemplate } from "./anti-template-evaluator.js";
+import {
+    evaluateAntiTemplate,
+    evaluateAntiTemplateSource,
+} from "./anti-template-evaluator.js";
 import { generateStablePageContent } from "./stable-page-content.js";
 import {
     createStableAppSource,
@@ -154,5 +157,52 @@ describe("anti-template evaluator", () => {
                 "repeated-dom-pattern",
             ]),
         );
+    });
+
+    it("detects a page-type layout mismatch instead of treating cards as universally forbidden", () => {
+        const genericGameSource = `
+            export function App() {
+                const features = ["Maps", "Agents", "Rounds"];
+                return <main className="page-view page-genre-game">
+                    <section className="page-hero"><h1>Valorant Guide</h1></section>
+                    <section className="feature-grid">{features.map((feature) => <article className="feature-card" key={feature}>{feature}</article>)}</section>
+                </main>;
+            }
+        `;
+        const genericCss = `
+            .page-hero { padding: 48px; background: #101827; border-radius: 28px; box-shadow: 0 16px 32px rgba(0,0,0,.2); }
+            .feature-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
+            .feature-card { padding: 24px; background: #fff; border: 1px solid #ddd; border-radius: 24px; box-shadow: 0 16px 32px rgba(0,0,0,.2); }
+        `;
+        const report = evaluateAntiTemplateSource({
+            applicationType: "game",
+            appSource: genericGameSource,
+            cssSource: genericCss,
+        });
+
+        expect(report.level).toBe("severe");
+        expect(report.metrics.layoutFamilySignalCount).toBe(0);
+        expect(report.metrics.genericTemplateTokenCount).toBeGreaterThan(0);
+        expect(report.metrics.layoutFamilyMismatchScore).toBe(1);
+        expect(report.findings.map((finding) => finding.code)).toContain(
+            "layout-family-mismatch",
+        );
+
+        const nativeGameSource = genericGameSource
+            .replace("feature-grid", "game-map")
+            .replaceAll("feature-card", "game-site")
+            .replace("Maps", "A Site");
+        const nativeCss = `
+            .game-map { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; background: #071018; border: 1px solid #ff4655; }
+            .game-site { padding: 14px; background: #16090a; color: #f8fbff; border-left: 3px solid #ff4655; border-radius: 4px; }
+        `;
+        const nativeReport = evaluateAntiTemplateSource({
+            applicationType: "game",
+            appSource: nativeGameSource,
+            cssSource: nativeCss,
+        });
+
+        expect(nativeReport.metrics.layoutFamilySignalCount).toBeGreaterThan(0);
+        expect(nativeReport.metrics.layoutFamilyMismatchScore).toBe(0);
     });
 });

@@ -294,6 +294,94 @@ describe("runReactAppAgent", () => {
         expect(result.review.checks.antiTemplateWarning).toBe(true);
     }, 15_000);
 
+    it("repairs severe generic templates when the user asks for distinct visual structure", async () => {
+        const templateRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-template-"),
+        );
+        const workspaceRoot = await mkdtemp(
+            path.join(os.tmpdir(), "appforge-api-workspace-"),
+        );
+
+        temporaryDirectories.push(templateRoot, workspaceRoot);
+
+        await mkdir(path.join(templateRoot, "src"));
+        await writeFile(
+            path.join(templateRoot, "package.json"),
+            JSON.stringify({
+                scripts: {
+                    build: "node -e \"console.log('build ok')\"",
+                },
+            }),
+            "utf8",
+        );
+        await writeFile(
+            path.join(templateRoot, "src", "App.tsx"),
+            "export function App() { return null; }",
+            "utf8",
+        );
+
+        const badApp = [
+            "export function App() {",
+            "  const features = ['Maps', 'Agents', 'Rounds'];",
+            "  return <main className=\"page-view page-genre-game\"><section className=\"page-hero\"><h1>Valorant Guide</h1><p>Game tactics and map notes with enough complete page content for review.</p></section><section className=\"feature-grid\">{features.map((feature) => <article className=\"feature-card\" key={feature}><h2>{feature}</h2><p>Repeated generic feature card content.</p></article>)}</section></main>;",
+            "}",
+        ].join("\n");
+        const badCss = [
+            ".page-hero { padding: 48px; background: #101827; color: #f8fbff; border-radius: 28px; box-shadow: 0 16px 32px rgba(0,0,0,.2); }",
+            ".feature-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }",
+            ".feature-card { padding: 24px; background: #fff; color: #111827; border: 1px solid #ddd; border-radius: 24px; box-shadow: 0 16px 32px rgba(0,0,0,.2); }",
+        ].join("\n");
+        const repairedApp = [
+            "export function App() {",
+            "  const sites = ['A Site', 'B Site', 'Mid Control'];",
+            "  return <main className=\"page-view page-genre-game\"><section className=\"game-stage\"><div className=\"match-hud\"><span>BUY PHASE</span><span>ATTACK / DEFEND</span></div><h1>Valorant Tactical Guide</h1><p>A HUD-like tactical page with map lanes, site calls, and round flow instead of repeated feature cards.</p></section><section className=\"game-map\">{sites.map((site) => <article className=\"game-site\" key={site}><strong className=\"site-letter\">{site.slice(0, 1)}</strong><span>{site}</span></article>)}</section></main>;",
+            "}",
+        ].join("\n");
+        const repairedCss = [
+            ".game-stage { padding: 42px; background: #16090a; color: #f8fbff; border: 1px solid #ff4655; }",
+            ".match-hud { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }",
+            ".match-hud span { background: #ff4655; color: #16090a; padding: 8px 12px; font-weight: 800; }",
+            ".game-map { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; background: #071018; border: 1px solid #ff4655; padding: 18px; }",
+            ".game-site { padding: 14px; background: #16090a; color: #f8fbff; border-left: 3px solid #ff4655; border-radius: 4px; }",
+            ".site-letter { display: inline-flex; margin-right: 8px; color: #ffd166; }",
+        ].join("\n");
+
+        const model = new FakeModelProvider([
+            PLANNER_RESPONSE,
+            { content: JSON.stringify({ type: "write_file", path: "src/App.tsx", content: badApp }) },
+            { content: JSON.stringify({ type: "write_file", path: "src/App.css", content: badCss }) },
+            { content: JSON.stringify({ type: "finish", summary: "Initial card-like draft" }) },
+            APPROVED_REVIEW_RESPONSE,
+            { content: JSON.stringify({ type: "write_file", path: "src/App.tsx", content: repairedApp }) },
+            { content: JSON.stringify({ type: "write_file", path: "src/App.css", content: repairedCss }) },
+            { content: JSON.stringify({ type: "finish", summary: "Repaired layout family" }) },
+            APPROVED_REVIEW_RESPONSE,
+        ]);
+
+        const result = await runReactAppAgent({
+            goal: "Create a Valorant game page. It must not be the same card template; different page types need their own visual style.",
+            workspaceRoot,
+            templateRoot,
+            model,
+            maxRepairAttempts: 1,
+            llm: {
+                baseUrl: "https://example.com/v1",
+                apiKey: "test-key",
+                model: "test-model",
+            },
+        });
+
+        expect(result.attempts).toHaveLength(2);
+        expect(result.attempts[0]?.review.accepted).toBe(false);
+        expect(result.attempts[0]?.review.checks.antiTemplateBlocking).toBe(true);
+        expect(result.attempts[0]?.antiTemplate?.findings.map((finding) => finding.code)).toContain(
+            "layout-family-mismatch",
+        );
+        expect(result.review.accepted).toBe(true);
+        expect(result.antiTemplate?.metrics.layoutFamilySignalCount).toBeGreaterThan(0);
+        expect(result.metrics?.retryCalls).toBe(1);
+    }, 20_000);
+
     it("hard-gates non-entrypoint actions before a fresh page can change the workspace", async () => {
         const templateRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-api-template-"),
