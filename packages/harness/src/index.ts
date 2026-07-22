@@ -319,8 +319,35 @@ const PLACEHOLDER_CONTENT_PATTERNS: ReadonlyArray<{
     { label: "TODO/TBD", pattern: /\b(?:TODO|TBD)\b/u },
 ];
 
+const INSTRUCTION_LEAK_PATTERNS: ReadonlyArray<{
+    label: string;
+    pattern: RegExp;
+}> = [
+    {
+        label: "layout instruction leaked into visible UI",
+        pattern:
+            /(?:保持页面原有|目标模块采用|控制每行文字|避免因挤压|桌面端分组排列|移动端分组自然|模块节奏不变|短促节奏)/u,
+    },
+    {
+        label: "agent requirement text leaked into visible UI",
+        pattern:
+            /\b(?:Requirement Ledger|Design Plan|DesignPlan|VisualDNA|Browser eval|browser runtime validation|Reviewer rejected|Repair request|Current-request Requirement Ledger)\b/iu,
+    },
+    {
+        label: "prompt instruction leaked into visible UI",
+        pattern:
+            /\b(?:do not return finish|workspace execution mode|forbidden patterns are hard constraints|preserve unrelated|apply only the newest request|must preserve)\b/iu,
+    },
+];
+
 function listPlaceholderContent(text: string): string[] {
     return PLACEHOLDER_CONTENT_PATTERNS.filter(({ pattern }) =>
+        pattern.test(text),
+    ).map(({ label }) => label);
+}
+
+function listInstructionLeaks(text: string): string[] {
+    return INSTRUCTION_LEAK_PATTERNS.filter(({ pattern }) =>
         pattern.test(text),
     ).map(({ label }) => label);
 }
@@ -422,6 +449,47 @@ async function createVisualPageQualityChecks(
                   main.querySelectorAll('h1, h2, h3, [role="heading"]'),
               ).filter(isVisible).length
             : 0;
+        const narrowTextColumns = main
+            ? Array.from(
+                  main.querySelectorAll<HTMLElement>(
+                      "p, li, h1, h2, h3, span, strong, em, td, th, figcaption, [class]",
+                  ),
+              )
+                  .filter((element) => {
+                      if (!isVisible(element)) {
+                          return false;
+                      }
+
+                      const text = (element.innerText || element.textContent || "")
+                          .replace(/\s+/gu, "")
+                          .trim();
+                      const cjkCount = text.match(/[\u3400-\u9fff]/gu)?.length ?? 0;
+
+                      if (cjkCount < 8) {
+                          return false;
+                      }
+
+                      const rect = element.getBoundingClientRect();
+                      const style = getComputedStyle(element);
+                      const writingMode = style.writingMode.toLowerCase();
+
+                      return (
+                          !writingMode.startsWith("vertical") &&
+                          rect.width <= 42 &&
+                          rect.height >= rect.width * 4
+                      );
+                  })
+                  .slice(0, 5)
+                  .map((element) => {
+                      const text = (element.innerText || element.textContent || "")
+                          .replace(/\s+/gu, " ")
+                          .trim()
+                          .slice(0, 80);
+                      const rect = element.getBoundingClientRect();
+
+                      return `${element.tagName.toLowerCase()} "${text}" ${Math.round(rect.width)}x${Math.round(rect.height)}`;
+                  })
+            : [];
         const mediaCount = main
             ? Array.from(
                   main.querySelectorAll("img, svg, video, canvas, picture"),
@@ -657,6 +725,7 @@ async function createVisualPageQualityChecks(
             headingCount,
             mediaCount,
             substantiveRegionCount,
+            narrowTextColumns,
             landmarkCount,
             authoredLayoutCount,
             opaqueStyleSheetCount,
@@ -667,6 +736,9 @@ async function createVisualPageQualityChecks(
     });
     const placeholderContent = listPlaceholderContent(pageEvidence.text);
     const hasNoPlaceholderContent = placeholderContent.length === 0;
+    const instructionLeaks = listInstructionLeaks(pageEvidence.text);
+    const hasNoInstructionLeaks = instructionLeaks.length === 0;
+    const hasNoNarrowTextColumns = pageEvidence.narrowTextColumns.length === 0;
     const checks: BrowserCheck[] = [
         {
             name: "contains no placeholder page content",
@@ -675,6 +747,24 @@ async function createVisualPageQualityChecks(
                 ? {}
                 : {
                       message: `Visible main content still contains placeholder text: ${placeholderContent.join(", ")}.`,
+                  }),
+        },
+        {
+            name: "contains no leaked agent instructions",
+            passed: hasNoInstructionLeaks,
+            ...(hasNoInstructionLeaks
+                ? {}
+                : {
+                      message: `Visible UI contains internal instruction text: ${instructionLeaks.join(", ")}.`,
+                  }),
+        },
+        {
+            name: "visible Chinese text is not forced into narrow columns",
+            passed: hasNoNarrowTextColumns,
+            ...(hasNoNarrowTextColumns
+                ? {}
+                : {
+                      message: `Visible Chinese text appears forced into narrow one-character columns: ${pageEvidence.narrowTextColumns.join("; ")}.`,
                   }),
         },
     ];

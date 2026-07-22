@@ -478,6 +478,69 @@ describe("PlaywrightBrowserEvaluator runtime gate", () => {
         expect(placeholderCheck?.message).toContain("coming soon");
     }, 15_000);
 
+    it("rejects leaked agent instructions in visible UI copy", async () => {
+        const evaluator = new PlaywrightBrowserEvaluator();
+        const result = await evaluator.evaluate({
+            url: createDataPage(`
+                <style>
+                    body { margin: 0; font-family: system-ui; background: #061018; color: #f8fbff; }
+                    main { max-width: 980px; margin: auto; padding: 48px; display: grid; gap: 24px; }
+                    section { padding: 24px; border: 1px solid #2f4860; background: #0c1824; }
+                </style>
+                <div id="root">
+                    <main>
+                        <section><h1>Tactical Archive</h1><p>保持页面原有模块节奏不变，目标模块采用标题条、横向分组轨道。</p></section>
+                        <section><h2>Mission board</h2><p>Haven attack routes, Bind rotations, and economy calls are organized for fast review.</p></section>
+                        <section><h2>Loadout</h2><p>Vandal, Phantom, Operator, Spectre, and Sheriff guidance is grouped by round state.</p></section>
+                        <section><h2>Map notes</h2><p>Ascent mid control, Split ropes pressure, and Lotus rotate timing stay readable.</p></section>
+                    </main>
+                </div>
+            `),
+            goal: "Build a polished Valorant tactical page",
+            timeoutMs: 2_000,
+        });
+        const leakCheck = result.checks.find(
+            (check) => check.name === "contains no leaked agent instructions",
+        );
+
+        expect(result.passed).toBe(false);
+        expect(leakCheck?.passed).toBe(false);
+        expect(leakCheck?.message).toContain("internal instruction text");
+    }, 15_000);
+
+    it("rejects Chinese content squeezed into one-character columns", async () => {
+        const evaluator = new PlaywrightBrowserEvaluator();
+        const result = await evaluator.evaluate({
+            url: createDataPage(`
+                <style>
+                    body { margin: 0; font-family: system-ui; background: #061018; color: #f8fbff; }
+                    main { max-width: 980px; margin: auto; padding: 48px; display: grid; gap: 24px; }
+                    section { padding: 24px; border: 1px solid #2f4860; background: #0c1824; }
+                    .narrow { width: 28px; line-height: 1.45; }
+                </style>
+                <div id="root">
+                    <main>
+                        <section><h1>Tactical Archive</h1><p>Mission-ready Valorant overview with map routes and weapon economy notes.</p></section>
+                        <section><h2>Loadout</h2><p class="narrow">侦察信息围绕真实目标组织内容避免挤压混乱</p></section>
+                        <section><h2>Map notes</h2><p>Haven, Bind, Split, Ascent, and Lotus tactics remain grouped by route purpose.</p></section>
+                        <section><h2>Economy</h2><p>Force buy, eco, bonus round, and full rifle rounds are shown with readable labels.</p></section>
+                    </main>
+                </div>
+            `),
+            goal: "Build a polished Valorant tactical page",
+            timeoutMs: 2_000,
+        });
+        const narrowCheck = result.checks.find(
+            (check) =>
+                check.name ===
+                "visible Chinese text is not forced into narrow columns",
+        );
+
+        expect(result.passed).toBe(false);
+        expect(narrowCheck?.passed).toBe(false);
+        expect(narrowCheck?.message).toContain("narrow one-character columns");
+    }, 15_000);
+
     it("allows an explicitly minimal single-screen page to stay intentionally sparse", async () => {
         const evaluator = new PlaywrightBrowserEvaluator();
         const result = await evaluator.evaluate({
