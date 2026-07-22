@@ -83,6 +83,41 @@ describe("formatRepairContext", () => {
         expect(context).toContain("Build stderr:\nTypeScript error");
     });
 
+    it("adds strict patch guidance when the coding agent made no workspace change", () => {
+        const context = formatRepairContext({
+            build: {
+                exitCode: 1,
+                stdout: "",
+                stderr:
+                    "Skipped because the Coding Agent produced no workspace changes.",
+            },
+            eval: {
+                passed: false,
+                checks: [
+                    {
+                        name: "Coding Agent produced a new draft",
+                        passed: false,
+                    },
+                ],
+            },
+            review: {
+                accepted: false,
+                reason:
+                    "No new draft was produced because the Coding Agent did not change the workspace. The Coding Agent completed without a file or image change.",
+                checks: {
+                    agentFinished: false,
+                    installPassed: false,
+                    buildPassed: false,
+                    evalPassed: false,
+                },
+            },
+        });
+
+        expect(context).toContain("No-change recovery constraints");
+        expect(context).toContain("perform at least one real edit_file");
+        expect(context).toContain("Do not repeat a plan");
+    });
+
     it("includes a source excerpt when available", () => {
         const context = formatRepairContext({
             build: {

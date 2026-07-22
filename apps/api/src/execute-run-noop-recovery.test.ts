@@ -203,6 +203,9 @@ describe("V9.4.2.3 bounded continuation no-op recovery", () => {
         );
 
         expect(prompt).toContain("修复顶部导航；保持现有编辑专题视觉不变。");
+        expect(prompt).toContain("This recovery is a patch task");
+        expect(prompt).toContain("locate the exact affected source/CSS/asset");
+        expect(prompt).toContain("smallest real diff");
         expect(prompt).toContain("Re-read the exact current file contents");
     });
 });

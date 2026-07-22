@@ -22,11 +22,22 @@ export type FormatRepairContextInput = {
 export function formatRepairContext(
     input:FormatRepairContextInput,
 ):string{
+    const isNoWorkspaceChangeFailure =
+        input.review.reason.includes("Coding Agent did not change the workspace") ||
+        input.review.reason.includes("without a file or image change") ||
+        input.review.reason.includes("no file or image changed");
+
     return [
         "Repair request:",
         "Reviewer rejected the result.",
         "You must revise the current workspace to satisfy every reviewer issue below.",
         "Do not replace the app with an unrelated starter. Keep existing working features and make the smallest coherent fix.",
+        isNoWorkspaceChangeFailure
+            ? "No-change recovery constraints: the previous Coding Agent attempt produced zero user-visible file or image changes. Before returning finish, inspect the current source, choose the smallest target file(s), and perform at least one real edit_file, write_file, append_file, or get_image action that changes the workspace and directly addresses the newest user request."
+            : "",
+        isNoWorkspaceChangeFailure
+            ? "Do not repeat a plan, explanation, or finish-only response. If an exact oldText edit is risky, re-read the file and use a narrower replacement from the current contents."
+            : "",
         `Build exit code: ${input.build.exitCode}`,
         input.typecheck
             ? `Typecheck exit code: ${input.typecheck.exitCode}`
