@@ -3183,18 +3183,39 @@ async function collectFocusedBrowserEvidence(
     return { checks, evidence };
 }
 
-function isTaskAppGoal(goal: string | undefined): boolean {
-    const normalizedGoal = (goal ?? "task").toLowerCase();
+// V9.4.2.2.1 requirement-driven task-app browser profile
+// V9.4.2.2.2 minimal browser intent patch
+export function isTaskAppGoal(goal: string | undefined): boolean {
+  const normalizedGoal = (goal ?? "")
+    .toLowerCase()
+    .replace(/\s+/gu, " ")
+    .trim();
 
-    return (
-        normalizedGoal.includes("task") ||
-        normalizedGoal.includes("todo") ||
-        normalizedGoal.includes("to-do") ||
-        normalizedGoal.includes("list") ||
-        normalizedGoal.includes("任务") ||
-        normalizedGoal.includes("待办") ||
-        normalizedGoal.includes("清单")
+  if (normalizedGoal.length === 0) {
+    return false;
+  }
+
+  // A product or marketing site may describe agents that execute tasks.
+  // That language alone must not turn the page into a task-entry app.
+  const presentationSiteGoal =
+    /\b(?:product|saas|developer|company|marketing)\s+(?:website|site|homepage|landing\s+page)\b|\b(?:website|site|homepage|landing\s+page)\s+(?:for|about)\b|产品(?:网站|官网|介绍页)|(?:saas|开发者)产品(?:网站|官网)|官网|专题(?:网站|页)|落地页/iu.test(
+      normalizedGoal,
     );
+
+  const explicitTaskApplication =
+    /\b(?:todo|to-do|kanban)\b|\btask\s+(?:app|application|manager|management|tracker|tracking|list|board|planner)\b|待办(?:事项|清单|应用|管理|列表)?|任务(?:清单|列表|管理|看板|应用|跟踪|规划)/iu.test(
+      normalizedGoal,
+    );
+
+  const explicitTaskInteraction =
+    /\b(?:add|create|enter|submit|edit|delete|complete|toggle)\s+(?:a\s+|the\s+)?task\b|(?:添加|创建|输入|提交|编辑|删除|完成|勾选)任务/iu.test(
+      normalizedGoal,
+    );
+
+  return (
+    !presentationSiteGoal &&
+    (explicitTaskApplication || explicitTaskInteraction)
+  );
 }
 
 function isContentPageGoal(goal: string | undefined): boolean {

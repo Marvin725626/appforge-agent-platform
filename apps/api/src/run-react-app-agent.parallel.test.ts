@@ -497,14 +497,15 @@ describe("runReactAppAgent page-per-API coding path", () => {
             },
         });
 
-        expect(Date.now() - startedAt).toBeLessThan(3_000);
+        expect(Date.now() - startedAt).toBeLessThan(700);
         expect(result.agent).toMatchObject({
-            finished: true,
-            stopReason: "finish",
+            finished: false,
+            stopReason: "model_error",
         });
-        expect(result.agent.steps.length).toBeGreaterThan(0);
+        expect(result.agent.steps).toHaveLength(0);
         expect(result.review).toMatchObject({ accepted: false });
-        expect(result.review.reason).toContain("used local fallback");
+        expect(result.review.reason).toContain("No new draft was produced");
+        expect(result.metrics?.fallbackPages).toEqual([]);
         expect(observedPageSignals).toHaveLength(3);
         expect(
             observedPageSignals.every((signal) => signal.aborted),

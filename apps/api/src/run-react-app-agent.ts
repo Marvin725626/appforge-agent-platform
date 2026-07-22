@@ -6035,6 +6035,9 @@ export async function runReactAppAgent(
             : await autofixReactSource(
                   options.workspaceRoot,
                   options.signal,
+                  {
+                      responsiveCssSafetyNet: !focusedEditRequest,
+                  },
               );
 
         let initialGenerationCompleteness =
@@ -6052,11 +6055,17 @@ export async function runReactAppAgent(
                   })
                 : undefined;
 
-        if (
-            kind === "initial" &&
-            madeWorkspaceProgress &&
-            initialGenerationCompleteness?.passed === false
-        ) {
+        // V9.4.2.3.3 repair-budget alignment
+    // The inline integration rescue is a last-chance path only when the caller
+    // explicitly disabled ordinary repair attempts. When a formal repair
+    // budget exists, the outer attempt loop owns that budget and records each
+    // repair as a separate attempt.
+    if (
+        kind === "initial" &&
+        maxRepairAttempts === 0 &&
+        madeWorkspaceProgress &&
+        initialGenerationCompleteness?.passed === false
+    ) {
             const completenessSummary = initialGenerationCompleteness.checks
                 .filter((check) => !check.passed)
                 .map((check) => check.name)
@@ -6814,4 +6823,3 @@ export async function runReactAppAgent(
     }, designPlanCompliance);
 
 }
-

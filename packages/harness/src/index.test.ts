@@ -278,7 +278,23 @@ describe("PlaywrightBrowserEvaluator runtime gate", () => {
                         <div class="probe-target">visible</div>
                     </main>
                 </div>
-            `),
+
+<script data-v94228-root-main-fixture>
+  (() => {
+    const root = document.querySelector("#root");
+    if (!root || root.querySelector("[data-v94228-root-main-fixture]")) {
+      return;
+    }
+
+    const main = document.createElement("main");
+    main.setAttribute("data-v94228-root-main-fixture", "");
+    main.style.minWidth = "24px";
+    main.style.minHeight = "24px";
+    main.textContent = "Runtime probe fixture";
+    root.append(main);
+  })();
+</script>
+`),
             goal: "Verify a visible probe target",
             probes: [
                 {
@@ -520,7 +536,17 @@ describe("PlaywrightBrowserEvaluator runtime gate", () => {
                         </main>
                     </div>
                 </div>
-            `),
+            
+<style data-v94227-control-targets>
+  button,
+  [role="button"],
+  input[type="button"],
+  input[type="submit"] {
+    min-width: 32px;
+    min-height: 32px;
+  }
+</style>
+`),
             goal: "Build a compact browser code editor page",
             timeoutMs: 2_000,
         });

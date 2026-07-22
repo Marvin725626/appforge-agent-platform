@@ -930,7 +930,7 @@ describe("runParallelReactPagesAgent", () => {
         );
     });
 
-    it("atomically writes local fallback pages when a page hits its hard deadline", async () => {
+    it("fails fast without local fallback pages when all pages hit their hard deadline", async () => {
         const workspaceRoot = await createWorkspace();
         const provider = new PageModelProvider(({ request }) =>
             new Promise<ModelResponse>((_resolve, reject) => {
@@ -960,20 +960,23 @@ describe("runParallelReactPagesAgent", () => {
         });
 
         expect(result.agent).toMatchObject({
-            finished: true,
-            stopReason: "finish",
+            finished: false,
+            stopReason: "model_error",
         });
         expect(
             result.workstreams.every(
-                (workstream) => workstream.status === "fallback",
+                (workstream) => workstream.status === "failed",
             ),
         ).toBe(true);
+        expect(result.agent.errorMessage).toContain(
+            "No page drafts were produced",
+        );
         expect(PAGE_IDS.map((pageId) => provider.count(pageId))).toEqual([
             1, 1, 1,
         ]);
-        expect(
-            await readFile(path.join(workspaceRoot, "src", "App.tsx"), "utf8"),
-        ).toContain("siteContent");
+        await expect(
+            readFile(path.join(workspaceRoot, "src", "App.tsx"), "utf8"),
+        ).rejects.toThrow();
     });
 
     it("uses formal image assets instead of SVG placeholders when the image tool is configured", async () => {

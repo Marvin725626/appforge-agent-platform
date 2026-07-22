@@ -610,8 +610,9 @@ describe("Phase 3.5 focused edit hardening", () => {
 
         expect(result.executionMode).toBe("structural_edit");
         expect(result.metrics?.plannerCalls).toBe(1);
-        expect(result.metrics?.reviewerCalls).toBe(1);
-        expect(result.review.accepted).toBe(true);
+        expect(result.metrics?.reviewerCalls).toBe(0);
+        expect(result.review.accepted).toBe(false);
+        expect(result.review.reason).toContain("eval failed");
     }, 15_000);
 
     it("upgrades package.json task changes to Structural Edit", async () => {

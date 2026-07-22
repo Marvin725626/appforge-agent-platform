@@ -60,6 +60,7 @@ import {
 import { normalizeStepLimitOnlyReview } from "./review-react-app-agent.js";
 import { executeWithWorkspaceRollback } from "./workspace-execution-transaction.js";
 import { isExplicitRegenerationPrompt } from "./generation-request-intent.js";
+import { executeRunWithNoopRecovery } from "./execute-run-noop-recovery.js";
 
 const RepairRequestSchema = z.object({
     feedback: z.string().trim().min(1).max(2000),
@@ -1985,7 +1986,7 @@ export  function buildApp(
                     execute: async () => {
                         executionAttemptStarted = true;
                         const executionResult =
-                            await executeRun(executeRunInput);
+                            await executeRunWithNoopRecovery(executeRun, executeRunInput);
                         signal.throwIfAborted();
                         return executionResult;
                     },
@@ -2373,7 +2374,7 @@ export  function buildApp(
                         !isRunExecutionAbortError(error),
                     execute: async () => {
                         const executionResult =
-                            await executeRun(executeRunInput);
+                            await executeRunWithNoopRecovery(executeRun, executeRunInput);
                         signal.throwIfAborted();
                         const workspaceFingerprintAfterRepair =
                             await createUserVisibleWorkspaceFingerprint(
@@ -2735,7 +2736,7 @@ export  function buildApp(
                         !isRunExecutionAbortError(error),
                     execute: async () => {
                         const executionResult =
-                            await executeRun(executeRunInput);
+                            await executeRunWithNoopRecovery(executeRun, executeRunInput);
                         signal.throwIfAborted();
                         const workspaceFingerprintAfterIteration =
                             await createUserVisibleWorkspaceFingerprint(
@@ -3363,7 +3364,9 @@ export  function buildApp(
                 preview = await previewManager.start({
                     runId:run.id,
                     workspaceRoot: previewWorkspaceRoot,
-                });
+                
+                forceRestart: true,
+            });
                 browserEval = await browserEvaluator.evaluate({
                     url: preview.url,
                     goal: previewGoal,

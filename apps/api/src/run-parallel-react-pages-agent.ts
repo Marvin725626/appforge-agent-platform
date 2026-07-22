@@ -2229,6 +2229,23 @@ export async function runParallelReactPagesAgent(
         }
         options.signal?.throwIfAborted();
 
+        const hardDeadlineFailures = statuses.filter((status) =>
+            hardDeadlinePageIds.has(status.id),
+        );
+        if (hardDeadlineFailures.length > 0 && artifacts.size === 0) {
+            return createFailureResult(
+                statuses,
+                [
+                    "Page-per-API generation failed before atomic merge.",
+                    "No page drafts were produced because every started page Coding request hit its independent hard deadline.",
+                    ...hardDeadlineFailures.map(
+                        (status) =>
+                            `${status.label}: ${status.errorMessage ?? "page hard deadline exceeded"}`,
+                    ),
+                ].join(" "),
+            );
+        }
+
         for (const failedPage of pages) {
             const status = statuses.find(
                 (candidate) => candidate.id === failedPage.id,

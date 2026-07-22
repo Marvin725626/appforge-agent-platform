@@ -172,6 +172,10 @@ export type ReactSourceAutofixResult = {
     messages: string[];
 };
 
+export type ReactSourceAutofixOptions = {
+    responsiveCssSafetyNet?: boolean;
+};
+
 const JSX_TEXT_CONTAINER_TAGS =
     "a|p|span|div|li|button|h[1-6]|small|strong|em|label|td|th|caption|section|article|header|footer|main|nav|aside";
 
@@ -365,11 +369,13 @@ export async function autofixReactStyles(
 export async function autofixReactSource(
     workspaceRoot: string,
     signal?: AbortSignal,
+    options: ReactSourceAutofixOptions = {},
 ): Promise<ReactSourceAutofixResult> {
     signal?.throwIfAborted();
     const sourceFiles = await listSourceFiles(workspaceRoot, signal);
     const messages = new Set<string>();
     let changed = false;
+    const responsiveCssSafetyNet = options.responsiveCssSafetyNet ?? true;
 
     for (const filePath of sourceFiles) {
         signal?.throwIfAborted();
@@ -389,13 +395,17 @@ export async function autofixReactSource(
                       ? ensureReactRuntimeImport(repairedSource)
                       : repairedSource;
               })();
+        const finalSource =
+            filePath.endsWith("App.css") && !responsiveCssSafetyNet
+                ? source
+                : fixedSource;
 
-        if (fixedSource === source) {
+        if (finalSource === source) {
             continue;
         }
 
         signal?.throwIfAborted();
-        await writeFile(filePath, fixedSource, "utf8");
+        await writeFile(filePath, finalSource, "utf8");
         changed = true;
         messages.add(
             filePath.endsWith("App.css")

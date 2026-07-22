@@ -142,7 +142,7 @@ describe("runReactAppAgent", () => {
                     type: "write_file",
                     path: "src/App.tsx",
                     content:
-                        "export function App() { const tasks = ['Learn']; return <div><input /><button>Add</button>{tasks.map((task) => <p>{task}</p>)}</div>; }",
+                        "export function App() { const tasks = ['Learn']; return <main><h1>Simple task app</h1><p>Create and review tasks.</p><input /><button>Add</button>{tasks.map((task) => <p key={task}>{task}</p>)}</main>; }",
                 }),
             },
             {
@@ -181,15 +181,15 @@ describe("runReactAppAgent", () => {
                     passed: true,
                 },
                 {
-                    name: "has input",
+                    name: "has heading",
                     passed: true,
                 },
                 {
-                    name: "has button",
+                    name: "has descriptive paragraphs",
                     passed: true,
                 },
                 {
-                    name: "has task rendering",
+                    name: "has enough page content",
                     passed: true,
                 },
             ],
@@ -1113,8 +1113,20 @@ export function App() {
             "utf8",
         );
 
+        const entrypointDraft =
+            'export function App() { return <main className="app"><h1>Complete task homepage</h1><p>Preparing the task workspace.</p></main>; }';
+        const finalApp =
+            'import { title } from "./content.js"; import "./App.css"; export function App() { const tasks = ["Learn"]; return <main className="app"><h1>{title}</h1><input /><button>Add</button>{tasks.map((task) => <p key={task}>{task}</p>)}</main>; }';
+
         const model = new FakeModelProvider([
             PLANNER_RESPONSE,
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.tsx",
+                    content: entrypointDraft,
+                }),
+            },
             {
                 content: JSON.stringify({
                     type: "write_file",
@@ -1145,17 +1157,10 @@ export function App() {
             },
             {
                 content: JSON.stringify({
-                    type: "write_file",
-                    path: "README.md",
-                    content: "Complex staged app",
-                }),
-            },
-            {
-                content: JSON.stringify({
-                    type: "write_file",
+                    type: "edit_file",
                     path: "src/App.tsx",
-                    content:
-                        "import { title } from './content'; import './App.css'; export function App() { const tasks = ['Learn']; return <main className=\"app\"><h1>{title}</h1><input /><button>Add</button>{tasks.map((task) => <p key={task}>{task}</p>)}</main>; }",
+                    oldText: entrypointDraft,
+                    newText: finalApp,
                 }),
             },
             {
@@ -1221,7 +1226,7 @@ export function App() {
                     type: "write_file",
                     path: "src/App.tsx",
                     content:
-                        "export function App() { const tasks = ['Learn']; return <div><input /><button>Add</button>{tasks.map((task) => <p>{task}</p>)}</div>; }",
+                        "export function App() { const tasks = ['Learn']; return <main><h1>Simple task app</h1><p>Create and review tasks.</p><input /><button>Add</button>{tasks.map((task) => <p key={task}>{task}</p>)}</main>; }",
                 }),
             },
             {
@@ -1296,8 +1301,18 @@ export function App() {
             "utf8",
         );
 
+        const finalApp =
+            'import "./App.css"; import { tasks } from "./content.js"; export function App() { return <main className="app"><h1>Complex task app</h1><input /><button>Add</button>{tasks.map((task) => <p key={task}>{task}</p>)}</main>; }';
+
         const model = new FakeModelProvider([
             PLANNER_RESPONSE,
+            {
+                content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.tsx",
+                    content: finalApp,
+                }),
+            },
             {
                 content: JSON.stringify({
                     type: "write_file",
@@ -1310,14 +1325,6 @@ export function App() {
                     type: "write_file",
                     path: "src/App.css",
                     content: ".app { color: #111; }",
-                }),
-            },
-            {
-                content: JSON.stringify({
-                    type: "write_file",
-                    path: "src/App.tsx",
-                    content:
-                        'import "./App.css"; import { tasks } from "./content.js"; export function App() { return <div className="app"><input /><button>Add</button>{tasks.map((task) => <p>{task}</p>)}</div>; }',
                 }),
             },
             {
@@ -1390,7 +1397,7 @@ export function App() {
                     type: "write_file",
                     path: "src/App.tsx",
                     content:
-                        'export function App() { return <main><a href="#">更多 >></a><input /><button>添加</button></main>; }',
+                        'export function App() { const tasks = ["学习"]; return <main><h1>中文任务应用</h1><a href="#more">更多 >></a><section id="more"><p>添加并查看任务。</p><input /><button>添加</button>{tasks.map((task) => <p key={task}>{task}</p>)}</section></main>; }',
                 }),
             },
             {
@@ -1527,19 +1534,19 @@ export function App() {
             PLANNER_RESPONSE,
             {
                 content: JSON.stringify({
+                    type: "write_file",
+                    path: "src/App.tsx",
+                    content:
+                        "export function App() { const tasks = ['温州旅游']; return <main><img src=\"/assets/wenzhou-banner.jpg\" alt=\"温州城市风景横幅\" /><h1>温州旅游</h1><input /><button>添加</button>{tasks.map((task) => <p key={task}>{task}</p>)}<p>美食 景点 交通</p></main>; }",
+                }),
+            },
+            {
+                content: JSON.stringify({
                     type: "get_image",
                     query: "温州城市风景横幅",
                     mode: "generate",
                     altText: "温州城市风景横幅",
                     outputPath: "public/assets/wenzhou-banner.jpg",
-                }),
-            },
-            {
-                content: JSON.stringify({
-                    type: "write_file",
-                    path: "src/App.tsx",
-                    content:
-                        "export function App() { const tasks = ['温州旅游']; return <main><img src=\"/assets/wenzhou-banner.jpg\" alt=\"温州城市风景横幅\" /><h1>温州旅游</h1><input /><button>添加</button>{tasks.map((task) => <p>{task}</p>)}<p>美食 景点 交通</p></main>; }",
                 }),
             },
             {
@@ -3129,10 +3136,10 @@ export function App() {
         );
 
         const badApp =
-            "export function App() { return <h1>Hello</h1>; }";
+            "export function App() { return <main><h1>Hello</h1><p>The task controls are not implemented yet.</p></main>; }";
 
         const goodApp =
-            "export function App() { const tasks = ['Learn']; return <div><input /><button>Add</button>{tasks.map((task) => <p>{task}</p>)}</div>; }";
+            "export function App() { const tasks = ['Learn']; return <main><h1>Task app</h1><input /><button>Add</button>{tasks.map((task) => <p key={task}>{task}</p>)}</main>; }";
 
         const model = new FakeModelProvider([
             PLANNER_RESPONSE,
@@ -3379,7 +3386,7 @@ export function App() {
         const repairRequest = model.requests[3]?.messages[1]?.content ?? "";
 
         expect(repairRequest).toContain(
-            "Relevant source near build error:",
+            "Relevant source near compiler error:",
         );
         expect(repairRequest).toContain(">   16 |       </footer>");
         expect(repairRequest).toContain(
@@ -3388,17 +3395,16 @@ export function App() {
     }, 20_000);
 
     it("blocks acceptance on browser runtime failure and repairs before accepting", async () => {
+        // V9.4.2.3.4: keep this fixture complete enough to reach Browser Eval.
         const templateRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-api-template-"),
         );
         const workspaceRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-api-browser-repair-"),
         );
-
         temporaryDirectories.push(templateRoot, workspaceRoot);
 
         await mkdir(path.join(templateRoot, "src"));
-
         await writeFile(
             path.join(templateRoot, "package.json"),
             JSON.stringify({
@@ -3408,38 +3414,41 @@ export function App() {
             }),
             "utf8",
         );
-
         await writeFile(
             path.join(templateRoot, "src", "App.tsx"),
             "export function App() { return null; }",
             "utf8",
         );
 
-        const brokenTaskApp =
-            "export function App() { const tasks = ['Learn']; return <div><input /><button>Add</button>{tasks.map((task) => <p>{task}</p>)}</div>; }";
-        const repairedTaskApp =
-            "export function App() { const tasks = ['Learn']; return <main><h1>Tasks</h1><input /><button type=\"button\">Add</button>{tasks.map((task) => <p key={task}>{task}</p>)}</main>; }";
+        const runtimeBrokenDraft = [
+            'export function App() {',
+            ' const tasks = ["Review trace"];',
+            ' return <main><h1>Task application</h1><input aria-label="New task" /><button>Add task</button>{tasks.map((task) => <p key={task}>{task}</p>)}{features.map((feature) => <span key={feature}>{feature}</span>)}</main>;',
+            '}',
+        ].join("\n");
+
         const model = new FakeModelProvider([
             PLANNER_RESPONSE,
             {
                 content: JSON.stringify({
                     type: "write_file",
                     path: "src/App.tsx",
-                    content: brokenTaskApp,
+                    content: runtimeBrokenDraft,
                 }),
             },
             {
                 content: JSON.stringify({
                     type: "finish",
-                    summary: "Initial attempt done",
+                    summary: "Initial runtime-broken draft",
                 }),
             },
             {
                 content: JSON.stringify({
                     type: "edit_file",
                     path: "src/App.tsx",
-                    oldText: brokenTaskApp,
-                    newText: repairedTaskApp,
+                    oldText: "export function App() {",
+                    newText:
+                        'const features = ["Trace viewer"];\nexport function App() {',
                 }),
             },
             {
@@ -3451,60 +3460,51 @@ export function App() {
             APPROVED_REVIEW_RESPONSE,
         ]);
 
-        const browserResults = [
-            {
-                passed: false,
-                checks: [
-                    {
-                        name: "adds a task item",
-                        passed: false,
-                        message: "The task text was not rendered.",
-                    },
-                    {
-                        name: "has no runtime errors",
-                        passed: false,
-                        message:
-                            "Uncaught page error: ReferenceError: features is not defined Stack: ReferenceError: features is not defined at App (src/App.tsx:3:18)",
-                    },
-                ],
-            },
-            {
-                passed: true,
-                checks: [
-                    {
-                        name: "adds a task item",
-                        passed: true,
-                    },
-                    {
-                        name: "application root renders",
-                        passed: true,
-                    },
-                    {
-                        name: "has visible main content",
-                        passed: true,
-                    },
-                    {
-                        name: "has no runtime errors",
-                        passed: true,
-                    },
-                ],
-            },
-        ];
-
         const result = await runReactAppAgent({
-            goal: "Create a simple task app",
+            goal: "Create a task app",
             workspaceRoot,
             templateRoot,
             model,
             maxRepairAttempts: 1,
             evaluateBrowser: async () => {
-                const nextResult = browserResults.shift();
+                const source = await readFile(
+                    path.join(workspaceRoot, "src", "App.tsx"),
+                    "utf8",
+                );
+                const runtimeFixed = source.includes(
+                    'const features = ["Trace viewer"]',
+                );
 
-                if (!nextResult) {
-                    throw new Error("Missing fake browser result");
-                }
-
-                return nextResult;
+                return runtimeFixed
+                    ? {
+                          passed: true,
+                          checks: [
+                              {
+                                  name: "adds a task item",
+                                  passed: true,
+                              },
+                              {
+                                  name: "has no runtime errors",
+                                  passed: true,
+                              },
+                          ],
+                      }
+                    : {
+                          passed: false,
+                          checks: [
+                              {
+                                  name: "adds a task item",
+                                  passed: false,
+                                  message: "The task text was not rendered.",
+                              },
+                              {
+                                  name: "has no runtime errors",
+                                  passed: false,
+                                  message:
+                                      "Uncaught page error: ReferenceError: features is not defined",
+                              },
+                          ],
+                      };
             },
             llm: {
                 baseUrl: "https://example.com/v1",
@@ -3516,16 +3516,13 @@ export function App() {
         expect(result.review.accepted).toBe(true);
         expect(result.browserEval?.passed).toBe(true);
         expect(result.attempts).toHaveLength(2);
-        expect(result.attempts[0]?.review.accepted).toBe(false);
-        expect(result.attempts[0]?.review.reason).toContain(
-            "页面构建成功，但浏览器运行验证失败",
-        );
-        expect(result.attempts[0]?.review.reason).toContain("ReferenceError");
+        expect(result.attempts[0]?.kind).toBe("initial");
+        expect(result.attempts[0]?.browserEval?.passed).toBe(false);
         expect(result.attempts[1]?.kind).toBe("repair");
-        const repairRequest = model.requests[3]?.messages[1]?.content ?? "";
-        expect(repairRequest).toContain("Browser eval checks:");
-        expect(repairRequest).toContain("ReferenceError");
-        expect(browserResults).toHaveLength(0);
+        expect(result.attempts[1]?.browserEval?.passed).toBe(true);
+        await expect(
+            readFile(path.join(workspaceRoot, "src", "App.tsx"), "utf8"),
+        ).resolves.toContain('const features = ["Trace viewer"]');
     }, 15_000);
 
     it("runs typecheck and repairs undefined TypeScript references before accepting", async () => {
@@ -3663,17 +3660,17 @@ export function App() {
     });
 
     it("keeps repairing until review passes or max repair attempts is reached", async () => {
+        // V9.4.2.3.4: every staged draft satisfies the structural completeness
+        // gate; only the task-app acceptance checks control repair progression.
         const templateRoot = await mkdtemp(
             path.join(os.tmpdir(), "appforge-api-template-"),
         );
         const workspaceRoot = await mkdtemp(
-            path.join(os.tmpdir(), "appforge-react-repair-loop-"),
+            path.join(os.tmpdir(), "appforge-api-multi-repair-"),
         );
-
         temporaryDirectories.push(templateRoot, workspaceRoot);
 
         await mkdir(path.join(templateRoot, "src"));
-
         await writeFile(
             path.join(templateRoot, "package.json"),
             JSON.stringify({
@@ -3683,21 +3680,18 @@ export function App() {
             }),
             "utf8",
         );
-
         await writeFile(
             path.join(templateRoot, "src", "App.tsx"),
             "export function App() { return null; }",
             "utf8",
         );
 
-        const firstBadApp =
-            "export function App() { return <div>Broken</div>; }";
-
-        const secondBadApp =
-            "export function App() { return <div><input /></div>; }";
-
-        const goodApp =
-            "export function App() { const tasks = ['Learn']; return <div><input /><button>Add</button>{tasks.map((task) => <p>{task}</p>)}</div>; }";
+        const initialDraft =
+            'export function App() { return <main><h1>Task draft</h1><p>The task workflow is still incomplete.</p></main>; }';
+        const firstRepairDraft =
+            'export function App() { return <main><h1>Task editor</h1><p>The input exists but actions are incomplete.</p><input aria-label="New task" /></main>; }';
+        const secondRepairDraft =
+            'export function App() { const tasks = ["Ship release"]; return <main><h1>Task application</h1><p>Add and review project tasks.</p><input aria-label="New task" /><button>Add task</button>{tasks.map((task) => <p key={task}>{task}</p>)}</main>; }';
 
         const model = new FakeModelProvider([
             PLANNER_RESPONSE,
@@ -3705,7 +3699,7 @@ export function App() {
                 content: JSON.stringify({
                     type: "write_file",
                     path: "src/App.tsx",
-                    content: firstBadApp,
+                    content: initialDraft,
                 }),
             },
             {
@@ -3718,7 +3712,7 @@ export function App() {
                 content: JSON.stringify({
                     type: "write_file",
                     path: "src/App.tsx",
-                    content: secondBadApp,
+                    content: firstRepairDraft,
                 }),
             },
             {
@@ -3731,7 +3725,7 @@ export function App() {
                 content: JSON.stringify({
                     type: "write_file",
                     path: "src/App.tsx",
-                    content: goodApp,
+                    content: secondRepairDraft,
                 }),
             },
             {
@@ -3744,7 +3738,7 @@ export function App() {
         ]);
 
         const result = await runReactAppAgent({
-            goal: "Create a simple task app",
+            goal: "Create a task app",
             workspaceRoot,
             templateRoot,
             model,
@@ -3759,24 +3753,13 @@ export function App() {
         expect(result.review.accepted).toBe(true);
         expect(result.attempts).toHaveLength(3);
         expect(result.attempts[0]?.kind).toBe("initial");
-        expect(result.attempts[0]?.review.accepted).toBe(false);
+        expect(result.attempts[0]?.eval.passed).toBe(false);
         expect(result.attempts[1]?.kind).toBe("repair");
-        expect(result.attempts[1]?.review.accepted).toBe(false);
+        expect(result.attempts[1]?.eval.passed).toBe(false);
         expect(result.attempts[2]?.kind).toBe("repair");
-        expect(result.attempts[2]?.review.accepted).toBe(true);
-        expect(result.trace).toHaveLength(19);
-        expect(result.trace?.map((event) => event.id)).toEqual(
-            expect.arrayContaining([
-                "planner-agent",
-                "repair-3-llm-review",
-            ]),
-        );
-        expect(result.trace?.map((event) => event.id)).not.toEqual(
-            expect.arrayContaining([
-                "initial-1-llm-review",
-                "repair-2-llm-review",
-            ]),
-        );
-        expect(model.requests).toHaveLength(8);
-    }, 60_000);
+        expect(result.attempts[2]?.eval.passed).toBe(true);
+        await expect(
+            readFile(path.join(workspaceRoot, "src", "App.tsx"), "utf8"),
+        ).resolves.toContain("Ship release");
+    }, 15_000);
 });

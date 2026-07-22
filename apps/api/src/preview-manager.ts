@@ -14,6 +14,8 @@ export type PreviewSession = {
 export type StartPreviewOptions = {
     runId: string;
     workspaceRoot: string;
+    /** V9.4.2.3 preview freshness: do not reuse a document loaded before workspace edits. */
+    forceRestart?: boolean;
 };
 
 type PreviewProcess = Pick<ChildProcess, "unref"> &
@@ -215,6 +217,7 @@ async function terminatePreviewProcess(
     });
 }
 
+// V9.4.2.3 preview freshness
 export class PreviewManager {
     private readonly sessions = new Map<string, StoredPreviewSession>();
     private readonly pendingStarts = new Map<string, Promise<PreviewSession>>();
@@ -238,9 +241,16 @@ export class PreviewManager {
             options.workspaceRoot,
         );
         const pendingStart = this.pendingStarts.get(sessionKey);
-
         if (pendingStart) {
-            return await pendingStart;
+            if (!options.forceRestart) {
+                return await pendingStart;
+            }
+
+            try {
+                await pendingStart;
+            } catch {
+                // The forced fresh start below reports its own failure.
+            }
         }
 
         const startPromise = this.withStartLock(() =>
@@ -266,16 +276,25 @@ export class PreviewManager {
             options.workspaceRoot,
         );
 
+        const existingPortIsListening = existingSession
+            ? !(await this.checkPortAvailable(existingSession.port))
+            : false;
+
         if (
             existingSession &&
-            !(await this.checkPortAvailable(existingSession.port))
+            existingPortIsListening &&
+            !options.forceRestart
         ) {
             return existingSession;
         }
 
         if (existingSession) {
-            this.sessions.delete(sessionKey);
-            this.reservedPorts.delete(existingSession.port);
+            if (existingPortIsListening) {
+                await this.stop(existingSession);
+            } else {
+                this.sessions.delete(sessionKey);
+                this.reservedPorts.delete(existingSession.port);
+            }
         }
 
         // A run only needs one live preview at a time. Keeping old version

@@ -155,6 +155,8 @@ const app = buildApp(
             const preview = await previewManager.start({
                 runId: path.basename(workspaceRoot),
                 workspaceRoot,
+            
+                forceRestart: true,
             });
             browserSignal?.throwIfAborted();
 
