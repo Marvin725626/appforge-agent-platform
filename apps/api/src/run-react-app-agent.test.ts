@@ -866,7 +866,7 @@ export function App() {
             "Coding Agent did not change the workspace",
         );
         expect(result.agent.steps.some((step) =>
-            step.execution.message.includes("stable generation safety net"),
+            step.execution.message.includes("Terminal Repair Agent safety net"),
         )).toBe(true);
         await expect(
             readFile(path.join(workspaceRoot, "src", "App.tsx"), "utf8"),

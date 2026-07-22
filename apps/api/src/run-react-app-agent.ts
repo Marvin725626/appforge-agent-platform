@@ -7475,9 +7475,13 @@ export async function runReactAppAgent(
         if (
             !madeWorkspaceProgress &&
             (kind === "initial" || attemptNumber === 1) &&
-            !focusedEditRequest &&
             navigationRequestKind !== "routes" &&
-            (options.stableGeneration === true || options.model === undefined)
+            stableGenerationEnabled &&
+            (stableStructuralGenerationRequested ||
+                genericRepairRequest ||
+                complexPageRequest ||
+                requirements.length >= 3) &&
+            !(focusedEditRequest && requirements.length < 3)
         ) {
             const stableResult = await generateStableReactPage({
                 workspaceRoot: options.workspaceRoot,
@@ -7495,13 +7499,13 @@ export async function runReactAppAgent(
                         action: {
                             type: "finish",
                             summary:
-                                "Coding Agent made no workspace change; switched to deterministic stable generation safety net.",
+                                "Terminal Repair Agent safety net: Coding Agent made no workspace change, so AppForge switched to deterministic stable generation.",
                         },
                         execution: {
                             ok: true,
                             changed: false,
                             message:
-                                "Coding Agent made no workspace change; switched to deterministic stable generation safety net.",
+                                "Terminal Repair Agent safety net: Coding Agent made no workspace change, so AppForge switched to deterministic stable generation.",
                         },
                     },
                     ...stableResult.agent.steps,
